@@ -42,7 +42,7 @@ admin/                  前端静态文件
 
 ```
 外部请求 → Gateway 端口(:9980) → TunnelGateway.ServeHTTP
-  → 路由匹配(泛域名/路径/精确域名) → node.YamuxSession.OpenStream()
+  → 路由匹配(泛域名/路径/精确域名) → node.Session.OpenStream()
   → 数据透传到节点代理
 
 节点连接 → Control 端口(:9981) → Challenge-Response → smux.Server()
@@ -53,7 +53,7 @@ admin/                  前端静态文件
 
 - `UserStatus` / `NodeStatus` 是类型化常量，不使用原始字符串
 - `core.UserRepo` / `core.RoleRepo` 是接口，storage 包提供实现
-- smux Session 存储在 `core.Node.YamuxSession`
+- smux Session 存储在 `core.Node.Session`
 - API 路由注册在 `cmd/moleagent-serv/main.go` 的 `buildAPIRouter`
 - 种子数据在 `storage/db.go` 的 `seedData()`
 

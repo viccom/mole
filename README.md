@@ -62,9 +62,9 @@ docker run -d \
   [浏览器/客户端]  ── HTTP/HTTPS ──▶  │  Gateway    │
                                     │  :9980      │
                                     └──────┬──────┘
-                                           │ yamux 流
+                                           │ smux 流
                                     ┌──────▼──────┐
-[节点客户端]  ── TCP + yamux ──▶  │  Control     │
+[节点客户端]  ── TCP + smux ──▶  │  Control     │
                                     │  :9981       │
                                     └──────┬──────┘
                                            │
@@ -414,16 +414,16 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
      │                                   │
      │◀──── {"cmd":"ok"} ────────────────│ 认证成功
      │                                   │
-     │◀════════ yamux session ═══════════▶│ 复用同一 TCP
+     │◀════════ smux session ═══════════▶│ 复用同一 TCP
      │                                   │
-     │── yamux stream: ──────────────────▶│
+     │── smux stream: ──────────────────▶│
      │   {"cmd":"register","node_id":"..."│
      │    "tunnels":[...]}               │
      │                                   │
-     │◀── yamux stream: {"cmd":"ok"} ─────│
+     │◀── smux stream: {"cmd":"ok"} ─────│
      │                                   │
-     │── yamux stream: {"cmd":"ping"} ──▶│  心跳（每 10s）
-     │◀── yamux stream: {"cmd":"pong"} ◀─│
+     │── smux stream: {"cmd":"ping"} ──▶│  心跳（每 10s）
+     │◀── smux stream: {"cmd":"pong"} ◀─│
 ```
 
 ### 节点注册消息

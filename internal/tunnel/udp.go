@@ -100,7 +100,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				slog.Debug("No node for UDP tunnel", "tunnel", tunnel.Name)
 				continue
 			}
-			stream, err := node.YamuxSession.OpenStream()
+			stream, err := node.Session.OpenStream()
 			if err != nil {
 				mu.Unlock()
 				slog.Error("Failed to open smux stream for UDP", "tunnel", tunnel.Name, "error", err)

@@ -24,7 +24,7 @@ type Node struct {
 	RemoteAddr     string       `json:"remote_addr,omitempty"`
 	ConnectedAt    *time.Time   `json:"connected_at,omitempty"`
 	LastHeartbeat  *time.Time   `json:"last_heartbeat,omitempty"`
-	YamuxSession   *smux.Session `json:"-"`
+	Session        *smux.Session `json:"-"`
 }
 
 // TunnelType 隧道类型

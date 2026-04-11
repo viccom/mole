@@ -249,7 +249,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, ses
 		RemoteAddr:    remoteAddr,
 		ConnectedAt:   &now,
 		LastHeartbeat: &now,
-		YamuxSession:  session,
+		Session:  session,
 	}
 
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {

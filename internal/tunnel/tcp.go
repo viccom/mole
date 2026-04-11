@@ -59,7 +59,7 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 	}
 
 	// 通过 smux 打开流
-	stream, err := node.YamuxSession.OpenStream()
+	stream, err := node.Session.OpenStream()
 	if err != nil {
 		slog.Error("Failed to open smux stream", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
 		return

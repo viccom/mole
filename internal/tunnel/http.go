@@ -280,7 +280,7 @@ func (tg *TunnelGateway) findNodeByID(ctx context.Context, nodeID string) *core.
 }
 
 func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
-	stream, err := node.YamuxSession.OpenStream()
+	stream, err := node.Session.OpenStream()
 	if err != nil {
 		slog.Error("Failed to open stream for HTTP", "tunnel", tunnelName, "error", err)
 		http.Error(w, "Upstream error", http.StatusBadGateway)
@@ -322,7 +322,7 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 }
 
 func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
-	stream, err := node.YamuxSession.OpenStream()
+	stream, err := node.Session.OpenStream()
 	if err != nil {
 		slog.Error("Failed to open stream for WS", "tunnel", tunnelName, "error", err)
 		http.Error(w, "Upstream error", http.StatusBadGateway)

@@ -103,8 +103,8 @@ func (m *ShardedNodeManager) Disconnect(_ context.Context, nodeID string) error 
 	if !ok {
 		return core.ErrNodeNotFound
 	}
-	if node.YamuxSession != nil {
-		node.YamuxSession.Close()
+	if node.Session != nil {
+		node.Session.Close()
 	}
 	node.Status = core.NodeStatusOffline
 	delete(shard.clients, nodeID)
