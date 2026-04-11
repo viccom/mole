@@ -1,0 +1,18 @@
+# 编译产物
+moleagent-serv
+*.exe
+
+# 运行时数据
+data/
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

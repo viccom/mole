@@ -1,0 +1,41 @@
+# moleAgent_Serv 配置示例
+
+server:
+  control_port: ":9981"    # Node 连接端口
+  gateway_port: ":9980"    # 外部请求网关
+  api_port: ":9983"        # REST API
+  max_nodes: 10000
+  max_concurrent: 50000
+  tls:
+    enabled: false         # 是否启用 TLS 加密控制端口
+    cert_file: "certs/server.crt"  # TLS 证书文件路径
+    key_file: "certs/server.key"    # TLS 私钥文件路径
+  gateway:
+    hyphen_routing: true    # 泛域名分隔符: true=hyphen(-), false=dot(.)
+
+mqtt:
+  enabled: true
+  tcp_port: ":1883"
+  ws_port: ":1882"
+
+auth:
+  jwt_secret: ""           # 必须配置，空则启动失败。也可通过 MA_JWT_SECRET 环境变量设置
+  jwt_expiry: "24h"
+  bcrypt_cost: 12
+
+database:
+  path: "data/config.db"
+
+logging:
+  level: "info"            # debug, info, warn, error
+  format: "text"           # text, json
+  file:
+    enabled: true
+    path: "logs/moleagent.log"
+    max_size_mb: 100
+    max_backups: 10
+    max_age_days: 30
+    compress: true
+  console:
+    enabled: true
+    color: true

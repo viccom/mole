@@ -1,0 +1,65 @@
+package storage
+
+import (
+	"encoding/json"
+
+	"moleAgent_Serv/internal/core"
+)
+
+type roleRepo struct{}
+
+// NewRoleRepo 创建角色仓库
+func NewRoleRepo() core.RoleRepo {
+	return &roleRepo{}
+}
+
+func (r *roleRepo) Create(role *core.Role) error {
+	data, err := json.Marshal(role)
+	if err != nil {
+		return err
+	}
+	_, err = db.Hash().Set("roles", role.ID, string(data))
+	return err
+}
+
+func (r *roleRepo) GetByID(id string) (*core.Role, error) {
+	val, err := db.Hash().Get("roles", id)
+	if err != nil {
+		return nil, core.ErrRoleNotFound
+	}
+	var role core.Role
+	if err := json.Unmarshal([]byte(val.String()), &role); err != nil {
+		return nil, err
+	}
+	return &role, nil
+}
+
+func (r *roleRepo) GetAll() ([]*core.Role, error) {
+	items, err := db.Hash().Items("roles")
+	if err != nil {
+		return nil, err
+	}
+	roles := make([]*core.Role, 0, len(items))
+	for _, v := range items {
+		var role core.Role
+		if err := json.Unmarshal([]byte(v.String()), &role); err != nil {
+			continue
+		}
+		roles = append(roles, &role)
+	}
+	return roles, nil
+}
+
+func (r *roleRepo) Update(role *core.Role) error {
+	data, err := json.Marshal(role)
+	if err != nil {
+		return err
+	}
+	_, err = db.Hash().Set("roles", role.ID, string(data))
+	return err
+}
+
+func (r *roleRepo) Delete(id string) error {
+	_, err := db.Hash().Delete("roles", id)
+	return err
+}
