@@ -25,7 +25,6 @@ func NewListenerRegistry() *ListenerRegistry {
 func (lr *ListenerRegistry) Register(name string, l net.Listener) {
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
-	// 关闭旧的
 	if old, ok := lr.listeners[name]; ok {
 		old.Close()
 	}
@@ -72,7 +71,7 @@ func (lr *ListenerRegistry) StopAll() {
 	lr.listeners = make(map[string]net.Listener)
 }
 
-// 信号量实现
+// Semaphore 信号量实现
 type Semaphore struct {
 	ch chan struct{}
 }
@@ -94,29 +93,105 @@ func (s *Semaphore) Release() {
 	<-s.ch
 }
 
-// TunnelGateway 隧道网关
-type TunnelGateway struct {
-	nodeMgr  interface {
-		Get(ctx context.Context, nodeID string) (*core.Node, bool)
-		GetAll(ctx context.Context) []*core.Node
-	}
-	registry *ListenerRegistry
-	sem      *Semaphore
-}
-
-func NewTunnelGateway(nodeMgr interface {
+// NodeManager 节点管理器接口（由 tunnel 包定义，解耦具体实现）
+type NodeManager interface {
 	Get(ctx context.Context, nodeID string) (*core.Node, bool)
 	GetAll(ctx context.Context) []*core.Node
-}, maxConcurrent int) *TunnelGateway {
+}
+
+// TunnelGateway 隧道网关
+type TunnelGateway struct {
+	nodeMgr  NodeManager
+	registry *ListenerRegistry
+	sem      *Semaphore
+
+	// 路由索引：加速域名和隧道名称查找
+	domainMu sync.RWMutex
+	domainIdx map[string]*domainRoute // domain -> route
+
+	tunnelMu sync.RWMutex
+	tunnelIdx map[string]*tunnelRoute // tunnelName -> route
+}
+
+type domainRoute struct {
+	nodeID     string
+	tunnelName string
+}
+
+type tunnelRoute struct {
+	nodeID string
+}
+
+func NewTunnelGateway(nodeMgr NodeManager, maxConcurrent int) *TunnelGateway {
 	return &TunnelGateway{
-		nodeMgr:  nodeMgr,
-		registry: NewListenerRegistry(),
-		sem:      NewSemaphore(maxConcurrent),
+		nodeMgr:   nodeMgr,
+		registry:  NewListenerRegistry(),
+		sem:       NewSemaphore(maxConcurrent),
+		domainIdx: make(map[string]*domainRoute),
+		tunnelIdx: make(map[string]*tunnelRoute),
 	}
 }
 
 func (tg *TunnelGateway) Registry() *ListenerRegistry {
 	return tg.registry
+}
+
+// RebuildIndex 根据当前节点数据重建路由索引
+func (tg *TunnelGateway) RebuildIndex(ctx context.Context) {
+	nodes := tg.nodeMgr.GetAll(ctx)
+
+	newDomain := make(map[string]*domainRoute)
+	newTunnel := make(map[string]*tunnelRoute)
+
+	for _, n := range nodes {
+		if n.Status != core.NodeStatusOnline {
+			continue
+		}
+		for _, t := range n.Tunnels {
+			newTunnel[t.Name] = &tunnelRoute{nodeID: n.ID}
+			if t.Type == core.TunnelTypeHTTP && t.Domain != "" {
+				newDomain[t.Domain] = &domainRoute{nodeID: n.ID, tunnelName: t.Name}
+			}
+		}
+	}
+
+	tg.domainMu.Lock()
+	tg.domainIdx = newDomain
+	tg.domainMu.Unlock()
+
+	tg.tunnelMu.Lock()
+	tg.tunnelIdx = newTunnel
+	tg.tunnelMu.Unlock()
+}
+
+// findByDomain 通过域名索引查找节点和隧道名
+func (tg *TunnelGateway) findByDomain(ctx context.Context, domain string) (*core.Node, string) {
+	tg.domainMu.RLock()
+	r, ok := tg.domainIdx[domain]
+	tg.domainMu.RUnlock()
+	if !ok {
+		return nil, ""
+	}
+	node, exists := tg.nodeMgr.Get(ctx, r.nodeID)
+	if !exists || node.Status != core.NodeStatusOnline {
+		return nil, ""
+	}
+	return node, r.tunnelName
+}
+
+// findByTunnelName 通过隧道名称索引查找节点
+func (tg *TunnelGateway) findByTunnelName(ctx context.Context, tunnelName string) *core.Node {
+	tg.tunnelMu.RLock()
+	r, ok := tg.tunnelIdx[tunnelName]
+	tg.tunnelMu.RUnlock()
+	if !ok {
+		return nil
+	}
+	node, exists := tg.nodeMgr.Get(ctx, r.nodeID)
+	if !exists || node.Status != core.NodeStatusOnline {
+		return nil
+	}
+	return node
 }
 
 // Stop 停止所有隧道

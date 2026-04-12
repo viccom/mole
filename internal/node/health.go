@@ -31,9 +31,11 @@ func StartHealthCheck(ctx context.Context, mgr *ShardedNodeManager) {
 
 func cleanupDeadNodes(ctx context.Context, mgr *ShardedNodeManager) {
 	now := time.Now()
-	var deadIDs []string
 
+	// 按分片独立收集和清理，避免跨分片不一致
 	for _, shard := range mgr.shards {
+		var deadIDs []string
+
 		shard.mu.RLock()
 		for id, node := range shard.clients {
 			if node.Status == core.NodeStatusOffline {
@@ -43,13 +45,13 @@ func cleanupDeadNodes(ctx context.Context, mgr *ShardedNodeManager) {
 			}
 		}
 		shard.mu.RUnlock()
-	}
 
-	for _, id := range deadIDs {
-		if err := mgr.Disconnect(ctx, id); err != nil {
-			slog.Warn("Failed to disconnect dead node", "nodeId", id, "error", err)
-		} else {
-			slog.Warn("Cleaned up dead node", "nodeId", id, "reason", "heartbeat timeout")
+		for _, id := range deadIDs {
+			if err := mgr.Disconnect(ctx, id); err != nil {
+				slog.Warn("Failed to disconnect dead node", "nodeId", id, "error", err)
+			} else {
+				slog.Warn("Cleaned up dead node", "nodeId", id, "reason", "heartbeat timeout")
+			}
 		}
 	}
 }

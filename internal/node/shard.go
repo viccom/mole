@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"hash/fnv"
 	"sync"
 
 	"moleAgent_Serv/internal/core"
@@ -38,16 +39,11 @@ func NewShardedNodeManager(shardCount int) *ShardedNodeManager {
 	return mgr
 }
 
-// getShard 根据 nodeID 哈希获取分片
+// getShard 根据 nodeID 哈希获取分片（FNV-1a）
 func (m *ShardedNodeManager) getShard(nodeID string) *NodeShard {
-	hash := 0
-	for _, c := range nodeID {
-		hash = hash*31 + int(c)
-	}
-	if hash < 0 {
-		hash = -hash
-	}
-	return m.shards[hash%m.shardCount]
+	h := fnv.New32a()
+	h.Write([]byte(nodeID))
+	return m.shards[h.Sum32()%uint32(m.shardCount)]
 }
 
 // Add 添加节点
@@ -92,6 +88,19 @@ func (m *ShardedNodeManager) GetAll(_ context.Context) []*core.Node {
 		shard.mu.RUnlock()
 	}
 	return result
+}
+
+// Update 更新节点信息（通过回调函数原子修改）
+func (m *ShardedNodeManager) Update(_ context.Context, nodeID string, fn func(*core.Node)) error {
+	shard := m.getShard(nodeID)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	node, ok := shard.clients[nodeID]
+	if !ok {
+		return core.ErrNodeNotFound
+	}
+	fn(node)
+	return nil
 }
 
 // Disconnect 断开节点连接

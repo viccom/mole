@@ -21,25 +21,26 @@ import (
 
 // ControlProtocol 命令类型
 type ControlCmd struct {
-	Cmd      string            `json:"cmd"`                // register, ping
-	NodeID   string            `json:"node_id,omitempty"`  // 注册时使用
-	Name     string            `json:"name,omitempty"`     // 节点名称
-	Token    string            `json:"token,omitempty"`    // 节点令牌
-	Tunnels  []core.Tunnel     `json:"tunnels,omitempty"`  // 隧道配置
+	Cmd     string        `json:"cmd"`                // register, ping, tunnel_update
+	NodeID  string        `json:"node_id,omitempty"`  // 注册时使用
+	Name    string        `json:"name,omitempty"`     // 节点名称
+	Token   string        `json:"token,omitempty"`    // 节点令牌
+	Tunnels []core.Tunnel `json:"tunnels,omitempty"`  // 隧道配置
 }
 
 type ControlResponse struct {
-	Cmd  string `json:"cmd"`  // ok, pong, err
-	Msg  string `json:"msg,omitempty"`
+	Cmd string `json:"cmd"` // ok, pong, err
+	Msg string `json:"msg,omitempty"`
 }
 
 // ControlServer 控制端口服务
 type ControlServer struct {
-	addr       string
-	nodeMgr    *node.ShardedNodeManager
-	nodeToken  string          // 全局节点认证令牌（可改为 per-node）
-	tlsConfig  *tls.Config      // TLS 配置，为 nil 则不使用 TLS
-	listener   net.Listener
+	addr      string
+	nodeMgr   *node.ShardedNodeManager
+	nodeToken string     // 全局节点认证令牌（可改为 per-node）
+	tlsConfig *tls.Config // TLS 配置，为 nil 则不使用 TLS
+	listener  net.Listener
+	onNodeChange func() // 节点变更回调（触发索引重建）
 }
 
 // NewControlServer 创建控制端口服务
@@ -50,6 +51,11 @@ func NewControlServer(addr string, nodeMgr *node.ShardedNodeManager, nodeToken s
 		nodeToken: nodeToken,
 		tlsConfig: tlsConfig,
 	}
+}
+
+// SetOnNodeChange 设置节点变更回调
+func (cs *ControlServer) SetOnNodeChange(fn func()) {
+	cs.onNodeChange = fn
 }
 
 // Start 启动控制端口监听
@@ -135,18 +141,18 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		Token string `json:"token"`
 	}
 	if err := json.Unmarshal([]byte(authLine), &authMsg); err != nil {
-		conn.Write([]byte(`{"cmd":"err","msg":"invalid auth format"}` + "\n"))
+		writeControlResp(conn, "err", "invalid auth format")
 		slog.Warn("Node auth format invalid", "remote", remoteAddr)
 		return
 	}
 
 	// 验证 token（使用恒定时间比较防止时序攻击）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) != 1 {
-		conn.Write([]byte(`{"cmd":"err","msg":"invalid token"}` + "\n"))
+		writeControlResp(conn, "err", "invalid token")
 		slog.Warn("Node auth failed", "remote", remoteAddr, "reason", "invalid token")
 		return
 	}
-	conn.Write([]byte(`{"cmd":"ok","msg":"authenticated"}` + "\n"))
+	writeControlResp(conn, "ok", "authenticated")
 	slog.Info("Node authenticated", "remote", remoteAddr)
 
 	// 2. 建立 smux 会话
@@ -184,7 +190,6 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 				return
 			default:
 			}
-			// smux session error
 			slog.Debug("AcceptStream error", "error", err)
 			return
 		}
@@ -207,9 +212,7 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 
 	var cmd ControlCmd
 	if err := json.Unmarshal(buf[:n], &cmd); err != nil {
-		resp := ControlResponse{Cmd: "err", Msg: "invalid json"}
-		data, _ := json.Marshal(resp)
-		stream.Write(append(data, '\n'))
+		writeControlResp(stream, "err", "invalid json")
 		return
 	}
 
@@ -221,21 +224,17 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 		if *regNode != nil {
 			(*regNode).LastHeartbeat = &now
 		}
-		resp := ControlResponse{Cmd: "pong"}
-		data, _ := json.Marshal(resp)
-		stream.Write(append(data, '\n'))
+		writeControlResp(stream, "pong", "")
+	case "tunnel_update":
+		cs.handleTunnelUpdate(ctx, cmd, regNode, stream)
 	default:
-		resp := ControlResponse{Cmd: "err", Msg: "unknown command"}
-		data, _ := json.Marshal(resp)
-		stream.Write(append(data, '\n'))
+		writeControlResp(stream, "err", "unknown command")
 	}
 }
 
 func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, session *smux.Session, remoteAddr string, regNode **core.Node, stream *smux.Stream) {
 	if cmd.NodeID == "" {
-		resp := ControlResponse{Cmd: "err", Msg: "node_id is required"}
-		data, _ := json.Marshal(resp)
-		stream.Write(append(data, '\n'))
+		writeControlResp(stream, "err", "node_id is required")
 		return
 	}
 
@@ -249,13 +248,11 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, ses
 		RemoteAddr:    remoteAddr,
 		ConnectedAt:   &now,
 		LastHeartbeat: &now,
-		Session:  session,
+		Session:       session,
 	}
 
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
-		resp := ControlResponse{Cmd: "err", Msg: err.Error()}
-		data, _ := json.Marshal(resp)
-		stream.Write(append(data, '\n'))
+		writeControlResp(stream, "err", err.Error())
 		return
 	}
 
@@ -267,8 +264,47 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, ses
 		"remote", remoteAddr,
 	)
 
-	resp := ControlResponse{Cmd: "ok", Msg: "registered"}
-	data, _ := json.Marshal(resp)
-	stream.Write(append(data, '\n'))
+	// 触发路由索引重建
+	if cs.onNodeChange != nil {
+		cs.onNodeChange()
+	}
+
+	writeControlResp(stream, "ok", "registered")
 }
 
+// writeControlResp 向控制流写入 JSON 响应行
+func writeControlResp(w interface{ Write([]byte) (int, error) }, cmd, msg string) {
+	resp := ControlResponse{Cmd: cmd, Msg: msg}
+	if err := writeJSONLine(w, resp); err != nil {
+		slog.Debug("Failed to write control response", "cmd", cmd, "error", err)
+	}
+}
+
+func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd, regNode **core.Node, stream *smux.Stream) {
+	if *regNode == nil {
+		writeControlResp(stream, "err", "node not registered")
+		return
+	}
+
+	nodeID := (*regNode).ID
+	if err := cs.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
+		n.Tunnels = cmd.Tunnels
+		now := time.Now()
+		n.LastHeartbeat = &now
+	}); err != nil {
+		writeControlResp(stream, "err", err.Error())
+		return
+	}
+
+	slog.Info("Node tunnels updated",
+		"nodeId", nodeID,
+		"tunnels", len(cmd.Tunnels),
+	)
+
+	// 触发路由索引重建
+	if cs.onNodeChange != nil {
+		cs.onNodeChange()
+	}
+
+	writeControlResp(stream, "ok", "tunnels updated")
+}

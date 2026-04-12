@@ -18,6 +18,7 @@ type udpSession struct {
 	srcAddr  *net.UDPAddr
 	stream   net.Conn
 	lastSeen time.Time
+	cancel   context.CancelFunc // 用于取消响应读取 goroutine
 }
 
 // StartUDP 启动 UDP 隧道监听
@@ -51,6 +52,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				now := time.Now()
 				for key, s := range sessions {
 					if now.Sub(s.lastSeen) > udpSessionTimeout {
+						s.cancel()
 						s.stream.Close()
 						delete(sessions, key)
 						slog.Debug("UDP session expired", "tunnel", tunnel.Name, "src", key)
@@ -66,6 +68,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 		conn.Close()
 		mu.Lock()
 		for _, s := range sessions {
+			s.cancel()
 			s.stream.Close()
 		}
 		sessions = make(map[string]*udpSession)
@@ -90,47 +93,70 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 		}
 
 		key := addr.String()
+
 		mu.Lock()
 		sess, ok := sessions[key]
 		if !ok {
-			// 新会话
+			mu.Unlock()
+
+			// 在锁外执行耗时操作：查找节点 + 打开 stream
 			node := tg.findNodeForTunnel(ctx, tunnel.Name)
 			if node == nil {
-				mu.Unlock()
 				slog.Debug("No node for UDP tunnel", "tunnel", tunnel.Name)
 				continue
 			}
 			stream, err := node.Session.OpenStream()
 			if err != nil {
-				mu.Unlock()
 				slog.Error("Failed to open smux stream for UDP", "tunnel", tunnel.Name, "error", err)
 				continue
 			}
+
+			// 为响应 goroutine 创建独立 context
+			respCtx, respCancel := context.WithCancel(ctx)
 			sess = &udpSession{
 				srcAddr:  addr,
 				stream:   stream,
 				lastSeen: time.Now(),
+				cancel:   respCancel,
 			}
-			sessions[key] = sess
 
-			// 读取响应协程
+			// 读取响应协程（带 context 取消支持）
 			go func() {
 				respBuf := make([]byte, 65535)
 				for {
+					select {
+					case <-respCtx.Done():
+						return
+					default:
+					}
+					// 设置读取超时，避免永久阻塞
+					stream.SetReadDeadline(time.Now().Add(30 * time.Second))
 					rn, err := stream.Read(respBuf)
 					if err != nil {
+						if respCtx.Err() != nil {
+							return // context 已取消，正常退出
+						}
+						// 超时或读取错误，检查是否应该重试
+						if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+							continue
+						}
 						return
 					}
 					conn.WriteToUDP(respBuf[:rn], addr)
 				}
 			}()
 
-			slog.Debug("UDP session created", "tunnel", tunnel.Name, "src", key)
-		}
-		sess.lastSeen = time.Now()
-		mu.Unlock()
+			mu.Lock()
+			sessions[key] = sess
+			mu.Unlock()
 
-		// 转发数据
+			slog.Debug("UDP session created", "tunnel", tunnel.Name, "src", key)
+		} else {
+			sess.lastSeen = time.Now()
+			mu.Unlock()
+		}
+
+		// 在锁外转发数据
 		sess.stream.Write(buf[:n])
 	}
 }

@@ -3,7 +3,6 @@ package tunnel
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 
@@ -51,14 +50,13 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 	}
 	defer tg.sem.Release()
 
-	// 查找目标节点
+	// 使用索引查找目标节点
 	node := tg.findNodeForTunnel(ctx, tunnel.Name)
 	if node == nil {
 		slog.Warn("No node found for TCP tunnel", "tunnel", tunnel.Name)
 		return
 	}
 
-	// 通过 smux 打开流
 	stream, err := node.Session.OpenStream()
 	if err != nil {
 		slog.Error("Failed to open smux stream", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
@@ -72,22 +70,17 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 		"nodeId", node.ID,
 	)
 
-	// 双向转发
-	done := make(chan struct{}, 2)
-	go func() {
-		defer func() { done <- struct{}{} }()
-		io.Copy(stream, conn)
-	}()
-	go func() {
-		defer func() { done <- struct{}{} }()
-		io.Copy(conn, stream)
-	}()
-
-	<-done
+	biCopy(stream, conn)
 }
 
 // findNodeForTunnel 查找拥有指定隧道的在线节点
 func (tg *TunnelGateway) findNodeForTunnel(ctx context.Context, tunnelName string) *core.Node {
+	// 优先使用索引查找
+	if node := tg.findByTunnelName(ctx, tunnelName); node != nil {
+		return node
+	}
+
+	// 索引未命中，全量扫描兜底
 	nodes := tg.nodeMgr.GetAll(ctx)
 	for _, n := range nodes {
 		if n.Status != core.NodeStatusOnline {
