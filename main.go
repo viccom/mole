@@ -26,7 +26,7 @@ import (
 
 // ===== 内置 HTTP Server =====
 
-func startBuiltinHTTP(addr string) error {
+func startBuiltinHTTP(addr string, c *client) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -50,8 +50,86 @@ func startBuiltinHTTP(addr string) error {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
+
+	// 动态隧道管理 API
+	registerTunnelAPI(mux, c)
+
 	log.Printf("Built-in HTTP server listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+// registerTunnelAPI 注册隧道管理 API
+func registerTunnelAPI(mux *http.ServeMux, c *client) {
+	// GET /api/tunnels — 查看当前隧道列表
+	mux.HandleFunc("/api/tunnels", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(c.cfg.Tunnels)
+		case http.MethodPost:
+			var newTunnel tunnelConfig
+			if err := json.NewDecoder(r.Body).Decode(&newTunnel); err != nil {
+				http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			if newTunnel.Name == "" || newTunnel.Type == "" || newTunnel.Target == "" {
+				http.Error(w, `{"error":"name, type, target are required"}`, http.StatusBadRequest)
+				return
+			}
+			// 构建新的隧道列表：追加或替换同名隧道
+			updated := make([]tunnelConfig, 0, len(c.cfg.Tunnels)+1)
+			replaced := false
+			for _, t := range c.cfg.Tunnels {
+				if t.Name == newTunnel.Name {
+					updated = append(updated, newTunnel)
+					replaced = true
+				} else {
+					updated = append(updated, t)
+				}
+			}
+			if !replaced {
+				updated = append(updated, newTunnel)
+			}
+			if err := c.requestTunnelUpdate(updated); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"status": "ok", "tunnels": len(updated)})
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
+	// DELETE /api/tunnels/{name} — 移除指定隧道
+	mux.HandleFunc("/api/tunnels/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/api/tunnels/")
+		if name == "" {
+			http.Error(w, `{"error":"tunnel name required"}`, http.StatusBadRequest)
+			return
+		}
+		updated := make([]tunnelConfig, 0, len(c.cfg.Tunnels))
+		found := false
+		for _, t := range c.cfg.Tunnels {
+			if t.Name == name {
+				found = true
+				continue
+			}
+			updated = append(updated, t)
+		}
+		if !found {
+			http.Error(w, fmt.Sprintf(`{"error":"tunnel %q not found"}`, name), http.StatusNotFound)
+			return
+		}
+		if err := c.requestTunnelUpdate(updated); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "tunnels": len(updated)})
+	})
 }
 
 // ===== 配置 =====
@@ -65,12 +143,12 @@ type tunnelConfig struct {
 }
 
 type config struct {
-	ServerAddr string        `json:"server_addr"`
-	Token      string        `json:"token"`
-	NodeID     string        `json:"node_id"`
-	NodeName   string        `json:"node_name"`
-	UseTLS     bool          `json:"tls"`
-	HTTPPort   string        `json:"http_port"` // 内置 HTTP 端口
+	ServerAddr string         `json:"server_addr"`
+	Token      string         `json:"token"`
+	NodeID     string         `json:"node_id"`
+	NodeName   string         `json:"node_name"`
+	UseTLS     bool           `json:"tls"`
+	HTTPPort   string         `json:"http_port"` // 内置 HTTP 端口
 	Tunnels    []tunnelConfig `json:"tunnels"`
 }
 
@@ -96,15 +174,50 @@ func loadConfigFile(path string) (*config, error) {
 
 // ===== 客户端核心 =====
 
+type tunnelUpdateReq struct {
+	tunnels []tunnelConfig
+	resp    chan error
+}
+
 type client struct {
-	cfg     *config
-	session *smux.Session
-	conn    net.Conn
-	mu      sync.Mutex
+	cfg           *config
+	session       *smux.Session
+	conn          net.Conn
+	mu            sync.Mutex
+	tunnelUpdates chan tunnelUpdateReq
 }
 
 func newClient(cfg *config) *client {
-	return &client{cfg: cfg}
+	return &client{
+		cfg:           cfg,
+		tunnelUpdates: make(chan tunnelUpdateReq, 16),
+	}
+}
+
+// requestTunnelUpdate 通过通道请求更新隧道（线程安全）
+func (c *client) requestTunnelUpdate(tunnels []tunnelConfig) error {
+	req := tunnelUpdateReq{
+		tunnels: tunnels,
+		resp:    make(chan error, 1),
+	}
+	select {
+	case c.tunnelUpdates <- req:
+		return <-req.resp
+	default:
+		return fmt.Errorf("tunnel update queue full")
+	}
+}
+
+// processTunnelUpdates 处理隧道更新请求
+func (c *client) processTunnelUpdates(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req := <-c.tunnelUpdates:
+			req.resp <- c.updateTunnels(req.tunnels)
+		}
+	}
 }
 
 // connect 连接、认证、建立 smux 会话
@@ -227,6 +340,68 @@ func (c *client) register() error {
 	return nil
 }
 
+// updateTunnels 向服务端发送 tunnel_update 命令动态更新隧道配置
+func (c *client) updateTunnels(tunnels []tunnelConfig) error {
+	c.mu.Lock()
+	session := c.session
+	c.mu.Unlock()
+	if session == nil || session.IsClosed() {
+		return fmt.Errorf("session not available")
+	}
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		return fmt.Errorf("open update stream: %w", err)
+	}
+	defer stream.Close()
+
+	protoTunnels := make([]protocol.Tunnel, len(tunnels))
+	for i, t := range tunnels {
+		protoTunnels[i] = protocol.Tunnel{
+			Name:       t.Name,
+			Type:       protocol.TunnelType(t.Type),
+			Target:     t.Target,
+			Domain:     t.Domain,
+			ListenPort: t.ListenPort,
+		}
+	}
+
+	cmd := protocol.ControlCmd{
+		Cmd:     "tunnel_update",
+		NodeID:  c.cfg.NodeID,
+		Tunnels: protoTunnels,
+	}
+	data, _ := json.Marshal(cmd)
+	if _, err := stream.Write(data); err != nil {
+		return fmt.Errorf("send tunnel_update: %w", err)
+	}
+
+	buf := make([]byte, 4096)
+	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, err := stream.Read(buf)
+	if err != nil {
+		return fmt.Errorf("read tunnel_update response: %w", err)
+	}
+
+	var resp protocol.ControlResponse
+	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+		return fmt.Errorf("parse tunnel_update response: %w", err)
+	}
+	if resp.Cmd != "ok" {
+		return fmt.Errorf("tunnel_update failed: %s", resp.Msg)
+	}
+
+	// 更新本地配置
+	c.cfg.Tunnels = make([]tunnelConfig, len(tunnels))
+	copy(c.cfg.Tunnels, tunnels)
+
+	log.Printf("Tunnels updated: %d tunnel(s)", len(tunnels))
+	for _, t := range c.cfg.Tunnels {
+		log.Printf("  - %s (%s) → %s domain=%s", t.Name, t.Type, t.Target, t.Domain)
+	}
+	return nil
+}
+
 // heartbeat 心跳循环
 func (c *client) heartbeat(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
@@ -284,12 +459,21 @@ func (c *client) handleStream(stream *smux.Stream) {
 }
 
 func (c *client) handleHTTPStream(stream *smux.Stream, br *bufio.Reader, req *http.Request) {
-	// 查找匹配的隧道目标
+	// 根据 Host 头匹配隧道目标，优先匹配 Domain，再 fallback 到第一个 HTTP 隧道
+	host := strings.TrimSuffix(req.Host, ":80")
 	var target string
 	for _, t := range c.cfg.Tunnels {
-		if t.Type == "http" {
+		if t.Type == "http" && t.Domain != "" && t.Domain == host {
 			target = t.Target
 			break
+		}
+	}
+	if target == "" {
+		for _, t := range c.cfg.Tunnels {
+			if t.Type == "http" {
+				target = t.Target
+				break
+			}
 		}
 	}
 	if target == "" {
@@ -429,6 +613,10 @@ func (c *client) run(ctx context.Context) {
 		hbCtx, hbCancel := context.WithCancel(ctx)
 		go c.heartbeat(hbCtx)
 
+		// 启动隧道更新处理
+		updateCtx, updateCancel := context.WithCancel(ctx)
+		go c.processTunnelUpdates(updateCtx)
+
 		// 接受数据流
 		for {
 			stream, err := c.session.AcceptStream()
@@ -439,6 +627,7 @@ func (c *client) run(ctx context.Context) {
 			go c.handleStream(stream)
 		}
 
+		updateCancel()
 		hbCancel()
 		c.close()
 		log.Printf("Disconnected, reconnecting in 5s...")
@@ -537,18 +726,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 启动内置 HTTP 服务
+	// 启动客户端
+	c := newClient(cfg)
+	go c.run(ctx)
+
+	// 启动内置 HTTP 服务（含隧道管理 API）
 	if cfg.HTTPPort != "off" {
 		go func() {
-			if err := startBuiltinHTTP(cfg.HTTPPort); err != nil {
+			if err := startBuiltinHTTP(cfg.HTTPPort, c); err != nil {
 				log.Fatalf("Built-in HTTP server error: %v", err)
 			}
 		}()
 	}
-
-	// 启动客户端
-	c := newClient(cfg)
-	go c.run(ctx)
 
 	// 等待退出信号
 	sigCh := make(chan os.Signal, 1)
