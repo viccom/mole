@@ -514,16 +514,18 @@ func (c *client) handleHTTPStream(stream *smux.Stream, br *bufio.Reader, req *ht
 }
 
 func (c *client) handleWebSocketProxy(stream *smux.Stream, req *http.Request, target string) {
-	// 将 http/https 转为 ws/wss
-	wsTarget := strings.Replace(target, "http", "ws", 1)
-
 	// 解析目标地址
-	u, err := parseURL(wsTarget)
+	u, err := parseURL(target)
 	if err != nil {
 		return
 	}
 
-	backendConn, err := net.DialTimeout("tcp", u, 10*time.Second)
+	var backendConn net.Conn
+	if strings.HasPrefix(target, "https://") {
+		backendConn, err = tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", u, &tls.Config{InsecureSkipVerify: true})
+	} else {
+		backendConn, err = net.DialTimeout("tcp", u, 10*time.Second)
+	}
 	if err != nil {
 		return
 	}
