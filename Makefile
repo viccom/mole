@@ -2,7 +2,7 @@
 
 # 构建变量
 BINARY_NAME    := moleagent-client
-CMD_PATH       := .
+CMD_PATH       := ./cmd/moleagent-client
 RELEASE_DIR    := ../_release
 
 # 版本信息（从 git tag 获取，无 tag 时用 dev）
