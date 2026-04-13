@@ -440,14 +440,39 @@ func (c *client) heartbeat(ctx context.Context) {
 func (c *client) handleStream(stream *smux.Stream) {
 	defer stream.Close()
 
-	// 根据注册的隧道类型判断如何处理
-	// 尝试作为 HTTP 请求读取
 	bufReader := bufio.NewReader(stream)
 	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 
+	// 先 peek 第一个字节判断数据类型
+	peek, err := bufReader.Peek(1)
+	if err != nil {
+		return
+	}
+
+	// JSON 控制命令（以 { 开头）
+	if peek[0] == '{' {
+		stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err := bufReader.ReadBytes('\n')
+		if err != nil {
+			// 可能没有换行符，尝试读取全部
+			rest, _ := bufReader.ReadBytes(0)
+			line = append(line, rest...)
+		}
+		var cmd struct {
+			Cmd     string          `json:"cmd"`
+			Tunnels []tunnelConfig  `json:"tunnels"`
+		}
+		if json.Unmarshal(line, &cmd) == nil && cmd.Cmd == "tunnel_push" {
+			c.handleTunnelPush(stream, cmd.Tunnels)
+			return
+		}
+		// 不是控制命令，当作原始数据处理（数据会被 bufReader 缓存，继续使用）
+	}
+
+	// 尝试作为 HTTP 请求读取
+	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	req, err := http.ReadRequest(bufReader)
 	if err == nil {
-		// HTTP/WebSocket 请求
 		stream.SetReadDeadline(time.Time{})
 		c.handleHTTPStream(stream, bufReader, req)
 		return
@@ -455,19 +480,73 @@ func (c *client) handleStream(stream *smux.Stream) {
 
 	// 非 HTTP，作为 TCP/UDP 原始数据转发
 	stream.SetReadDeadline(time.Time{})
-	c.handleRawStream(stream)
+	c.handleRawStream(stream, bufReader)
+}
+
+// handleTunnelPush 处理服务端推送的隧道配置更新
+func (c *client) handleTunnelPush(stream *smux.Stream, tunnels []tunnelConfig) {
+	// 更新本地配置
+	c.cfg.Tunnels = make([]tunnelConfig, len(tunnels))
+	copy(c.cfg.Tunnels, tunnels)
+
+	// 转换为 protocol 格式用于 tunnel_update 同步
+	protoTunnels := make([]protocol.Tunnel, len(tunnels))
+	for i, t := range tunnels {
+		protoTunnels[i] = protocol.Tunnel{
+			Name:       t.Name,
+			Type:       protocol.TunnelType(t.Type),
+			Target:     t.Target,
+			Domain:     t.Domain,
+			ListenPort: t.ListenPort,
+		}
+	}
+	_ = protoTunnels
+
+	log.Printf("Received tunnel_push from server: %d tunnel(s)", len(tunnels))
+	for _, t := range c.cfg.Tunnels {
+		log.Printf("  - %s (%s) → %s domain=%s", t.Name, t.Type, t.Target, t.Domain)
+	}
+
+	// 响应成功
+	resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": "tunnels updated"})
+	stream.Write(resp)
 }
 
 func (c *client) handleHTTPStream(stream *smux.Stream, br *bufio.Reader, req *http.Request) {
-	// 根据 Host 头匹配隧道目标，优先匹配 Domain，再 fallback 到第一个 HTTP 隧道
+	// 根据 Host 头匹配隧道目标：
+	// 1. 精确匹配 Domain 字段
+	// 2. 泛域名反解：从 隧道名-节点ID.xxx 格式中提取隧道名匹配
+	// 3. fallback 到第一个 HTTP 隧道
 	host := strings.TrimSuffix(req.Host, ":80")
+	host = strings.TrimSuffix(host, ":443")
 	var target string
+
+	// 精确 Domain 匹配
 	for _, t := range c.cfg.Tunnels {
 		if t.Type == "http" && t.Domain != "" && t.Domain == host {
 			target = t.Target
 			break
 		}
 	}
+
+	// 泛域名反解：subdomain 格式为 隧道名-节点ID
+	if target == "" {
+		if dotIdx := strings.Index(host, "."); dotIdx > 0 {
+			subdomain := host[:dotIdx]
+			parts := strings.SplitN(subdomain, "-", 2)
+			if len(parts) == 2 && parts[1] == c.cfg.NodeID {
+				tunnelName := parts[0]
+				for _, t := range c.cfg.Tunnels {
+					if t.Type == "http" && t.Name == tunnelName {
+						target = t.Target
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// fallback 到第一个 HTTP 隧道
 	if target == "" {
 		for _, t := range c.cfg.Tunnels {
 			if t.Type == "http" {
@@ -556,7 +635,7 @@ func (c *client) handleWebSocketProxy(stream *smux.Stream, req *http.Request, ta
 	<-done
 }
 
-func (c *client) handleRawStream(stream *smux.Stream) {
+func (c *client) handleRawStream(stream *smux.Stream, br *bufio.Reader) {
 	// TCP/UDP 转发：找到第一个 tcp/udp 隧道目标
 	var target string
 	for _, t := range c.cfg.Tunnels {
@@ -579,7 +658,11 @@ func (c *client) handleRawStream(stream *smux.Stream) {
 	done := make(chan struct{}, 2)
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(backendConn, stream)
+		if br != nil && br.Buffered() > 0 {
+			io.Copy(backendConn, br)
+		} else {
+			io.Copy(backendConn, stream)
+		}
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
@@ -694,6 +777,10 @@ func main() {
 	} else if cfg.NodeID == "" {
 		cfg.NodeID = generateNodeID()
 	}
+	// 验证 node_id 格式
+	if !isValidNodeID(cfg.NodeID) {
+		log.Fatalf("Invalid node_id %q: must be exactly 8 alphanumeric characters starting with a letter", cfg.NodeID)
+	}
 	if *nameFlag != "" {
 		cfg.NodeName = *nameFlag
 	} else if cfg.NodeName == "" {
@@ -752,7 +839,33 @@ func main() {
 }
 
 func generateNodeID() string {
-	b := make([]byte, 6)
-	rand.Read(b)
-	return fmt.Sprintf("node-%x", b)
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	const alphanum = "abcdefghijklmnopqrstuvwxyz0123456789"
+	seed := make([]byte, 8)
+	rand.Read(seed)
+	id := make([]byte, 8)
+	id[0] = letters[int(seed[0])%len(letters)]
+	for i := 1; i < 8; i++ {
+		id[i] = alphanum[int(seed[i])%len(alphanum)]
+	}
+	return string(id)
+}
+
+// isValidNodeID 验证节点 ID 格式：固定 8 字符，首字符字母
+func isValidNodeID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for i, r := range id {
+		if i == 0 {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+				return false
+			}
+		} else {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+				return false
+			}
+		}
+	}
+	return true
 }
