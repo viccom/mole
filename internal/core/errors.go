@@ -36,5 +36,6 @@ var (
 	ErrNotFound        = errors.New("not found")
 	ErrConflict        = errors.New("conflict")
 	ErrValidation      = errors.New("validation failed")
+	ErrInvalidNodeID   = errors.New("node_id must be exactly 8 alphanumeric characters starting with a letter")
 	ErrInternal        = errors.New("internal server error")
 )

@@ -12,12 +12,32 @@ import (
 	"net"
 	"runtime"
 	"time"
+	"unicode"
 
 	"github.com/xtaci/smux"
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
 )
+
+// isValidNodeID 验证节点 ID 格式：固定 8 字符，首字符字母，其余字母或数字
+func isValidNodeID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for i, r := range id {
+		if i == 0 {
+			if !unicode.IsLetter(r) {
+				return false
+			}
+		} else {
+			if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 // ControlProtocol 命令类型
 type ControlCmd struct {
@@ -237,6 +257,10 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, ses
 		writeControlResp(stream, "err", "node_id is required")
 		return
 	}
+	if !isValidNodeID(cmd.NodeID) {
+		writeControlResp(stream, "err", "node_id must be exactly 8 alphanumeric characters starting with a letter")
+		return
+	}
 
 	now := time.Now()
 	node := &core.Node{
@@ -307,4 +331,47 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 	}
 
 	writeControlResp(stream, "ok", "tunnels updated")
+}
+
+// PushTunnelUpdate 通过 smux 会话向指定节点推送隧道配置更新
+func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
+	n, ok := cs.nodeMgr.Get(ctx, nodeID)
+	if !ok {
+		return core.ErrNodeNotFound
+	}
+	if n.Session == nil || n.Session.IsClosed() {
+		return core.ErrNodeOffline
+	}
+
+	stream, err := n.Session.OpenStream()
+	if err != nil {
+		return fmt.Errorf("open push stream: %w", err)
+	}
+	defer stream.Close()
+
+	cmd := ControlCmd{
+		Cmd:     "tunnel_push",
+		Tunnels: tunnels,
+	}
+	data, _ := json.Marshal(cmd)
+	if _, err := stream.Write(data); err != nil {
+		return fmt.Errorf("send tunnel_push: %w", err)
+	}
+
+	buf := make([]byte, 4096)
+	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+	nr, err := stream.Read(buf)
+	if err != nil {
+		return fmt.Errorf("read tunnel_push response: %w", err)
+	}
+
+	var resp ControlResponse
+	if err := json.Unmarshal(buf[:nr], &resp); err != nil {
+		return fmt.Errorf("parse tunnel_push response: %w", err)
+	}
+	if resp.Cmd != "ok" {
+		return fmt.Errorf("tunnel_push rejected: %s", resp.Msg)
+	}
+
+	return nil
 }
