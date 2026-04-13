@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -185,8 +187,15 @@ func applyEnvOverrides(cfg *Config) {
 }
 
 func (c *Config) validate() error {
+	// jwt_secret 未设置时自动生成并警告
 	if c.Auth.JWTSecret == "" {
-		return fmt.Errorf("auth.jwt_secret is required (set via yaml or MA_JWT_SECRET env)")
+		secret, err := generateRandomSecret(32)
+		if err != nil {
+			return fmt.Errorf("failed to auto-generate jwt_secret: %w", err)
+		}
+		c.Auth.JWTSecret = secret
+		fmt.Fprintf(os.Stderr, "[WARN] jwt_secret not configured, auto-generated for this session.\n")
+		fmt.Fprintf(os.Stderr, "       For production, set it in config yaml or MA_JWT_SECRET env.\n")
 	}
 	if len(c.Auth.JWTSecret) < 16 {
 		return fmt.Errorf("auth.jwt_secret must be at least 16 characters")
@@ -229,4 +238,13 @@ func AdminUser() (username, password string) {
 		p = "admin"
 	}
 	return u, p
+}
+
+// generateRandomSecret 生成指定字节数的随机十六进制字符串
+func generateRandomSecret(nBytes int) (string, error) {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

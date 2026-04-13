@@ -28,11 +28,14 @@ func TestDefaultConfig(t *testing.T) {
 func TestConfigValidation(t *testing.T) {
 	cfg := DefaultConfig()
 
-	// 空 secret 应该失败
+	// 空 secret 应该自动生成
 	cfg.Auth.JWTSecret = ""
 	err := cfg.validate()
-	if err == nil {
-		t.Error("should fail with empty jwt_secret")
+	if err != nil {
+		t.Errorf("should auto-generate for empty jwt_secret, got %v", err)
+	}
+	if len(cfg.Auth.JWTSecret) < 16 {
+		t.Errorf("auto-generated secret too short: %d chars", len(cfg.Auth.JWTSecret))
 	}
 
 	// 太短的 secret 应该失败
