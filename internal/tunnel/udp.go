@@ -105,9 +105,14 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				slog.Debug("No node for UDP tunnel", "tunnel", tunnel.Name)
 				continue
 			}
-			stream, err := node.Session.OpenStream()
-			if err != nil {
-				slog.Error("Failed to open smux stream for UDP", "tunnel", tunnel.Name, "error", err)
+			session, err := tg.nodeMgr.GetSession(ctx, node.ID)
+				if err != nil {
+					slog.Error("Failed to get session for UDP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
+					continue
+				}
+				stream, err := session.OpenStream()
+				if err != nil {
+					slog.Error("Failed to open smux stream for UDP", "tunnel", tunnel.Name, "error", err)
 				continue
 			}
 

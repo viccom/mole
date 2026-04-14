@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/nalgeon/redka"
@@ -72,7 +73,9 @@ func (re *RBACEngine) AssignRole(userID, roleID string) error {
 	val, err := re.db.Hash().Get("user_roles", userID)
 	var roleIDs []string
 	if err == nil && val.String() != "" {
-		json.Unmarshal([]byte(val.String()), &roleIDs)
+		if err := json.Unmarshal([]byte(val.String()), &roleIDs); err != nil {
+			return fmt.Errorf("parse user roles for assign: %w", err)
+		}
 	}
 
 	// 检查是否已分配
@@ -83,7 +86,10 @@ func (re *RBACEngine) AssignRole(userID, roleID string) error {
 	}
 
 	roleIDs = append(roleIDs, roleID)
-	data, _ := json.Marshal(roleIDs)
+	data, err := json.Marshal(roleIDs)
+	if err != nil {
+		return fmt.Errorf("marshal role IDs: %w", err)
+	}
 	_, err = re.db.Hash().Set("user_roles", userID, string(data))
 	return err
 }
@@ -107,7 +113,10 @@ func (re *RBACEngine) RevokeRole(userID, roleID string) error {
 		}
 	}
 
-	data, _ := json.Marshal(newIDs)
+	data, err := json.Marshal(newIDs)
+	if err != nil {
+		return fmt.Errorf("marshal role IDs for revoke: %w", err)
+	}
 	_, err = re.db.Hash().Set("user_roles", userID, string(data))
 	return err
 }

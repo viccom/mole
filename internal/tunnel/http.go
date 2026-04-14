@@ -66,17 +66,6 @@ func parsePathRoute(path string) (clientId, mappingName string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// buildVirtualHostPath 构建泛域名访问的路径
-func buildVirtualHostPath(originalPath, mappingName string) string {
-	if originalPath == "/" {
-		return "/" + mappingName + "/"
-	}
-	if strings.HasPrefix(originalPath, "/") {
-		return "/" + mappingName + originalPath
-	}
-	return "/" + mappingName + "/" + originalPath
-}
-
 // buildPathRoutePath 构建路径访问的路径
 func buildPathRoutePath(originalPath string) string {
 	parts := strings.Split(strings.Trim(originalPath, "/"), "/")
@@ -217,7 +206,13 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
-	stream, err := node.Session.OpenStream()
+	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
+	if err != nil {
+		slog.Error("Failed to get session for HTTP", "tunnel", tunnelName, "nodeId", node.ID, "error", err)
+		http.Error(w, "Upstream error", http.StatusBadGateway)
+		return
+	}
+	stream, err := session.OpenStream()
 	if err != nil {
 		slog.Error("Failed to open stream for HTTP", "tunnel", tunnelName, "error", err)
 		http.Error(w, "Upstream error", http.StatusBadGateway)
@@ -250,11 +245,19 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		w.Header()[key] = values
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		slog.Debug("HTTP proxy body copy error", "tunnel", tunnelName, "error", err)
+	}
 }
 
 func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
-	stream, err := node.Session.OpenStream()
+	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
+	if err != nil {
+		slog.Error("Failed to get session for WS", "tunnel", tunnelName, "nodeId", node.ID, "error", err)
+		http.Error(w, "Upstream error", http.StatusBadGateway)
+		return
+	}
+	stream, err := session.OpenStream()
 	if err != nil {
 		slog.Error("Failed to open stream for WS", "tunnel", tunnelName, "error", err)
 		http.Error(w, "Upstream error", http.StatusBadGateway)
@@ -280,7 +283,9 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 			w.Header()[key] = values
 		}
 		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		if _, err := io.Copy(w, resp.Body); err != nil {
+				slog.Debug("WS fallback body copy error", "tunnel", tunnelName, "error", err)
+			}
 		return
 	}
 

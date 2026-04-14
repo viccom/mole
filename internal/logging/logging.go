@@ -12,8 +12,6 @@ import (
 	"moleAgent_Serv/internal/config"
 )
 
-type ctxKey struct{}
-
 // Init 初始化日志系统，返回 *slog.Logger
 func Init(cfg config.LoggingConfig) *slog.Logger {
 	level := parseLevel(cfg.Level)
@@ -57,19 +55,6 @@ func Init(cfg config.LoggingConfig) *slog.Logger {
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 	return logger
-}
-
-// WithContext 将 logger 存入 context
-func WithContext(ctx context.Context, logger *slog.Logger) context.Context {
-	return context.WithValue(ctx, ctxKey{}, logger)
-}
-
-// FromContext 从 context 获取 logger，没有则返回默认
-func FromContext(ctx context.Context) *slog.Logger {
-	if logger, ok := ctx.Value(ctxKey{}).(*slog.Logger); ok {
-		return logger
-	}
-	return slog.Default()
 }
 
 func parseLevel(s string) slog.Level {

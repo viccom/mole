@@ -204,7 +204,19 @@ func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 	return allowed
 }
 
-// GetSubscriptionsInfo returns subscription info
+// GetSubscriptionsInfo returns subscription info for all connected clients
 func GetSubscriptionsInfo(server *mqtt.Server) []map[string]any {
-	return []map[string]any{}
+	clients := server.Clients.GetAll()
+	var result []map[string]any
+	for _, cl := range clients {
+		subs := cl.State.Subscriptions.GetAll()
+		for filter, sub := range subs {
+			result = append(result, map[string]any{
+				"client_id": cl.ID,
+				"topic":     filter,
+				"qos":       sub.Qos,
+			})
+		}
+	}
+	return result
 }

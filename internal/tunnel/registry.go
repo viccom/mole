@@ -6,6 +6,8 @@ import (
 	"net"
 	"sync"
 
+	"github.com/xtaci/smux"
+
 	"moleAgent_Serv/internal/core"
 )
 
@@ -93,15 +95,16 @@ func (s *Semaphore) Release() {
 	<-s.ch
 }
 
-// NodeManager 节点管理器接口（由 tunnel 包定义，解耦具体实现）
-type NodeManager interface {
+// NodeProvider 节点只读查询接口（由 tunnel 包定义，解耦具体实现）
+type NodeProvider interface {
 	Get(ctx context.Context, nodeID string) (*core.Node, bool)
 	GetAll(ctx context.Context) []*core.Node
+	GetSession(ctx context.Context, nodeID string) (*smux.Session, error)
 }
 
 // TunnelGateway 隧道网关
 type TunnelGateway struct {
-	nodeMgr  NodeManager
+	nodeMgr  NodeProvider
 	registry *ListenerRegistry
 	sem      *Semaphore
 
@@ -122,7 +125,7 @@ type tunnelRoute struct {
 	nodeID string
 }
 
-func NewTunnelGateway(nodeMgr NodeManager, maxConcurrent int) *TunnelGateway {
+func NewTunnelGateway(nodeMgr NodeProvider, maxConcurrent int) *TunnelGateway {
 	return &TunnelGateway{
 		nodeMgr:   nodeMgr,
 		registry:  NewListenerRegistry(),

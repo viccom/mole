@@ -153,13 +153,6 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MA_JWT_SECRET"); v != "" {
 		cfg.Auth.JWTSecret = v
 	}
-	if v := os.Getenv("MA_ADMIN_USER"); v != "" {
-		// 种子数据使用，不在 config 结构中存储
-		_ = v
-	}
-	if v := os.Getenv("MA_ADMIN_PASS"); v != "" {
-		_ = v
-	}
 	if v := os.Getenv("MA_DB_PATH"); v != "" {
 		cfg.Database.Path = v
 	}

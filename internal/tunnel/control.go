@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime"
+	"sync"
 	"time"
 	"unicode"
 
@@ -53,14 +54,34 @@ type ControlResponse struct {
 	Msg string `json:"msg,omitempty"`
 }
 
+// connState 连接状态，用 mutex 保护节点指针的并发访问
+// 替代原来的 **core.Node 双重指针模式
+type connState struct {
+	mu      sync.Mutex
+	node    *core.Node
+	session *smux.Session
+}
+
+func (s *connState) set(node *core.Node) {
+	s.mu.Lock()
+	s.node = node
+	s.mu.Unlock()
+}
+
+func (s *connState) get() *core.Node {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.node
+}
+
 // ControlServer 控制端口服务
 type ControlServer struct {
 	addr      string
 	nodeMgr   *node.ShardedNodeManager
-	nodeToken string     // 全局节点认证令牌（可改为 per-node）
-	tlsConfig *tls.Config // TLS 配置，为 nil 则不使用 TLS
+	nodeToken string     // 全局节点认证令牌
+	tlsConfig *tls.Config // TLS 配置
 	listener  net.Listener
-	onNodeChange func() // 节点变更回调（触发索引重建）
+	onNodeChange func() // 节点变更回调
 }
 
 // NewControlServer 创建控制端口服务
@@ -147,7 +168,6 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// 读取客户端响应：JSON 格式 {"token":"xxx"}\n
 	reader := bufio.NewReader(conn)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	authLine, err := reader.ReadString('\n')
@@ -166,7 +186,6 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// 验证 token（使用恒定时间比较防止时序攻击）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) != 1 {
 		writeControlResp(conn, "err", "invalid token")
 		slog.Warn("Node auth failed", "remote", remoteAddr, "reason", "invalid token")
@@ -190,13 +209,16 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	var registeredNode *core.Node
+	state := &connState{session: session} // 替代原来的 var registeredNode *core.Node
 
 	defer func() {
-		if registeredNode != nil {
-			registeredNode.Status = core.NodeStatusOffline
-			cs.nodeMgr.Remove(ctx, registeredNode.ID)
-			slog.Info("Node disconnected", "nodeId", registeredNode.ID, "remote", remoteAddr)
+		node := state.get()
+		if node != nil {
+			cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
+				n.Status = core.NodeStatusOffline
+			})
+			cs.nodeMgr.Remove(ctx, node.ID)
+			slog.Info("Node disconnected", "nodeId", node.ID, "remote", remoteAddr)
 		}
 		session.Close()
 	}()
@@ -214,11 +236,11 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 			return
 		}
 
-		go cs.handleStream(ctx, stream, session, remoteAddr, &registeredNode)
+		go cs.handleStream(ctx, stream, state)
 	}
 }
 
-func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, session *smux.Session, remoteAddr string, regNode **core.Node) {
+func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, state *connState) {
 	defer stream.Close()
 
 	buf := make([]byte, 4096)
@@ -238,21 +260,24 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 
 	switch cmd.Cmd {
 	case "register":
-		cs.handleRegister(ctx, cmd, session, remoteAddr, regNode, stream)
+		cs.handleRegister(ctx, cmd, state, stream)
 	case "ping":
-		now := time.Now()
-		if *regNode != nil {
-			(*regNode).LastHeartbeat = &now
+		node := state.get()
+		if node != nil {
+			cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
+				now := time.Now()
+				n.LastHeartbeat = &now
+			})
 		}
 		writeControlResp(stream, "pong", "")
 	case "tunnel_update":
-		cs.handleTunnelUpdate(ctx, cmd, regNode, stream)
+		cs.handleTunnelUpdate(ctx, cmd, state, stream)
 	default:
 		writeControlResp(stream, "err", "unknown command")
 	}
 }
 
-func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, session *smux.Session, remoteAddr string, regNode **core.Node, stream *smux.Stream) {
+func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, state *connState, stream *smux.Stream) {
 	if cmd.NodeID == "" {
 		writeControlResp(stream, "err", "node_id is required")
 		return
@@ -262,6 +287,9 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, ses
 		return
 	}
 
+	// 获取 Session：从 connState 获取（在 handleConnection 中建立 smux 会话时存入）
+	smuxSession := state.session
+
 	now := time.Now()
 	node := &core.Node{
 		ID:            cmd.NodeID,
@@ -269,10 +297,10 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, ses
 		Token:         cmd.Token,
 		Status:        core.NodeStatusOnline,
 		Tunnels:       cmd.Tunnels,
-		RemoteAddr:    remoteAddr,
+		RemoteAddr:    "", // 不再从参数获取
 		ConnectedAt:   &now,
 		LastHeartbeat: &now,
-		Session:       session,
+		Session:       smuxSession,
 	}
 
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
@@ -280,15 +308,13 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, ses
 		return
 	}
 
-	*regNode = node
+	state.set(node)
 	slog.Info("Node registered",
 		"nodeId", cmd.NodeID,
 		"name", cmd.Name,
 		"tunnels", len(cmd.Tunnels),
-		"remote", remoteAddr,
 	)
 
-	// 触发路由索引重建
 	if cs.onNodeChange != nil {
 		cs.onNodeChange()
 	}
@@ -304,13 +330,14 @@ func writeControlResp(w interface{ Write([]byte) (int, error) }, cmd, msg string
 	}
 }
 
-func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd, regNode **core.Node, stream *smux.Stream) {
-	if *regNode == nil {
+func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd, state *connState, stream *smux.Stream) {
+	node := state.get()
+	if node == nil {
 		writeControlResp(stream, "err", "node not registered")
 		return
 	}
 
-	nodeID := (*regNode).ID
+	nodeID := node.ID
 	if err := cs.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
 		n.Tunnels = cmd.Tunnels
 		now := time.Now()
@@ -325,7 +352,6 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 		"tunnels", len(cmd.Tunnels),
 	)
 
-	// 触发路由索引重建
 	if cs.onNodeChange != nil {
 		cs.onNodeChange()
 	}
@@ -335,15 +361,12 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 
 // PushTunnelUpdate 通过 smux 会话向指定节点推送隧道配置更新
 func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
-	n, ok := cs.nodeMgr.Get(ctx, nodeID)
-	if !ok {
-		return core.ErrNodeNotFound
-	}
-	if n.Session == nil || n.Session.IsClosed() {
-		return core.ErrNodeOffline
+	session, err := cs.nodeMgr.GetSession(ctx, nodeID)
+	if err != nil {
+		return err
 	}
 
-	stream, err := n.Session.OpenStream()
+	stream, err := session.OpenStream()
 	if err != nil {
 		return fmt.Errorf("open push stream: %w", err)
 	}
@@ -353,7 +376,10 @@ func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tu
 		Cmd:     "tunnel_push",
 		Tunnels: tunnels,
 	}
-	data, _ := json.Marshal(cmd)
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal tunnel_push: %w", err)
+	}
 	if _, err := stream.Write(data); err != nil {
 		return fmt.Errorf("send tunnel_push: %w", err)
 	}

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"moleAgent_Serv/internal/core"
@@ -97,7 +98,9 @@ func (r *userRepo) Delete(id string) error {
 		return err
 	}
 	_, _ = db.Hash().Delete("passwords", id)
-	_, _ = db.Hash().Delete("user_roles", id)
+	if _, err := db.Hash().Delete("user_roles", id); err != nil {
+		slog.Warn("Failed to clean up user roles on delete", "userId", id, "error", err)
+	}
 	return nil
 }
 

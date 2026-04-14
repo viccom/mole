@@ -91,25 +91,6 @@ func TestParsePathRoute(t *testing.T) {
 	}
 }
 
-func TestBuildVirtualHostPath(t *testing.T) {
-	tests := []struct {
-		original string
-		mapping  string
-		want     string
-	}{
-		{"/", "api", "/api/"},
-		{"/v1/sysinfo", "api", "/api/v1/sysinfo"},
-		{"static", "web", "/web/static"},
-	}
-
-	for _, tt := range tests {
-		got := buildVirtualHostPath(tt.original, tt.mapping)
-		if got != tt.want {
-			t.Errorf("buildVirtualHostPath(%q, %q) = %q, want %q", tt.original, tt.mapping, got, tt.want)
-		}
-	}
-}
-
 func TestBuildPathRoutePath(t *testing.T) {
 	tests := []struct {
 		original string

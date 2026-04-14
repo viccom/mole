@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"moleAgent_Serv/internal/core"
+
+	"github.com/xtaci/smux"
 )
 
 const defaultShardCount = 256
@@ -118,4 +120,23 @@ func (m *ShardedNodeManager) Disconnect(_ context.Context, nodeID string) error 
 	node.Status = core.NodeStatusOffline
 	delete(shard.clients, nodeID)
 	return nil
+}
+
+// GetSession 在分片锁保护下获取节点的 smux Session
+// 用于安全地访问 Session，避免与 Disconnect 的竞态
+func (m *ShardedNodeManager) GetSession(_ context.Context, nodeID string) (*smux.Session, error) {
+	shard := m.getShard(nodeID)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+	node, ok := shard.clients[nodeID]
+	if !ok {
+		return nil, core.ErrNodeNotFound
+	}
+	if node.Status != core.NodeStatusOnline {
+		return nil, core.ErrNodeOffline
+	}
+	if node.Session == nil || node.Session.IsClosed() {
+		return nil, core.ErrNodeOffline
+	}
+	return node.Session, nil
 }

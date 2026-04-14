@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -74,7 +75,10 @@ func seedData() error {
 				{Resource: "*", Action: "*"},
 			},
 		}
-		data, _ := json.Marshal(adminRole)
+		data, err := json.Marshal(adminRole)
+		if err != nil {
+			return fmt.Errorf("marshal admin role: %w", err)
+		}
 		if _, err := db.Hash().Set("roles", "admin", string(data)); err != nil {
 			return err
 		}
@@ -100,7 +104,10 @@ func seedData() error {
 				{Resource: "system", Action: "read"},
 			},
 		}
-		data, _ := json.Marshal(operatorRole)
+		data, err := json.Marshal(operatorRole)
+		if err != nil {
+			return fmt.Errorf("marshal operator role: %w", err)
+		}
 		if _, err := db.Hash().Set("roles", "operator", string(data)); err != nil {
 			return err
 		}
@@ -121,7 +128,10 @@ func seedData() error {
 			CreatedAt: time.Now().UTC(),
 			UpdatedAt: time.Now().UTC(),
 		}
-		userData, _ := json.Marshal(user)
+		userData, err := json.Marshal(user)
+		if err != nil {
+			return fmt.Errorf("marshal admin user: %w", err)
+		}
 		if _, err := db.Hash().Set("users", adminUser, string(userData)); err != nil {
 			return err
 		}

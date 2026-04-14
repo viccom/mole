@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"moleAgent_Serv/internal/auth"
@@ -270,18 +269,3 @@ func (h *UserHandler) revokeRole(w http.ResponseWriter, r *http.Request, userID,
 	ResponseOK(w, "role revoked")
 }
 
-// Pagination helpers
-func parsePagination(r *http.Request) (page, perPage int) {
-	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	perPage, _ = strconv.Atoi(r.URL.Query().Get("per_page"))
-	if perPage < 1 {
-		perPage = 20
-	}
-	if perPage > 100 {
-		perPage = 100
-	}
-	return
-}

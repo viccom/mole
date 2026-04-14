@@ -54,6 +54,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Logout 处理登出请求
+// 由于使用无状态 JWT，服务端不维护 session，token 在过期前仍然有效。
+// 客户端应自行删除本地存储的 token。
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	ResponseOK(w, "logged out")
 }
