@@ -61,7 +61,7 @@ func (c *Config) ApplyDefaults() {
 		c.Token = "default-node-token-change-me"
 	}
 	if c.NodeID == "" {
-		c.NodeID = GenerateNodeID()
+		c.NodeID = DefaultNodeID()
 	}
 	if c.NodeName == "" {
 		c.NodeName = c.NodeID

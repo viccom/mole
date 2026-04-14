@@ -47,17 +47,6 @@ func New(cfg *Config) (*Client, error) {
 		return nil, err
 	}
 
-	// 自动生成默认隧道
-	if len(cfg.Tunnels) == 0 && cfg.BuiltinHTTP != "off" {
-		cfg.Tunnels = []Tunnel{
-			{
-				Name:   "web",
-				Type:   TunnelTypeHTTP,
-				Target: "http://" + cfg.BuiltinHTTP,
-			},
-		}
-	}
-
 	tlsCfg := &transport.TLSConfig{Enabled: cfg.UseTLS}
 	dial := transport.DefaultDialer(tlsCfg)
 
@@ -160,8 +149,11 @@ func (c *Client) Tunnels() []Tunnel {
 	return result
 }
 
-// AddTunnel 添加隧道并同步到服务端
+// AddTunnel 添加隧道并同步到服务端（需要已连接服务端）
 func (c *Client) AddTunnel(t Tunnel) error {
+	if !c.Connected() {
+		return fmt.Errorf("not connected to server, tunnel operations require active connection")
+	}
 	if err := t.Validate(); err != nil {
 		return err
 	}
@@ -185,8 +177,11 @@ func (c *Client) AddTunnel(t Tunnel) error {
 	return c.requestTunnelUpdate(updated)
 }
 
-// RemoveTunnel 移除隧道并同步到服务端
+// RemoveTunnel 移除隧道并同步到服务端（需要已连接服务端）
 func (c *Client) RemoveTunnel(name string) error {
+	if !c.Connected() {
+		return fmt.Errorf("not connected to server, tunnel operations require active connection")
+	}
 	c.mu.Lock()
 	updated := make([]Tunnel, 0, len(c.tunnels))
 	found := false

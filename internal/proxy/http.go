@@ -25,8 +25,25 @@ type TunnelLookup struct {
 }
 
 // HandleHTTPStream 处理从 smux stream 接收到的 HTTP 请求
+// 服务端虚拟域名路由会将路径重写为 /mappingName/real/path，客户端需要：
+// 1. 通过路径第一段识别隧道目标
+// 2. 剥掉 mappingName 前缀后转发给本地后端
 func HandleHTTPStream(stream io.ReadWriteCloser, br *bufio.Reader, req *http.Request, lookup *TunnelLookup) {
-	target := matchHTTPTunnel(req.Host, lookup.NodeID, lookup.Targets())
+	target := ""
+	// 尝试从路径第一段匹配隧道名
+	pathParts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
+	if len(pathParts) > 0 && pathParts[0] != "" {
+		if t, ok := lookup.Targets()[pathParts[0]]; ok {
+			target = t
+			// 剥掉 mappingName 前缀
+			req.URL.Path = "/" + strings.Join(pathParts[1:], "/")
+
+		}
+	}
+	// fallback: 通过 Host 头匹配
+	if target == "" {
+		target = matchHTTPTunnel(req.Host, lookup.NodeID, lookup.Targets())
+	}
 	if target == "" {
 		writeHTTPError(stream, http.StatusBadGateway, "no tunnel matched")
 		return
@@ -70,26 +87,37 @@ func handleHTTP(stream io.Writer, req *http.Request, target string) {
 }
 
 func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target string) {
-	targetAddr, err := parseHost(target)
+	targetURL, err := url.Parse(target)
 	if err != nil {
 		log.Printf("WebSocket parse target URL failed: %v", err)
 		return
 	}
 
+	// 构建 WebSocket URL：将 http/https 转为 ws/wss
+	wsScheme := "ws"
+	if targetURL.Scheme == "https" {
+		wsScheme = "wss"
+	}
+
 	var backendConn net.Conn
-	if strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "wss://") {
+	if wsScheme == "wss" {
 		backendConn, err = tls.DialWithDialer(
-			&net.Dialer{Timeout: backendDialTimeout}, "tcp", targetAddr,
+			&net.Dialer{Timeout: backendDialTimeout}, "tcp", targetURL.Host,
 			&tls.Config{InsecureSkipVerify: true},
 		)
 	} else {
-		backendConn, err = net.DialTimeout("tcp", targetAddr, backendDialTimeout)
+		backendConn, err = net.DialTimeout("tcp", targetURL.Host, backendDialTimeout)
 	}
 	if err != nil {
-		log.Printf("WebSocket dial backend %s failed: %v", targetAddr, err)
+		log.Printf("WebSocket dial backend %s failed: %v", targetURL.Host, err)
 		return
 	}
 	defer backendConn.Close()
+
+	// 修改请求：使用后端地址，路径已由 HandleHTTPStream 剥掉了 mappingName 前缀
+	req.URL.Scheme = wsScheme
+	req.URL.Host = targetURL.Host
+	req.RequestURI = ""
 
 	// 转发升级请求
 	if err := req.Write(backendConn); err != nil {
@@ -200,3 +228,4 @@ func parseHost(rawURL string) (string, error) {
 	}
 	return u.Host, nil
 }
+

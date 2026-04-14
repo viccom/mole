@@ -30,12 +30,22 @@ internal/
 
 ## 架构要点
 
-**数据流**：`Client.Run()` 连接服务端 → 认证(challenge-response) → 建立 smux 会话 → 注册节点 → 心跳循环 + 接受数据流。
+**节点 ID**：默认基于 CPU 信息（VendorID+ModelName SHA256 哈希）生成确定性 8 字符 ID，首字符字母。无法获取硬件信息时 fallback 到随机生成。可通过配置或 `-id` 参数自定义。
+
+**数据流**：`Client.Run()` 连接服务端 → 认证(challenge-response) → 建立 smux 会话 → 注册节点(空隧道) → 服务端推送持久化隧道 → 心跳循环 + 接受数据流。
+
+**隧道持久化**：服务端是隧道配置的唯一持久化来源。客户端启动不携带隧道，连接后由服务端通过 `tunnel_push` 推送。隧道变更（增删改）实时同步并持久化到服务端 NodeRepo（Redka/SQLite）。
 
 **流分发**（dispatchStream）：客户端 AcceptStream 后启发式判断类型：
 - 首字节 `{` 且 JSON 含 `cmd:"tunnel_push"` → 服务端推送，更新本地隧道配置
 - 可解析为 HTTP 请求 → HTTP/WebSocket 代理
 - 其他 → TCP/UDP 原始转发
+
+**CLI 子命令**：`-tunnels` 子命令向已运行的客户端 HTTP API 发送请求：
+- `-tunnels --list` 列出隧道
+- `-tunnels --add name:type:target` 添加隧道
+- `-tunnels --del name` 删除隧道
+- `-tunnels --addr 127.0.0.1:18080` 指定 API 地址
 
 **并发安全**：
 - `tunnels` 切片由 `sync.RWMutex` 保护
@@ -51,6 +61,8 @@ internal/
 - 节点 ID 固定 8 字符，首字符字母，其余字母或数字
 - HTTP 隧道 Target 必须以 `http://` 或 `https://` 开头
 - `BuiltinHTTP = "off"` 时关闭内置 HTTP 服务（库集成模式应设为 off）
+- AddTunnel/RemoveTunnel 需要已连接服务端，未连接时返回错误
+- 隧道配置由服务端持久化，客户端启动时不携带隧道配置
 
 ## 构建与运行
 
