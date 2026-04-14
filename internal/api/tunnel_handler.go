@@ -64,6 +64,7 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	tcpCount := 0
 	udpCount := 0
 	httpCount := 0
+	httpsCount := 0
 
 	for _, n := range nodes {
 		totalTunnels += len(n.Tunnels)
@@ -78,6 +79,8 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 				udpCount++
 			case core.TunnelTypeHTTP:
 				httpCount++
+			case core.TunnelTypeHTTPS:
+				httpsCount++
 			}
 		}
 	}
@@ -88,6 +91,7 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		"tcp_tunnels":    tcpCount,
 		"udp_tunnels":    udpCount,
 		"http_tunnels":   httpCount,
+		"https_tunnels":  httpsCount,
 	})
 }
 
@@ -111,8 +115,8 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tunnelType := core.TunnelType(req.Type)
-	if tunnelType != core.TunnelTypeTCP && tunnelType != core.TunnelTypeUDP && tunnelType != core.TunnelTypeHTTP {
-		ResponseError(w, http.StatusBadRequest, 400, "type must be tcp, udp, or http")
+	if tunnelType != core.TunnelTypeHTTP && tunnelType != core.TunnelTypeHTTPS && tunnelType != core.TunnelTypeTCP && tunnelType != core.TunnelTypeUDP {
+		ResponseError(w, http.StatusBadRequest, 400, "type must be http, https, tcp, or udp")
 		return
 	}
 
@@ -133,6 +137,10 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == core.ErrNodeNotFound {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
+			return
+		}
+		if err == core.ErrTunnelInvalid {
+			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
 		ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel: "+err.Error())

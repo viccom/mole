@@ -32,16 +32,17 @@ type Node struct {
 type TunnelType string
 
 const (
-	TunnelTypeHTTP TunnelType = "http"
-	TunnelTypeTCP  TunnelType = "tcp"
-	TunnelTypeUDP  TunnelType = "udp"
+	TunnelTypeHTTP  TunnelType = "http"
+	TunnelTypeHTTPS TunnelType = "https"
+	TunnelTypeTCP   TunnelType = "tcp"
+	TunnelTypeUDP   TunnelType = "udp"
 )
 
 // Tunnel 隧道配置
 type Tunnel struct {
 	Name       string     `json:"name"`
 	Type       TunnelType `json:"type"`
-	Target     string     `json:"target"`                // 后端地址，如 http://127.0.0.1:8080 或 127.0.0.1:3306
+	Target     string     `json:"target"`                // 后端地址，host:port 格式（如 127.0.0.1:8080）
 	Domain     string     `json:"domain,omitempty"`      // HTTP 隧道的域名
 	ListenPort int        `json:"listen_port,omitempty"` // TCP/UDP 隧道的监听端口
 }

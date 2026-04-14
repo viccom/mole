@@ -140,6 +140,10 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 				ResponseError(w, http.StatusNotFound, 404, "Node not found")
 				return
 			}
+			if err == core.ErrTunnelInvalid {
+				ResponseError(w, http.StatusBadRequest, 400, err.Error())
+				return
+			}
 			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node tunnels: "+err.Error())
 			return
 		}

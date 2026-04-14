@@ -31,6 +31,7 @@ var (
 	ErrTunnelNotFound  = errors.New("tunnel not found")
 	ErrTunnelExists    = errors.New("tunnel already exists")
 	ErrPortInUse       = errors.New("port already in use")
+	ErrTunnelInvalid   = errors.New("invalid tunnel configuration")
 
 	// 通用错误
 	ErrNotFound        = errors.New("not found")

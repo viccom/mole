@@ -151,6 +151,29 @@ func seedData() error {
 		db.Hash().Set("usernames", adminUser, adminUser)
 	}
 
+	// 迁移：为已有用户建立 username → userID 索引（幂等，仅补缺失的）
+	items, err := db.Hash().Items("users")
+	if err != nil {
+		return fmt.Errorf("migrate usernames index: %w", err)
+	}
+	for key, val := range items {
+		var user core.User
+		if err := json.Unmarshal([]byte(val.String()), &user); err != nil {
+			continue
+		}
+		if user.Username == "" {
+			continue
+		}
+		exists, _ := db.Hash().Exists("usernames", user.Username)
+		if !exists {
+			if _, err := db.Hash().Set("usernames", user.Username, key); err != nil {
+				slog.Warn("Failed to migrate username index", "username", user.Username, "error", err)
+			} else {
+				slog.Info("Migrated username index", "username", user.Username, "userID", key)
+			}
+		}
+	}
+
 	return nil
 }
 

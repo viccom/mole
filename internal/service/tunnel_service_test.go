@@ -84,14 +84,14 @@ func TestApplyTunnel_PushFailureDoesNotFlipRuntime(t *testing.T) {
 		Name:   "Node0001",
 		Status: core.NodeStatusOnline,
 		Tunnels: []core.Tunnel{
-			{Name: "old", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8080"},
+			{Name: "old", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8080"},
 		},
 	}
 	if err := nodeMgr.Add(ctx, online); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
 
-	newTunnel := core.Tunnel{Name: "new", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:9090"}
+	newTunnel := core.Tunnel{Name: "new", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:9090"}
 	result, err := svc.ApplyTunnel(ctx, online.ID, newTunnel)
 	if err != nil {
 		t.Fatalf("ApplyTunnel returned unexpected error: %v", err)
@@ -142,7 +142,7 @@ func TestApplyTunnel_SuccessUpdatesRuntimeAndPersistence(t *testing.T) {
 		t.Fatalf("Add failed: %v", err)
 	}
 
-	tunnelCfg := core.Tunnel{Name: "api", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8081"}
+	tunnelCfg := core.Tunnel{Name: "api", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8081"}
 	result, err := svc.ApplyTunnel(ctx, n.ID, tunnelCfg)
 	if err != nil {
 		t.Fatalf("ApplyTunnel failed: %v", err)
@@ -180,7 +180,7 @@ func TestLoadPersisted_PushFailureKeepsRuntimeState(t *testing.T) {
 		Name:   "Node0003",
 		Status: core.NodeStatusOnline,
 		Tunnels: []core.Tunnel{
-			{Name: "runtime", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8000"},
+			{Name: "runtime", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8000"},
 		},
 	}); err != nil {
 		t.Fatalf("Add failed: %v", err)
@@ -190,7 +190,7 @@ func TestLoadPersisted_PushFailureKeepsRuntimeState(t *testing.T) {
 		Name:   "Node0003",
 		Status: core.NodeStatusOnline,
 		Tunnels: []core.Tunnel{
-			{Name: "persisted", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:9000"},
+			{Name: "persisted", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:9000"},
 		},
 	}); err != nil {
 		t.Fatalf("Create failed: %v", err)
@@ -230,7 +230,7 @@ func TestLoadPersisted_SuccessRecoversRuntimeAfterReconnect(t *testing.T) {
 		Name:   "Node0004",
 		Status: core.NodeStatusOffline,
 		Tunnels: []core.Tunnel{
-			{Name: "persisted", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:7000"},
+			{Name: "persisted", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:7000"},
 		},
 	}); err != nil {
 		t.Fatalf("Create failed: %v", err)

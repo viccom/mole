@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
 
 	"moleAgent_Serv/internal/core"
 )
@@ -34,8 +37,57 @@ func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, ga
 	}
 }
 
+// validateTunnel 校验单条隧道配置的合法性
+func validateTunnel(t core.Tunnel) error {
+	if t.Name == "" {
+		return fmt.Errorf("%w: tunnel name is required", core.ErrTunnelInvalid)
+	}
+
+	switch t.Type {
+	case core.TunnelTypeHTTP, core.TunnelTypeHTTPS, core.TunnelTypeTCP, core.TunnelTypeUDP:
+		// target 统一为 host:port 格式
+		if t.Target == "" {
+			return fmt.Errorf("%w: tunnel target is required", core.ErrTunnelInvalid)
+		}
+		host, port, err := net.SplitHostPort(t.Target)
+		if err != nil {
+			return fmt.Errorf("%w: tunnel target must be host:port format (e.g. 127.0.0.1:8080), got %q", core.ErrTunnelInvalid, t.Target)
+		}
+		if host == "" {
+			return fmt.Errorf("%w: tunnel target host is required", core.ErrTunnelInvalid)
+		}
+		portNum, err := strconv.Atoi(port)
+		if err != nil || portNum < 1 || portNum > 65535 {
+			return fmt.Errorf("%w: tunnel target port must be 1-65535, got %q", core.ErrTunnelInvalid, port)
+		}
+
+	default:
+		return fmt.Errorf("%w: unknown tunnel type %q", core.ErrTunnelInvalid, t.Type)
+	}
+
+	return nil
+}
+
+// validateTunnels 校验隧道列表
+func validateTunnels(tunnels []core.Tunnel) error {
+	names := make(map[string]bool, len(tunnels))
+	for i := range tunnels {
+		if err := validateTunnel(tunnels[i]); err != nil {
+			return err
+		}
+		if names[tunnels[i].Name] {
+			return fmt.Errorf("%w: duplicate tunnel name %q", core.ErrTunnelInvalid, tunnels[i].Name)
+		}
+		names[tunnels[i].Name] = true
+	}
+	return nil
+}
+
 // ApplyTunnel 添加或替换隧道配置
 func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tunnelCfg core.Tunnel) (core.TunnelChangeResult, error) {
+	if err := validateTunnel(tunnelCfg); err != nil {
+		return core.TunnelChangeResult{}, err
+	}
 	result := core.TunnelChangeResult{Status: "ok"}
 	node, ok := s.nodeMgr.Get(ctx, nodeID)
 	if !ok {
@@ -118,6 +170,9 @@ func (s *TunnelConfigService) RemoveTunnel(ctx context.Context, nodeID string, t
 
 // ReplaceTunnels 用给定列表替换节点全部隧道配置，统一处理持久化、路由刷新和客户端同步。
 func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) (core.TunnelChangeResult, error) {
+	if err := validateTunnels(tunnels); err != nil {
+		return core.TunnelChangeResult{}, err
+	}
 	result := core.TunnelChangeResult{Status: "ok"}
 	node, ok := s.nodeMgr.Get(ctx, nodeID)
 	if !ok {
@@ -148,6 +203,9 @@ func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string,
 
 // SyncFromClient 客户端 tunnel_update 的统一处理入口
 func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
+	if err := validateTunnels(tunnels); err != nil {
+		return err
+	}
 	if err := s.persistUpdatedNode(ctx, nodeID, tunnels); err != nil {
 		return err
 	}
