@@ -2,8 +2,6 @@ package moleAgent_client
 
 import (
 	"fmt"
-	"net/url"
-	"strings"
 
 	"moleAgent_client/internal/protocol"
 )
@@ -12,9 +10,10 @@ import (
 type TunnelType string
 
 const (
-	TunnelTypeHTTP TunnelType = "http"
-	TunnelTypeTCP  TunnelType = "tcp"
-	TunnelTypeUDP  TunnelType = "udp"
+	TunnelTypeHTTP  TunnelType = "http"
+	TunnelTypeHTTPS TunnelType = "https"
+	TunnelTypeTCP   TunnelType = "tcp"
+	TunnelTypeUDP   TunnelType = "udp"
 )
 
 // Tunnel 隧道配置（统一类型，替代原 tunnelConfig 和 protocol.Tunnel 两套定义）
@@ -32,20 +31,12 @@ func (t Tunnel) Validate() error {
 		return fmt.Errorf("tunnel name is required")
 	}
 	switch t.Type {
-	case TunnelTypeHTTP, TunnelTypeTCP, TunnelTypeUDP:
+	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP:
 	default:
 		return fmt.Errorf("invalid tunnel type: %s", t.Type)
 	}
 	if t.Target == "" {
 		return fmt.Errorf("tunnel target is required")
-	}
-	if t.Type == TunnelTypeHTTP {
-		if !strings.HasPrefix(t.Target, "http://") && !strings.HasPrefix(t.Target, "https://") {
-			return fmt.Errorf("HTTP tunnel target must start with http:// or https://")
-		}
-		if _, err := url.Parse(t.Target); err != nil {
-			return fmt.Errorf("invalid HTTP tunnel target URL: %w", err)
-		}
 	}
 	return nil
 }

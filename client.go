@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -433,8 +434,16 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 				defer c.mu.RUnlock()
 				targets := make(map[string]string, len(c.tunnels))
 				for _, t := range c.tunnels {
-					if t.Type == TunnelTypeHTTP {
-						targets[t.Name] = t.Target
+					if t.Type == TunnelTypeHTTP || t.Type == TunnelTypeHTTPS {
+						if !strings.Contains(t.Target, "://") {
+							scheme := "http"
+							if t.Type == TunnelTypeHTTPS {
+								scheme = "https"
+							}
+							targets[t.Name] = scheme + "://" + t.Target
+						} else {
+							targets[t.Name] = t.Target
+						}
 					}
 				}
 				return targets

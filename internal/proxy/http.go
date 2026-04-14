@@ -57,7 +57,20 @@ func HandleHTTPStream(stream io.ReadWriteCloser, br *bufio.Reader, req *http.Req
 	handleHTTP(stream, req, target)
 }
 
+// ensureHTTPScheme 确保 HTTP 隧道 target 包含 scheme，缺失时默认补 http://
+func ensureHTTPScheme(target string) string {
+	if target == "" {
+		return target
+	}
+	// 已有 scheme（含 ://）直接返回
+	if strings.Contains(target, "://") {
+		return target
+	}
+	return "http://" + target
+}
+
 func handleHTTP(stream io.Writer, req *http.Request, target string) {
+	target = ensureHTTPScheme(target)
 	targetURL, err := url.Parse(target)
 	if err != nil {
 		writeHTTPError(stream, http.StatusInternalServerError, "invalid target URL")
@@ -87,6 +100,7 @@ func handleHTTP(stream io.Writer, req *http.Request, target string) {
 }
 
 func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target string) {
+	target = ensureHTTPScheme(target)
 	targetURL, err := url.Parse(target)
 	if err != nil {
 		log.Printf("WebSocket parse target URL failed: %v", err)
