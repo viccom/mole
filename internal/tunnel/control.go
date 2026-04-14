@@ -82,15 +82,17 @@ type ControlServer struct {
 	tlsConfig *tls.Config // TLS 配置
 	listener  net.Listener
 	onNodeChange func() // 节点变更回调
+	nodeRepo  core.NodeRepo // 隧道持久化仓库
 }
 
 // NewControlServer 创建控制端口服务
-func NewControlServer(addr string, nodeMgr *node.ShardedNodeManager, nodeToken string, tlsConfig *tls.Config) *ControlServer {
+func NewControlServer(addr string, nodeMgr *node.ShardedNodeManager, nodeToken string, tlsConfig *tls.Config, nodeRepo core.NodeRepo) *ControlServer {
 	return &ControlServer{
 		addr:      addr,
 		nodeMgr:   nodeMgr,
 		nodeToken: nodeToken,
 		tlsConfig: tlsConfig,
+		nodeRepo:  nodeRepo,
 	}
 }
 
@@ -320,6 +322,30 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 	}
 
 	writeControlResp(stream, "ok", "registered")
+
+	// 注册成功后，检查是否有持久化的隧道配置需要推送给客户端
+	if cs.nodeRepo != nil {
+		persisted, err := cs.nodeRepo.GetByID(cmd.NodeID)
+		if err == nil && len(persisted.Tunnels) > 0 {
+			// 用持久化隧道覆盖内存中的隧道（客户端发来的可能是空的）
+			cs.nodeMgr.Update(ctx, cmd.NodeID, func(n *core.Node) {
+				n.Tunnels = persisted.Tunnels
+			})
+			// 推送给客户端
+			go func() {
+				if err := cs.PushTunnelUpdate(ctx, cmd.NodeID, persisted.Tunnels); err != nil {
+					slog.Warn("Failed to push persisted tunnels", "nodeId", cmd.NodeID, "error", err)
+				} else {
+					slog.Info("Pushed persisted tunnels to node",
+						"nodeId", cmd.NodeID, "tunnels", len(persisted.Tunnels))
+				}
+			}()
+		}
+		// 持久化当前节点信息
+		if n, ok := cs.nodeMgr.Get(ctx, cmd.NodeID); ok {
+			cs.persistNode(n)
+		}
+	}
 }
 
 // writeControlResp 向控制流写入 JSON 响应行
@@ -356,7 +382,31 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 		cs.onNodeChange()
 	}
 
+	// 持久化隧道变更
+	if cs.nodeRepo != nil {
+		if n, ok := cs.nodeMgr.Get(ctx, nodeID); ok {
+			cs.persistNode(n)
+		}
+	}
+
 	writeControlResp(stream, "ok", "tunnels updated")
+}
+
+// persistNode 持久化节点信息（主要是隧道配置）
+func (cs *ControlServer) persistNode(n *core.Node) {
+	if cs.nodeRepo == nil || n == nil {
+		return
+	}
+	// Create or Update：先尝试 GetByID 判断是否已存在
+	if existing, err := cs.nodeRepo.GetByID(n.ID); err != nil || existing == nil {
+		if err := cs.nodeRepo.Create(n); err != nil {
+			slog.Debug("Failed to persist node (create)", "nodeId", n.ID, "error", err)
+		}
+	} else {
+		if err := cs.nodeRepo.Update(n); err != nil {
+			slog.Debug("Failed to persist node (update)", "nodeId", n.ID, "error", err)
+		}
+	}
 }
 
 // PushTunnelUpdate 通过 smux 会话向指定节点推送隧道配置更新

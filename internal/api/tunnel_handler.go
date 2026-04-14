@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"context"
 	"net/http"
 	"strings"
 
@@ -14,10 +15,11 @@ type TunnelHandler struct {
 	nodeMgr    *node.ShardedNodeManager
 	gateway    *tunnel.TunnelGateway
 	controlSrv *tunnel.ControlServer
+	nodeRepo   core.NodeRepo
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, gateway *tunnel.TunnelGateway, controlSrv *tunnel.ControlServer) *TunnelHandler {
-	return &TunnelHandler{nodeMgr: nodeMgr, gateway: gateway, controlSrv: controlSrv}
+func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, gateway *tunnel.TunnelGateway, controlSrv *tunnel.ControlServer, nodeRepo core.NodeRepo) *TunnelHandler {
+	return &TunnelHandler{nodeMgr: nodeMgr, gateway: gateway, controlSrv: controlSrv, nodeRepo: nodeRepo}
 }
 
 func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -243,3 +245,20 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	ResponseOK(w, map[string]any{"status": "ok", "removed": name})
 }
+
+// persistNode 持久化节点隧道配置到数据库
+func (h *TunnelHandler) persistNode(ctx context.Context, nodeID string) {
+	if h.nodeRepo == nil {
+		return
+	}
+	node, ok := h.nodeMgr.Get(ctx, nodeID)
+	if !ok {
+		return
+	}
+	if existing, err := h.nodeRepo.GetByID(nodeID); err != nil || existing == nil {
+		h.nodeRepo.Create(node)
+	} else {
+		h.nodeRepo.Update(node)
+	}
+}
+

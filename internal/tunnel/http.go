@@ -66,13 +66,24 @@ func parsePathRoute(path string) (clientId, mappingName string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// buildPathRoutePath 构建路径访问的路径
+// buildPathRoutePath 构建路径访问的路径（去掉 clientId 前缀）
 func buildPathRoutePath(originalPath string) string {
 	parts := strings.Split(strings.Trim(originalPath, "/"), "/")
 	if len(parts) < 2 {
 		return "/"
 	}
 	return "/" + strings.Join(parts[1:], "/")
+}
+
+// buildVirtualHostPath 构建泛域名访问的路径（加上 mappingName 前缀）
+func buildVirtualHostPath(originalPath, mappingName string) string {
+	if originalPath == "/" {
+		return "/" + mappingName + "/"
+	}
+	if strings.HasPrefix(originalPath, "/") {
+		return "/" + mappingName + originalPath
+	}
+	return "/" + mappingName + "/" + originalPath
 }
 
 // findNodeTunnel 在指定节点中查找隧道名匹配的隧道
@@ -142,7 +153,7 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("Virtual host routing", "clientId", clientId, "mappingName", mappingName, "host", r.Host)
 		node, tunnelName = tg.findNodeTunnel(r.Context(), clientId, mappingName)
 		if tunnelName != "" {
-			r.URL.Path = buildPathRoutePath(r.URL.Path)
+			r.URL.Path = buildVirtualHostPath(r.URL.Path, tunnelName)
 			slog.Debug("Virtual host path rewritten", "newPath", r.URL.Path)
 		}
 	} else {
