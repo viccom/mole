@@ -69,6 +69,10 @@ func (m *ShardedNodeManager) Remove(_ context.Context, nodeID string) error {
 	shard := m.getShard(nodeID)
 	shard.mu.Lock()
 	delete(shard.clients, nodeID)
+	if sess, ok := shard.sessions[nodeID]; ok {
+		sess.Close()
+		delete(shard.sessions, nodeID)
+	}
 	shard.mu.Unlock()
 	return nil
 }
@@ -113,18 +117,14 @@ func (m *ShardedNodeManager) Disconnect(_ context.Context, nodeID string) error 
 	shard := m.getShard(nodeID)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	node, ok := shard.clients[nodeID]
+	_, ok := shard.clients[nodeID]
 	if !ok {
 		return core.ErrNodeNotFound
 	}
-	// 优先从独立 session 表关闭，fallback 到 Node.Session（过渡期兼容）
 	if sess, hasSess := shard.sessions[nodeID]; hasSess {
 		sess.Close()
 		delete(shard.sessions, nodeID)
-	} else if node.Session != nil {
-		node.Session.Close()
 	}
-	node.Status = core.NodeStatusOffline
 	delete(shard.clients, nodeID)
 	return nil
 }
@@ -149,7 +149,6 @@ func (m *ShardedNodeManager) RemoveSession(_ context.Context, nodeID string) {
 }
 
 // GetSession 在分片锁保护下获取节点的 smux Session
-// 优先从独立 session 表获取，fallback 到 Node.Session（过渡期兼容）
 func (m *ShardedNodeManager) GetSession(_ context.Context, nodeID string) (*smux.Session, error) {
 	shard := m.getShard(nodeID)
 	shard.mu.RLock()
@@ -161,13 +160,8 @@ func (m *ShardedNodeManager) GetSession(_ context.Context, nodeID string) (*smux
 	if node.Status != core.NodeStatusOnline {
 		return nil, core.ErrNodeOffline
 	}
-	// 优先使用独立 session 表
 	if sess, hasSess := shard.sessions[nodeID]; hasSess && !sess.IsClosed() {
 		return sess, nil
-	}
-	// 过渡期兼容：fallback 到 Node.Session
-	if node.Session != nil && !node.Session.IsClosed() {
-		return node.Session, nil
 	}
 	return nil, core.ErrNodeOffline
 }

@@ -1,4 +1,4 @@
-# moleAgent_Serv
+# moleAgent\_Serv
 
 代理隧道服务端，负责节点管理、隧道转发、认证鉴权和 MQTT Broker。
 
@@ -42,7 +42,7 @@ admin/                  前端静态文件
 
 ```
 外部请求 → Gateway 端口(:9980) → TunnelGateway.ServeHTTP
-  → 路由匹配(泛域名/路径/精确域名) → node.Session.OpenStream()
+  → 路由匹配(泛域名/路径/精确域名) → nodeMgr.GetSession() → smux.OpenStream()
   → 数据透传到节点代理
 
 节点连接 → Control 端口(:9981) → Challenge-Response → smux.Server()
@@ -53,9 +53,10 @@ admin/                  前端静态文件
 
 - `UserStatus` / `NodeStatus` 是类型化常量，不使用原始字符串
 - `core.UserRepo` / `core.RoleRepo` 是接口，storage 包提供实现
-- smux Session 优先存储在 `ShardedNodeManager` 内部 sessions map（与领域模型分离），fallback 到 `core.Node.Session`（过渡期兼容）
+- smux Session 存储在 `ShardedNodeManager` 内部 `sessions` map 中，与 `core.Node` 领域模型分离
 - API 路由注册在 `cmd/moleagent-serv/main.go` 的 `buildAPIRouter`
 - 种子数据在 `storage/db.go` 的 `seedData()`
+- 修复BUG，改进功能，都要保证原来的业务功能正确。
 - **隧道配置真相源规则**：
   - **持久化配置是管理真相源**（NodeRepo/Redka 持久化层）
   - **在线节点内存态是运行副本**（ShardedNodeManager 内存）

@@ -5,33 +5,41 @@ import (
 	"log/slog"
 
 	"moleAgent_Serv/internal/core"
-	"moleAgent_Serv/internal/tunnel"
 )
 
+type routeIndexer interface {
+	RebuildIndex(ctx context.Context)
+}
+
+type tunnelPusher interface {
+	PushTunnelUpdate(ctx context.Context, nodeID string, tunnels []core.Tunnel) error
+}
+
 // TunnelConfigService 隧道配置应用服务（单一变更入口）
-// 统一处理：内存更新 → 持久化 → 路由刷新 → 客户端推送
+// 统一处理：持久化、运行态更新、路由刷新、客户端同步
 type TunnelConfigService struct {
-	nodeMgr    core.NodeManager
-	nodeRepo   core.NodeRepo
-	gateway    *tunnel.TunnelGateway
-	controlSrv *tunnel.ControlServer
+	nodeMgr  core.NodeManager
+	nodeRepo core.NodeRepo
+	gateway  routeIndexer
+	pusher   tunnelPusher
 }
 
 // NewTunnelConfigService 创建隧道配置服务
-func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway *tunnel.TunnelGateway, controlSrv *tunnel.ControlServer) *TunnelConfigService {
+func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway routeIndexer, pusher tunnelPusher) *TunnelConfigService {
 	return &TunnelConfigService{
-		nodeMgr:    nodeMgr,
-		nodeRepo:   nodeRepo,
-		gateway:    gateway,
-		controlSrv: controlSrv,
+		nodeMgr:  nodeMgr,
+		nodeRepo: nodeRepo,
+		gateway:  gateway,
+		pusher:   pusher,
 	}
 }
 
 // ApplyTunnel 添加或替换隧道配置
-func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tunnelCfg core.Tunnel) error {
+func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tunnelCfg core.Tunnel) (core.TunnelChangeResult, error) {
+	result := core.TunnelChangeResult{Status: "ok"}
 	node, ok := s.nodeMgr.Get(ctx, nodeID)
 	if !ok {
-		return core.ErrNodeNotFound
+		return result, core.ErrNodeNotFound
 	}
 
 	// 追加或替换同名隧道
@@ -49,32 +57,34 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 		updated = append(updated, tunnelCfg)
 	}
 
-	// 更新内存态
-	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
-		n.Tunnels = updated
-	}); err != nil {
-		return err
+	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
+		return result, err
+	}
+	result.Persisted = true
+
+	// 在线节点只有在客户端成功接收配置后，才更新服务端运行态索引，避免路由先切流导致业务异常。
+	if node.Status == core.NodeStatusOnline && s.pusher != nil {
+		if err := s.pushToClient(ctx, nodeID, updated); err != nil {
+			result.Status = "synced_server_only"
+			result.Warning = "client push failed: " + err.Error()
+			return result, nil
+		}
+		result.ClientSynced = true
 	}
 
-	// 持久化
-	s.persistNode(ctx, nodeID)
-
-	// 刷新路由索引
-	if s.gateway != nil {
-		s.gateway.RebuildIndex(ctx)
+	if err := s.applyRuntimeTunnels(ctx, nodeID, updated); err != nil {
+		return result, err
 	}
 
-	// 推送客户端
-	s.pushToClient(ctx, nodeID, updated)
-
-	return nil
+	return result, nil
 }
 
 // RemoveTunnel 删除隧道配置
-func (s *TunnelConfigService) RemoveTunnel(ctx context.Context, nodeID string, tunnelName string) error {
+func (s *TunnelConfigService) RemoveTunnel(ctx context.Context, nodeID string, tunnelName string) (core.TunnelChangeResult, error) {
+	result := core.TunnelChangeResult{Status: "ok"}
 	node, ok := s.nodeMgr.Get(ctx, nodeID)
 	if !ok {
-		return core.ErrNodeNotFound
+		return result, core.ErrNodeNotFound
 	}
 
 	// 过滤掉目标隧道
@@ -85,53 +95,72 @@ func (s *TunnelConfigService) RemoveTunnel(ctx context.Context, nodeID string, t
 		}
 	}
 
-	// 更新内存态
-	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
-		n.Tunnels = updated
-	}); err != nil {
-		return err
+	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
+		return result, err
+	}
+	result.Persisted = true
+
+	if node.Status == core.NodeStatusOnline && s.pusher != nil {
+		if err := s.pushToClient(ctx, nodeID, updated); err != nil {
+			result.Status = "synced_server_only"
+			result.Warning = "client push failed: " + err.Error()
+			return result, nil
+		}
+		result.ClientSynced = true
 	}
 
-	// 持久化
-	s.persistNode(ctx, nodeID)
-
-	// 刷新路由索引
-	if s.gateway != nil {
-		s.gateway.RebuildIndex(ctx)
+	if err := s.applyRuntimeTunnels(ctx, nodeID, updated); err != nil {
+		return result, err
 	}
 
-	// 推送客户端
-	s.pushToClient(ctx, nodeID, updated)
+	return result, nil
+}
 
-	return nil
+// ReplaceTunnels 用给定列表替换节点全部隧道配置，统一处理持久化、路由刷新和客户端同步。
+func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) (core.TunnelChangeResult, error) {
+	result := core.TunnelChangeResult{Status: "ok"}
+	node, ok := s.nodeMgr.Get(ctx, nodeID)
+	if !ok {
+		return result, core.ErrNodeNotFound
+	}
+
+	updated := append([]core.Tunnel(nil), tunnels...)
+	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
+		return result, err
+	}
+	result.Persisted = true
+
+	if node.Status == core.NodeStatusOnline && s.pusher != nil {
+		if err := s.pushToClient(ctx, nodeID, updated); err != nil {
+			result.Status = "synced_server_only"
+			result.Warning = "client push failed: " + err.Error()
+			return result, nil
+		}
+		result.ClientSynced = true
+	}
+
+	if err := s.applyRuntimeTunnels(ctx, nodeID, updated); err != nil {
+		return result, err
+	}
+
+	return result, nil
 }
 
 // SyncFromClient 客户端 tunnel_update 的统一处理入口
 func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
-	// 更新内存态
-	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
-		n.Tunnels = tunnels
-	}); err != nil {
+	if err := s.persistUpdatedNode(ctx, nodeID, tunnels); err != nil {
 		return err
 	}
 
-	slog.Info("Node tunnels updated",
-		"nodeId", nodeID,
-		"tunnels", len(tunnels),
-	)
-
-	// 持久化
-	s.persistNode(ctx, nodeID)
-
-	// 刷新路由索引
-	if s.gateway != nil {
-		s.gateway.RebuildIndex(ctx)
+	if err := s.applyRuntimeTunnels(ctx, nodeID, tunnels); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-// LoadPersisted 节点注册后加载持久化隧道（覆盖客户端上报的空配置）
+// LoadPersisted 节点注册后加载持久化隧道。
+// 仅当客户端成功接受下发配置后，才切换服务端运行态到持久化配置。
 func (s *TunnelConfigService) LoadPersisted(ctx context.Context, nodeID string) ([]core.Tunnel, error) {
 	if s.nodeRepo == nil {
 		return nil, nil
@@ -141,20 +170,12 @@ func (s *TunnelConfigService) LoadPersisted(ctx context.Context, nodeID string) 
 		return nil, nil
 	}
 
-	// 用持久化隧道覆盖内存
-	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
-		n.Tunnels = persisted.Tunnels
-	}); err != nil {
-		return persisted.Tunnels, err
+	if err := s.pushToClient(ctx, nodeID, persisted.Tunnels); err != nil {
+		return nil, err
 	}
-
-	// 刷新路由索引
-	if s.gateway != nil {
-		s.gateway.RebuildIndex(ctx)
+	if err := s.applyRuntimeTunnels(ctx, nodeID, persisted.Tunnels); err != nil {
+		return nil, err
 	}
-
-	// 推送给客户端
-	s.pushToClient(ctx, nodeID, persisted.Tunnels)
 
 	slog.Info("Pushed persisted tunnels to node",
 		"nodeId", nodeID, "tunnels", len(persisted.Tunnels))
@@ -162,35 +183,49 @@ func (s *TunnelConfigService) LoadPersisted(ctx context.Context, nodeID string) 
 	return persisted.Tunnels, nil
 }
 
-// persistNode 持久化节点到数据库
-func (s *TunnelConfigService) persistNode(ctx context.Context, nodeID string) {
+func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
+	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
+		n.Tunnels = append([]core.Tunnel(nil), tunnels...)
+	}); err != nil {
+		return err
+	}
+	if s.gateway != nil {
+		s.gateway.RebuildIndex(ctx)
+	}
+
+	slog.Info("Node tunnels updated",
+		"nodeId", nodeID,
+		"tunnels", len(tunnels),
+	)
+	return nil
+}
+
+func (s *TunnelConfigService) persistUpdatedNode(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
 	if s.nodeRepo == nil {
-		return
+		return nil
 	}
 	node, ok := s.nodeMgr.Get(ctx, nodeID)
 	if !ok {
-		return
+		return core.ErrNodeNotFound
 	}
+
+	persisted := *node
+	persisted.Tunnels = append([]core.Tunnel(nil), tunnels...)
+
 	existing, err := s.nodeRepo.GetByID(nodeID)
 	if err != nil || existing == nil {
-		if err := s.nodeRepo.Create(node); err != nil {
-			slog.Debug("Failed to persist node (create)", "nodeId", nodeID, "error", err)
+		if err := s.nodeRepo.Create(&persisted); err != nil {
+			return err
 		}
-	} else {
-		if err := s.nodeRepo.Update(node); err != nil {
-			slog.Debug("Failed to persist node (update)", "nodeId", nodeID, "error", err)
-		}
+		return nil
 	}
+	return s.nodeRepo.Update(&persisted)
 }
 
-// pushToClient 推送配置到客户端（异步，不阻塞）
-func (s *TunnelConfigService) pushToClient(ctx context.Context, nodeID string, tunnels []core.Tunnel) {
-	if s.controlSrv == nil {
-		return
+// pushToClient 推送配置到客户端（同步，便于准确返回结果）
+func (s *TunnelConfigService) pushToClient(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
+	if s.pusher == nil {
+		return nil
 	}
-	go func() {
-		if err := s.controlSrv.PushTunnelUpdate(ctx, nodeID, tunnels); err != nil {
-			slog.Warn("Failed to push tunnels to client", "nodeId", nodeID, "error", err)
-		}
-	}()
+	return s.pusher.PushTunnelUpdate(ctx, nodeID, tunnels)
 }

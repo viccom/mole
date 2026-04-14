@@ -287,14 +287,11 @@ func TestServeHTTP_SemaphoreOverloaded(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestServeHTTP_VirtualHostRouting(t *testing.T) {
-	origHyphen := HyphenRouting
-	HyphenRouting = true
-	defer func() { HyphenRouting = origHyphen }()
-
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("node1", httpTunnel("api", "")))
 
 	tg := NewTunnelGateway(mp, 10)
+	tg.HyphenRouting = true
 
 	// Host "api-node1.example.com" should resolve to node1, tunnel "api".
 	// The handler will try to open a smux stream and fail (no session),
@@ -321,14 +318,11 @@ func TestServeHTTP_VirtualHostRouting(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestServeHTTP_PathRouting(t *testing.T) {
-	origHyphen := HyphenRouting
-	HyphenRouting = false
-	defer func() { HyphenRouting = origHyphen }()
-
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("node1", httpTunnel("web", "")))
 
 	tg := NewTunnelGateway(mp, 10)
+	tg.HyphenRouting = false
 
 	// Path "/node1/web/page" should resolve to node1, tunnel "web".
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/node1/web/page", nil)
@@ -483,14 +477,11 @@ func TestParseVirtualHostByHyphen_EdgeCases(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestServeHTTP_PathRewriteOnVhostMatch(t *testing.T) {
-	origHyphen := HyphenRouting
-	HyphenRouting = true
-	defer func() { HyphenRouting = origHyphen }()
-
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("node1", httpTunnel("api", "")))
 
 	tg := NewTunnelGateway(mp, 10)
+	tg.HyphenRouting = true
 
 	req := httptest.NewRequest(http.MethodGet, "http://api-node1.example.com/v1/data", nil)
 	originalPath := req.URL.Path

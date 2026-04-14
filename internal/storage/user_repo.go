@@ -82,6 +82,11 @@ func (r *userRepo) GetAll() ([]*core.User, error) {
 }
 
 func (r *userRepo) Update(user *core.User) error {
+	existing, err := r.GetByID(user.ID)
+	if err != nil {
+		return err
+	}
+
 	user.UpdatedAt = time.Now().UTC()
 	data, err := json.Marshal(user)
 	if err != nil {
@@ -90,7 +95,12 @@ func (r *userRepo) Update(user *core.User) error {
 	if _, err := r.db.Hash().Set("users", user.ID, string(data)); err != nil {
 		return err
 	}
-	// 维护 username 索引
+	if existing.Username != "" && existing.Username != user.Username {
+		if _, err := r.db.Hash().Delete("usernames", existing.Username); err != nil {
+			return err
+		}
+	}
+	// 维护 username 索引。先删除旧索引，再写入新索引，避免崩溃后旧用户名残留。
 	if _, err := r.db.Hash().Set("usernames", user.Username, user.ID); err != nil {
 		return err
 	}

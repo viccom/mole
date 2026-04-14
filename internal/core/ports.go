@@ -14,6 +14,23 @@ type NodeManager interface {
 	Disconnect(ctx context.Context, nodeID string) error
 }
 
+// TunnelChangeResult 表示一次隧道配置变更在服务端和客户端两侧的落地结果
+type TunnelChangeResult struct {
+	Status       string
+	Persisted    bool
+	ClientSynced bool
+	Warning      string
+}
+
+// TunnelConfigManager 统一处理隧道配置变更、持久化、索引刷新和客户端同步
+type TunnelConfigManager interface {
+	ApplyTunnel(ctx context.Context, nodeID string, tunnel Tunnel) (TunnelChangeResult, error)
+	RemoveTunnel(ctx context.Context, nodeID string, tunnelName string) (TunnelChangeResult, error)
+	ReplaceTunnels(ctx context.Context, nodeID string, tunnels []Tunnel) (TunnelChangeResult, error)
+	SyncFromClient(ctx context.Context, nodeID string, tunnels []Tunnel) error
+	LoadPersisted(ctx context.Context, nodeID string) ([]Tunnel, error)
+}
+
 // TunnelManager 隧道管理器接口
 type TunnelManager interface {
 	StartTCP(ctx context.Context, tunnel Tunnel) error

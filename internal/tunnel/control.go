@@ -42,11 +42,11 @@ func isValidNodeID(id string) bool {
 
 // ControlProtocol 命令类型
 type ControlCmd struct {
-	Cmd     string        `json:"cmd"`                // register, ping, tunnel_update
-	NodeID  string        `json:"node_id,omitempty"`  // 注册时使用
-	Name    string        `json:"name,omitempty"`     // 节点名称
-	Token   string        `json:"token,omitempty"`    // 节点令牌
-	Tunnels []core.Tunnel `json:"tunnels,omitempty"`  // 隧道配置
+	Cmd     string        `json:"cmd"`               // register, ping, tunnel_update
+	NodeID  string        `json:"node_id,omitempty"` // 注册时使用
+	Name    string        `json:"name,omitempty"`    // 节点名称
+	Token   string        `json:"token,omitempty"`   // 节点令牌
+	Tunnels []core.Tunnel `json:"tunnels,omitempty"` // 隧道配置
 }
 
 type ControlResponse struct {
@@ -76,13 +76,14 @@ func (s *connState) get() *core.Node {
 
 // ControlServer 控制端口服务
 type ControlServer struct {
-	addr      string
-	nodeMgr   *node.ShardedNodeManager
-	nodeToken string     // 全局节点认证令牌
-	tlsConfig *tls.Config // TLS 配置
-	listener  net.Listener
-	onNodeChange func() // 节点变更回调
-	nodeRepo  core.NodeRepo // 隧道持久化仓库
+	addr         string
+	nodeMgr      *node.ShardedNodeManager
+	nodeToken    string      // 全局节点认证令牌
+	tlsConfig    *tls.Config // TLS 配置
+	listener     net.Listener
+	onNodeChange func()        // 节点变更回调
+	nodeRepo     core.NodeRepo // 隧道持久化仓库
+	tunnelSvc    core.TunnelConfigManager
 }
 
 // NewControlServer 创建控制端口服务
@@ -99,6 +100,11 @@ func NewControlServer(addr string, nodeMgr *node.ShardedNodeManager, nodeToken s
 // SetOnNodeChange 设置节点变更回调
 func (cs *ControlServer) SetOnNodeChange(fn func()) {
 	cs.onNodeChange = fn
+}
+
+// SetTunnelConfigManager 设置隧道配置统一服务
+func (cs *ControlServer) SetTunnelConfigManager(svc core.TunnelConfigManager) {
+	cs.tunnelSvc = svc
 }
 
 // Start 启动控制端口监听
@@ -302,7 +308,6 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		RemoteAddr:    "", // 不再从参数获取
 		ConnectedAt:   &now,
 		LastHeartbeat: &now,
-		Session:       smuxSession,
 	}
 
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
@@ -310,8 +315,8 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		return
 	}
 
-		// 独立绑定运行态会话（与 Node 领域模型分离）
-		cs.nodeMgr.AddSession(ctx, cmd.NodeID, smuxSession)
+	// 独立绑定运行态会话（与 Node 领域模型分离）
+	cs.nodeMgr.AddSession(ctx, cmd.NodeID, smuxSession)
 
 	state.set(node)
 	slog.Info("Node registered",
@@ -326,15 +331,22 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 
 	writeControlResp(stream, "ok", "registered")
 
-	// 注册成功后，检查是否有持久化的隧道配置需要推送给客户端
-	if cs.nodeRepo != nil {
+	// 注册成功后，优先由统一服务处理持久化配置加载；未注入时走兼容路径。
+	if cs.tunnelSvc != nil {
+		loaded, err := cs.tunnelSvc.LoadPersisted(ctx, cmd.NodeID)
+		if err != nil {
+			slog.Warn("Failed to load persisted tunnels", "nodeId", cmd.NodeID, "error", err)
+		} else if len(loaded) == 0 {
+			if err := cs.tunnelSvc.SyncFromClient(ctx, cmd.NodeID, cmd.Tunnels); err != nil {
+				slog.Warn("Failed to persist initial node tunnels", "nodeId", cmd.NodeID, "error", err)
+			}
+		}
+	} else if cs.nodeRepo != nil {
 		persisted, err := cs.nodeRepo.GetByID(cmd.NodeID)
 		if err == nil && len(persisted.Tunnels) > 0 {
-			// 用持久化隧道覆盖内存中的隧道（客户端发来的可能是空的）
 			cs.nodeMgr.Update(ctx, cmd.NodeID, func(n *core.Node) {
 				n.Tunnels = persisted.Tunnels
 			})
-			// 推送给客户端
 			go func() {
 				if err := cs.PushTunnelUpdate(ctx, cmd.NodeID, persisted.Tunnels); err != nil {
 					slog.Warn("Failed to push persisted tunnels", "nodeId", cmd.NodeID, "error", err)
@@ -344,7 +356,6 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 				}
 			}()
 		}
-		// 持久化当前节点信息
 		if n, ok := cs.nodeMgr.Get(ctx, cmd.NodeID); ok {
 			cs.persistNode(n)
 		}
@@ -368,7 +379,6 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 
 	nodeID := node.ID
 	if err := cs.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
-		n.Tunnels = cmd.Tunnels
 		now := time.Now()
 		n.LastHeartbeat = &now
 	}); err != nil {
@@ -376,19 +386,19 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 		return
 	}
 
-	slog.Info("Node tunnels updated",
-		"nodeId", nodeID,
-		"tunnels", len(cmd.Tunnels),
-	)
-
-	if cs.onNodeChange != nil {
-		cs.onNodeChange()
-	}
-
-	// 持久化隧道变更
-	if cs.nodeRepo != nil {
-		if n, ok := cs.nodeMgr.Get(ctx, nodeID); ok {
-			cs.persistNode(n)
+	if cs.tunnelSvc != nil {
+		if err := cs.tunnelSvc.SyncFromClient(ctx, nodeID, cmd.Tunnels); err != nil {
+			writeControlResp(stream, "err", err.Error())
+			return
+		}
+	} else {
+		if cs.onNodeChange != nil {
+			cs.onNodeChange()
+		}
+		if cs.nodeRepo != nil {
+			if n, ok := cs.nodeMgr.Get(ctx, nodeID); ok {
+				cs.persistNode(n)
+			}
 		}
 	}
 

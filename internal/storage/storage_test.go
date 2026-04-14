@@ -110,6 +110,38 @@ func TestUserRepoNotFound(t *testing.T) {
 	}
 }
 
+func TestUserRepoUpdate_RemovesOldUsernameIndex(t *testing.T) {
+	setupTestDB(t)
+	repo := NewUserRepo(db)
+
+	user := &core.User{ID: "user-1", Username: "oldname", Status: core.UserStatusActive}
+	if err := repo.Create(user, "hashedpw"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	user.Username = "newname"
+	if err := repo.Update(user); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	if _, err := repo.GetByUsername("oldname"); err == nil {
+		t.Fatal("old username should no longer resolve after rename")
+	}
+
+	got, err := repo.GetByUsername("newname")
+	if err != nil {
+		t.Fatalf("new username should resolve: %v", err)
+	}
+	if got.ID != "user-1" {
+		t.Fatalf("expected user-1, got %s", got.ID)
+	}
+
+	raw, err := db.Hash().Get("usernames", "oldname")
+	if err == nil && raw.String() != "" {
+		t.Fatalf("old username index should be deleted, got %q", raw.String())
+	}
+}
+
 func TestRoleRepoCRUD(t *testing.T) {
 	setupTestDB(t)
 	repo := NewRoleRepo(db)

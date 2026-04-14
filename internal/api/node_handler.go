@@ -11,12 +11,13 @@ import (
 )
 
 type NodeHandler struct {
-	nodeMgr  *node.ShardedNodeManager
-	nodeRepo core.NodeRepo
+	nodeMgr   *node.ShardedNodeManager
+	nodeRepo  core.NodeRepo
+	tunnelSvc core.TunnelConfigManager
 }
 
-func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo) *NodeHandler {
-	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo}
+func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager) *NodeHandler {
+	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo, tunnelSvc: tunnelSvc}
 }
 
 func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -117,24 +118,47 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 使用显式 Update 方法，避免共享指针副作用
+	nameChanged := req.Name != ""
+
+	// 非隧道字段使用显式 Update 方法，避免共享指针副作用。
 	if err := h.nodeMgr.Update(r.Context(), id, func(n *core.Node) {
-		if req.Name != "" {
+		if nameChanged {
 			n.Name = req.Name
-		}
-		if req.Tunnels != nil {
-			n.Tunnels = req.Tunnels
 		}
 	}); err != nil {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 		return
 	}
 
-	// 持久化
-	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-		if err := h.nodeRepo.Update(node); err != nil {
-			slog.Warn("Failed to persist node update", "error", err)
+	if req.Tunnels != nil {
+		if h.tunnelSvc == nil {
+			ResponseError(w, http.StatusInternalServerError, 500, "Tunnel service not configured")
+			return
 		}
+		if _, err := h.tunnelSvc.ReplaceTunnels(r.Context(), id, req.Tunnels); err != nil {
+			if err == core.ErrNodeNotFound {
+				ResponseError(w, http.StatusNotFound, 404, "Node not found")
+				return
+			}
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node tunnels: "+err.Error())
+			return
+		}
+	}
+
+	// 隧道更新由 TunnelConfigService 负责持久化；仅在纯节点属性更新时直接持久化。
+	if req.Tunnels == nil && nameChanged {
+		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+			if err := h.nodeRepo.Update(node); err != nil {
+				slog.Warn("Failed to persist node update", "error", err)
+			}
+			ResponseOK(w, node)
+			return
+		}
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
 		ResponseOK(w, node)
 	} else {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")

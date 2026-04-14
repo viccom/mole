@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	mqtt "github.com/mochi-mqtt/server/v2"
 )
 
 func TestBrokerStartNonBlocking(t *testing.T) {
@@ -71,7 +73,30 @@ func TestBrokerStopWithContext(t *testing.T) {
 
 	// Verify the server is closed by trying to stop again
 	if err := broker.Stop(context.Background()); err != nil {
-		// Stop after cancel may error, but should not panic
-		t.Logf("Stop after cancel returned (expected): %v", err)
+		t.Fatalf("Stop should be idempotent after cancel, got error: %v", err)
+	}
+}
+
+func TestBrokerGetClientsAndStats_FilterInlineClient(t *testing.T) {
+	broker := NewEmbeddedBroker("", "", nil, nil)
+
+	// 订阅会创建 inline client；该 client 不应暴露给管理接口。
+	if err := broker.Subscribe("test/topic", 0, func(string, []byte) {}); err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	clients := broker.GetClients()
+	if len(clients) != 0 {
+		t.Fatalf("expected inline client to be filtered, got %+v", clients)
+	}
+
+	stats := broker.GetStats()
+	if stats.ClientsTotal != 0 || stats.ClientsConnected != 0 {
+		t.Fatalf("expected inline client excluded from stats, got %+v", stats)
+	}
+
+	// Sanity check: inline client really exists underneath.
+	if _, ok := broker.GetServer().Clients.Get(mqtt.InlineClientId); !ok {
+		t.Fatal("expected underlying inline client to exist")
 	}
 }

@@ -43,15 +43,15 @@ func TestGetSession_Success(t *testing.T) {
 	defer cleanup()
 
 	node := &core.Node{
-		ID:      "node-online",
-		Name:    "Online Node",
-		Status:  core.NodeStatusOnline,
-		Session: session,
+		ID:     "node-online",
+		Name:   "Online Node",
+		Status: core.NodeStatusOnline,
 	}
 
 	if err := mgr.Add(ctx, node); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
+	mgr.AddSession(ctx, node.ID, session)
 
 	got, err := mgr.GetSession(ctx, "node-online")
 	if err != nil {
@@ -100,10 +100,9 @@ func TestGetSession_NilSession(t *testing.T) {
 	ctx := context.Background()
 
 	node := &core.Node{
-		ID:      "node-nil-session",
-		Name:    "Nil Session Node",
-		Status:  core.NodeStatusOnline,
-		Session: nil,
+		ID:     "node-nil-session",
+		Name:   "Nil Session Node",
+		Status: core.NodeStatusOnline,
 	}
 
 	if err := mgr.Add(ctx, node); err != nil {
@@ -124,21 +123,21 @@ func TestGetSession_ConcurrentSafety(t *testing.T) {
 	defer cleanup()
 
 	node := &core.Node{
-		ID:      "node-concurrent",
-		Name:    "Concurrent Node",
-		Status:  core.NodeStatusOnline,
-		Session: session,
+		ID:     "node-concurrent",
+		Name:   "Concurrent Node",
+		Status: core.NodeStatusOnline,
 	}
 
 	if err := mgr.Add(ctx, node); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
+	mgr.AddSession(ctx, node.ID, session)
 
 	var (
-		wg             sync.WaitGroup
-		successCount   atomic.Int64
-		notFoundCount  atomic.Int64
-		offlineCount   atomic.Int64
+		wg               sync.WaitGroup
+		successCount     atomic.Int64
+		notFoundCount    atomic.Int64
+		offlineCount     atomic.Int64
 		readerGoroutines = 50
 	)
 
@@ -206,10 +205,10 @@ func TestUpdate_ConcurrentSafety(t *testing.T) {
 	}
 
 	var (
-		wg          sync.WaitGroup
+		wg           sync.WaitGroup
 		successCount atomic.Int64
-		failCount   atomic.Int64
-		updaters    = 100
+		failCount    atomic.Int64
+		updaters     = 100
 	)
 
 	// Each goroutine increments a counter stored in the node's RemoteAddr
@@ -265,5 +264,31 @@ func TestUpdate_NodeNotFound(t *testing.T) {
 	})
 	if !errors.Is(err, core.ErrNodeNotFound) {
 		t.Errorf("expected ErrNodeNotFound, got: %v", err)
+	}
+}
+
+func TestRemove_CleansSessionMap(t *testing.T) {
+	mgr := NewShardedNodeManager(4)
+	ctx := context.Background()
+
+	session, cleanup := newSmuxSessionPair()
+	defer cleanup()
+
+	node := &core.Node{
+		ID:     "node-remove",
+		Name:   "Remove Node",
+		Status: core.NodeStatusOnline,
+	}
+	if err := mgr.Add(ctx, node); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	mgr.AddSession(ctx, node.ID, session)
+
+	if err := mgr.Remove(ctx, node.ID); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	if _, err := mgr.GetSession(ctx, node.ID); !errors.Is(err, core.ErrNodeNotFound) {
+		t.Fatalf("expected ErrNodeNotFound after remove, got %v", err)
 	}
 }

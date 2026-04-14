@@ -1,32 +1,23 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
-	"moleAgent_Serv/internal/service"
-	"moleAgent_Serv/internal/tunnel"
 )
 
 type TunnelHandler struct {
-	nodeMgr    *node.ShardedNodeManager
-	gateway    *tunnel.TunnelGateway
-	controlSrv *tunnel.ControlServer
-	nodeRepo   core.NodeRepo
-	tunnelSvc  *service.TunnelConfigService // 隧道配置单一变更入口
+	nodeMgr   *node.ShardedNodeManager
+	tunnelSvc core.TunnelConfigManager // 隧道配置单一变更入口
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, gateway *tunnel.TunnelGateway, controlSrv *tunnel.ControlServer, nodeRepo core.NodeRepo, tunnelSvc *service.TunnelConfigService) *TunnelHandler {
+func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager) *TunnelHandler {
 	return &TunnelHandler{
-		nodeMgr:    nodeMgr,
-		gateway:    gateway,
-		controlSrv: controlSrv,
-		nodeRepo:   nodeRepo,
-		tunnelSvc:  tunnelSvc,
+		nodeMgr:   nodeMgr,
+		tunnelSvc: tunnelSvc,
 	}
 }
 
@@ -133,68 +124,26 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ListenPort: req.ListenPort,
 	}
 
-	// 通过统一服务处理
-	if h.tunnelSvc != nil {
-		if err := h.tunnelSvc.ApplyTunnel(r.Context(), req.NodeID, newTunnel); err != nil {
-			ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel: "+err.Error())
-			return
-		}
-		ResponseOK(w, map[string]any{
-			"status":       "ok",
-			"persisted":    true,
-			"client_synced": true,
-			"tunnel":       newTunnel,
-		})
+	if h.tunnelSvc == nil {
+		ResponseError(w, http.StatusInternalServerError, 500, "Tunnel service not configured")
 		return
 	}
 
-	// 降级：使用原有逻辑（service 未注入时）
-	node, ok := h.nodeMgr.Get(r.Context(), req.NodeID)
-	if !ok {
-		ResponseError(w, http.StatusNotFound, 404, "Node not found or offline")
-		return
-	}
-	updated := make([]core.Tunnel, 0, len(node.Tunnels)+1)
-	replaced := false
-	for _, t := range node.Tunnels {
-		if t.Name == req.Name {
-			updated = append(updated, newTunnel)
-			replaced = true
-		} else {
-			updated = append(updated, t)
-		}
-	}
-	if !replaced {
-		updated = append(updated, newTunnel)
-	}
-	if err := h.nodeMgr.Update(r.Context(), req.NodeID, func(n *core.Node) {
-		n.Tunnels = updated
-	}); err != nil {
-		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node: "+err.Error())
-		return
-	}
-	if h.gateway != nil {
-		h.gateway.RebuildIndex(r.Context())
-	}
-	clientSynced := false
-	if h.controlSrv != nil {
-		if err := h.controlSrv.PushTunnelUpdate(r.Context(), req.NodeID, updated); err != nil {
-			h.persistNode(r.Context(), req.NodeID)
-			ResponseOK(w, map[string]any{
-				"status":  "synced_server_only",
-				"warning": "client push failed: " + err.Error(),
-				"tunnel":  newTunnel,
-			})
+	result, err := h.tunnelSvc.ApplyTunnel(r.Context(), req.NodeID, newTunnel)
+	if err != nil {
+		if err == core.ErrNodeNotFound {
+			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
-		clientSynced = true
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel: "+err.Error())
+		return
 	}
-	h.persistNode(r.Context(), req.NodeID)
 	ResponseOK(w, map[string]any{
-		"status":       "ok",
-		"persisted":    true,
-		"client_synced": clientSynced,
-		"tunnel":       newTunnel,
+		"status":        result.Status,
+		"persisted":     result.Persisted,
+		"client_synced": result.ClientSynced,
+		"warning":       result.Warning,
+		"tunnel":        newTunnel,
 	})
 }
 
@@ -212,9 +161,6 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	var targetNodeID string
 	found := false
 	for _, n := range nodes {
-		if n.Status != core.NodeStatusOnline {
-			continue
-		}
 		for _, t := range n.Tunnels {
 			if t.Name == name {
 				targetNodeID = n.ID
@@ -228,67 +174,29 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
-		if h.gateway != nil {
-			h.gateway.StopTunnel(name)
-		}
-		ResponseOK(w, "tunnel stopped")
+		ResponseError(w, http.StatusNotFound, 404, "Tunnel not found")
 		return
 	}
 
-	// 通过统一服务处理
-	if h.tunnelSvc != nil {
-		if err := h.tunnelSvc.RemoveTunnel(r.Context(), targetNodeID, name); err != nil {
-			ResponseError(w, http.StatusInternalServerError, 500, "Failed to remove tunnel: "+err.Error())
+	if h.tunnelSvc == nil {
+		ResponseError(w, http.StatusInternalServerError, 500, "Tunnel service not configured")
+		return
+	}
+
+	result, err := h.tunnelSvc.RemoveTunnel(r.Context(), targetNodeID, name)
+	if err != nil {
+		if err == core.ErrNodeNotFound {
+			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
-		ResponseOK(w, map[string]any{
-			"status":    "ok",
-			"removed":   name,
-			"persisted": true,
-		})
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to remove tunnel: "+err.Error())
 		return
 	}
-
-	// 降级：使用原有逻辑
-	node, _ := h.nodeMgr.Get(r.Context(), targetNodeID)
-	updatedTunnels := make([]core.Tunnel, 0, len(node.Tunnels))
-	for _, t := range node.Tunnels {
-		if t.Name != name {
-			updatedTunnels = append(updatedTunnels, t)
-		}
-	}
-	if err := h.nodeMgr.Update(r.Context(), targetNodeID, func(n *core.Node) {
-		n.Tunnels = updatedTunnels
-	}); err != nil {
-		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node: "+err.Error())
-		return
-	}
-	if h.gateway != nil {
-		h.gateway.RebuildIndex(r.Context())
-	}
-	if h.controlSrv != nil {
-		h.controlSrv.PushTunnelUpdate(r.Context(), targetNodeID, updatedTunnels)
-	}
-	h.persistNode(r.Context(), targetNodeID)
 	ResponseOK(w, map[string]any{
-		"status":    "ok",
-		"removed":   name,
-		"persisted": true,
+		"status":        result.Status,
+		"removed":       name,
+		"persisted":     result.Persisted,
+		"client_synced": result.ClientSynced,
+		"warning":       result.Warning,
 	})
-}
-
-// persistNode 持久化节点隧道配置到数据库
-func (h *TunnelHandler) persistNode(ctx context.Context, nodeID string) {
-	if h.nodeRepo == nil {
-		return
-	}
-	node, ok := h.nodeMgr.Get(ctx, nodeID)
-	if !ok {
-		return
-	}
-	if existing, err := h.nodeRepo.GetByID(nodeID); err != nil || existing == nil {
-		h.nodeRepo.Create(node)
-	} else {
-		h.nodeRepo.Update(node)
-	}
 }

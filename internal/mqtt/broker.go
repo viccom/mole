@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
@@ -15,11 +16,12 @@ import (
 
 // EmbeddedBroker embedded MQTT Broker
 type EmbeddedBroker struct {
-	server  *mqtt.Server
-	tcpAddr string
-	wsAddr  string
-	authSvc *auth.AuthService
-	rbac    *auth.RBACEngine
+	server   *mqtt.Server
+	tcpAddr  string
+	wsAddr   string
+	authSvc  *auth.AuthService
+	rbac     *auth.RBACEngine
+	stopOnce sync.Once
 }
 
 // NewEmbeddedBroker creates an embedded MQTT Broker
@@ -37,7 +39,8 @@ func NewEmbeddedBroker(tcpAddr, wsAddr string, authSvc *auth.AuthService, rbac *
 	}
 }
 
-// Start starts the MQTT Broker (non-blocking: Serve runs in background goroutine)
+// Start starts the MQTT Broker.
+// mochi-mqtt Serve() is non-blocking, so Start must arrange shutdown explicitly.
 func (b *EmbeddedBroker) Start(ctx context.Context) error {
 	// Add Auth Hook
 	b.server.AddHook(&authHook{authSvc: b.authSvc}, nil)
@@ -67,26 +70,16 @@ func (b *EmbeddedBroker) Start(ctx context.Context) error {
 		slog.Info("MQTT WebSocket listening", "addr", b.wsAddr)
 	}
 
-	// Serve in background goroutine, return errors via channel
-	serveErr := make(chan error, 1)
-	go func() {
-		if err := b.server.Serve(); err != nil {
-			serveErr <- fmt.Errorf("mqtt serve: %w", err)
-		}
-		close(serveErr)
-	}()
+	if err := b.server.Serve(); err != nil {
+		return fmt.Errorf("mqtt serve: %w", err)
+	}
 
-	// Watch for context cancellation and serve errors
 	go func() {
-		select {
-		case <-ctx.Done():
-			b.server.Close()
-			slog.Info("MQTT broker stopped")
-		case err := <-serveErr:
-			if err != nil {
-				slog.Error("MQTT broker serve error", "error", err)
-			}
+		<-ctx.Done()
+		if err := b.Stop(context.Background()); err != nil {
+			slog.Debug("MQTT broker stop after context cancel", "error", err)
 		}
+		slog.Info("MQTT broker stopped")
 	}()
 
 	return nil
@@ -94,7 +87,11 @@ func (b *EmbeddedBroker) Start(ctx context.Context) error {
 
 // Stop stops the Broker
 func (b *EmbeddedBroker) Stop(_ context.Context) error {
-	return b.server.Close()
+	var stopErr error
+	b.stopOnce.Do(func() {
+		stopErr = b.server.Close()
+	})
+	return stopErr
 }
 
 // Publish publishes a message
@@ -114,6 +111,9 @@ func (b *EmbeddedBroker) GetClients() []core.MQTTClientInfo {
 	clients := b.server.Clients.GetAll()
 	result := make([]core.MQTTClientInfo, 0, len(clients))
 	for _, c := range clients {
+		if c.Net.Inline || c.ID == mqtt.InlineClientId {
+			continue
+		}
 		// 从 UserProperties 恢复原始 username
 		username := string(c.Properties.Username)
 		for _, up := range c.Properties.Props.User {
@@ -135,14 +135,19 @@ func (b *EmbeddedBroker) GetClients() []core.MQTTClientInfo {
 func (b *EmbeddedBroker) GetStats() core.MQTTStats {
 	clients := b.server.Clients.GetAll()
 	connected := 0
+	total := 0
 	for _, c := range clients {
+		if c.Net.Inline || c.ID == mqtt.InlineClientId {
+			continue
+		}
+		total++
 		if c.Net.Conn != nil {
 			connected++
 		}
 	}
 	return core.MQTTStats{
 		ClientsConnected: connected,
-		ClientsTotal:     len(clients),
+		ClientsTotal:     total,
 	}
 }
 

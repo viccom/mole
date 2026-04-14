@@ -2,8 +2,6 @@ package core
 
 import (
 	"time"
-
-	"github.com/xtaci/smux"
 )
 
 // NodeStatus 节点在线状态
@@ -16,19 +14,18 @@ const (
 
 // Node 代表一个连接到服务端的代理节点
 // 语义说明：
-//   - 预配置节点：通过 REST API 预先创建，Status=offline，无 Session
-//   - 在线节点：通过控制端口注册，Status=online，有 Session
-//   - Session 字段已废弃：运行态会话存储在 ShardedNodeManager.sessions map 中
+//   - 预配置节点：通过 REST API 预先创建，Status=offline，无运行态会话
+//   - 在线节点：通过控制端口注册，Status=online，运行态会话存储在 NodeManager 内部
+//   - Node 不再直接持有 smux Session，持久化模型与运行态连接已分离
 type Node struct {
-	ID             string       `json:"id"`
-	Name           string       `json:"name"`
-	Token          string       `json:"token,omitempty"`
-	Status         NodeStatus   `json:"status"`
-	Tunnels        []Tunnel     `json:"tunnels"`
-	RemoteAddr     string       `json:"remote_addr,omitempty"`
-	ConnectedAt    *time.Time   `json:"connected_at,omitempty"`
-	LastHeartbeat  *time.Time   `json:"last_heartbeat,omitempty"`
-	Session        *smux.Session `json:"-"` // Deprecated: use ShardedNodeManager.GetSession()
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Token         string     `json:"token,omitempty"`
+	Status        NodeStatus `json:"status"`
+	Tunnels       []Tunnel   `json:"tunnels"`
+	RemoteAddr    string     `json:"remote_addr,omitempty"`
+	ConnectedAt   *time.Time `json:"connected_at,omitempty"`
+	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
 }
 
 // TunnelType 隧道类型
@@ -44,8 +41,8 @@ const (
 type Tunnel struct {
 	Name       string     `json:"name"`
 	Type       TunnelType `json:"type"`
-	Target     string     `json:"target"`               // 后端地址，如 http://127.0.0.1:8080 或 127.0.0.1:3306
-	Domain     string     `json:"domain,omitempty"`     // HTTP 隧道的域名
+	Target     string     `json:"target"`                // 后端地址，如 http://127.0.0.1:8080 或 127.0.0.1:3306
+	Domain     string     `json:"domain,omitempty"`      // HTTP 隧道的域名
 	ListenPort int        `json:"listen_port,omitempty"` // TCP/UDP 隧道的监听端口
 }
 
@@ -96,9 +93,9 @@ type MQTTClientInfo struct {
 
 // MQTTStats MQTT Broker 统计
 type MQTTStats struct {
-	ClientsConnected  int `json:"clients_connected"`
-	ClientsTotal      int `json:"clients_total"`
-	Subscriptions     int `json:"subscriptions"`
+	ClientsConnected  int   `json:"clients_connected"`
+	ClientsTotal      int   `json:"clients_total"`
+	Subscriptions     int   `json:"subscriptions"`
 	MessagesPublished int64 `json:"messages_published"`
 	MessagesReceived  int64 `json:"messages_received"`
 }
@@ -106,9 +103,9 @@ type MQTTStats struct {
 // TunnelInfo 隧道运行时信息
 type TunnelInfo struct {
 	Tunnel
-	NodeID     string `json:"node_id"`
-	Listeners  int    `json:"listeners"`
-	Connections int   `json:"connections"`
+	NodeID      string `json:"node_id"`
+	Listeners   int    `json:"listeners"`
+	Connections int    `json:"connections"`
 }
 
 // ApiResponse 统一 API 响应格式
@@ -120,9 +117,9 @@ type ApiResponse struct {
 
 // PaginatedResponse 分页响应
 type PaginatedResponse struct {
-	Items      any   `json:"items"`
-	Total      int   `json:"total"`
-	Page       int   `json:"page"`
-	PerPage    int   `json:"per_page"`
-	TotalPages int   `json:"total_pages"`
+	Items      any `json:"items"`
+	Total      int `json:"total"`
+	Page       int `json:"page"`
+	PerPage    int `json:"per_page"`
+	TotalPages int `json:"total_pages"`
 }

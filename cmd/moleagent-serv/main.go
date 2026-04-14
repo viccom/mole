@@ -127,6 +127,7 @@ func main() {
 
 	// --- 隧道配置服务（单一变更入口）---
 	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv)
+	controlSrv.SetTunnelConfigManager(tunnelSvc)
 
 	// --- MQTT Broker ---
 	var mqttBroker *mqtt.EmbeddedBroker
@@ -190,6 +191,9 @@ func main() {
 	defer shutdownCancel()
 	apiSrv.Shutdown(shutdownCtx)
 	gatewaySrv.Shutdown(shutdownCtx)
+	if mqttBroker != nil {
+		_ = mqttBroker.Stop(shutdownCtx)
+	}
 	gateway.Stop()
 
 	slog.Info("moleAgent_Serv stopped gracefully")
@@ -215,8 +219,8 @@ func buildAPIRouter(
 	authH := api.NewAuthHandler(authSvc)
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost)
 	roleH := api.NewRoleHandler(roleRepo)
-	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo)
-	tunnelH := api.NewTunnelHandler(nodeMgr, gateway, controlSrv, nodeRepo, tunnelSvc)
+	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
+	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 

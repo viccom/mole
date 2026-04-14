@@ -13,11 +13,6 @@ import (
 	"moleAgent_Serv/internal/core"
 )
 
-// HyphenRouting 已迁移到 TunnelGateway 实例字段
-// 包级变量保留用于过渡期兼容（已废弃，将在后续版本删除）
-// Deprecated: 使用 TunnelGateway.HyphenRouting 替代
-var HyphenRouting = true
-
 // parseVirtualHostByHyphen 解析泛域名访问[mappingName和clientId以-分割的域名]
 func parseVirtualHostByHyphen(host string) (clientId, mappingName string, isVhost bool) {
 	host = stripPort(host)
@@ -297,8 +292,8 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 		}
 		w.WriteHeader(resp.StatusCode)
 		if _, err := io.Copy(w, resp.Body); err != nil {
-				slog.Debug("WS fallback body copy error", "tunnel", tunnelName, "error", err)
-			}
+			slog.Debug("WS fallback body copy error", "tunnel", tunnelName, "error", err)
+		}
 		return
 	}
 
