@@ -57,6 +57,7 @@ admin/                  前端静态文件
 - API 路由注册在 `cmd/moleagent-serv/main.go` 的 `buildAPIRouter`
 - 种子数据在 `storage/db.go` 的 `seedData()`
 - 修复BUG，改进功能，都要保证原来的业务功能正确。
+- **开发规范**：详见 [开发规范.md](开发规范.md)，包含编码、API、日志和架构约束。
 - **隧道配置真相源规则**：
   - **持久化配置是管理真相源**（NodeRepo/Redka 持久化层）
   - **在线节点内存态是运行副本**（ShardedNodeManager 内存）
