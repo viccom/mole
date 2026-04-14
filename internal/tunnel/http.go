@@ -13,7 +13,9 @@ import (
 	"moleAgent_Serv/internal/core"
 )
 
-// HyphenRouting 是否使用 hyphen(-) 作为泛域名分隔符，false 则使用 dot(.)
+// HyphenRouting 已迁移到 TunnelGateway 实例字段
+// 包级变量保留用于过渡期兼容（已废弃，将在后续版本删除）
+// Deprecated: 使用 TunnelGateway.HyphenRouting 替代
 var HyphenRouting = true
 
 // parseVirtualHostByHyphen 解析泛域名访问[mappingName和clientId以-分割的域名]
@@ -143,7 +145,7 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. 尝试泛域名解析
 	var clientId, mappingName string
 	var isVhost bool
-	if HyphenRouting {
+	if tg.HyphenRouting {
 		clientId, mappingName, isVhost = parseVirtualHostByHyphen(r.Host)
 	} else {
 		clientId, mappingName, isVhost = parseVirtualHost(r.Host)

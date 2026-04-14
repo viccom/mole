@@ -1,13 +1,14 @@
 package api
 
 import (
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
+	"moleAgent_Serv/internal/service"
 	"moleAgent_Serv/internal/tunnel"
 )
 
@@ -16,10 +17,17 @@ type TunnelHandler struct {
 	gateway    *tunnel.TunnelGateway
 	controlSrv *tunnel.ControlServer
 	nodeRepo   core.NodeRepo
+	tunnelSvc  *service.TunnelConfigService // 隧道配置单一变更入口
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, gateway *tunnel.TunnelGateway, controlSrv *tunnel.ControlServer, nodeRepo core.NodeRepo) *TunnelHandler {
-	return &TunnelHandler{nodeMgr: nodeMgr, gateway: gateway, controlSrv: controlSrv, nodeRepo: nodeRepo}
+func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, gateway *tunnel.TunnelGateway, controlSrv *tunnel.ControlServer, nodeRepo core.NodeRepo, tunnelSvc *service.TunnelConfigService) *TunnelHandler {
+	return &TunnelHandler{
+		nodeMgr:    nodeMgr,
+		gateway:    gateway,
+		controlSrv: controlSrv,
+		nodeRepo:   nodeRepo,
+		tunnelSvc:  tunnelSvc,
+	}
 }
 
 func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +100,7 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Create 创建/更新隧道配置，同步到客户端节点
+// Create 创建/更新隧道配置，通过 TunnelConfigService 统一处理
 func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name       string `json:"name"`
@@ -125,14 +133,27 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ListenPort: req.ListenPort,
 	}
 
-	// 查找目标节点
+	// 通过统一服务处理
+	if h.tunnelSvc != nil {
+		if err := h.tunnelSvc.ApplyTunnel(r.Context(), req.NodeID, newTunnel); err != nil {
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel: "+err.Error())
+			return
+		}
+		ResponseOK(w, map[string]any{
+			"status":       "ok",
+			"persisted":    true,
+			"client_synced": true,
+			"tunnel":       newTunnel,
+		})
+		return
+	}
+
+	// 降级：使用原有逻辑（service 未注入时）
 	node, ok := h.nodeMgr.Get(r.Context(), req.NodeID)
 	if !ok {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found or offline")
 		return
 	}
-
-	// 更新节点的隧道配置：追加或替换同名隧道
 	updated := make([]core.Tunnel, 0, len(node.Tunnels)+1)
 	replaced := false
 	for _, t := range node.Tunnels {
@@ -146,24 +167,19 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if !replaced {
 		updated = append(updated, newTunnel)
 	}
-
-	// 更新节点内存中的隧道配置
 	if err := h.nodeMgr.Update(r.Context(), req.NodeID, func(n *core.Node) {
 		n.Tunnels = updated
 	}); err != nil {
 		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node: "+err.Error())
 		return
 	}
-
-	// 重建路由索引
 	if h.gateway != nil {
 		h.gateway.RebuildIndex(r.Context())
 	}
-
-	// 推送配置到客户端
+	clientSynced := false
 	if h.controlSrv != nil {
 		if err := h.controlSrv.PushTunnelUpdate(r.Context(), req.NodeID, updated); err != nil {
-			// 推送失败不影响服务端配置，记录日志即可
+			h.persistNode(r.Context(), req.NodeID)
 			ResponseOK(w, map[string]any{
 				"status":  "synced_server_only",
 				"warning": "client push failed: " + err.Error(),
@@ -171,12 +187,18 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		clientSynced = true
 	}
-
-	ResponseOK(w, newTunnel)
+	h.persistNode(r.Context(), req.NodeID)
+	ResponseOK(w, map[string]any{
+		"status":       "ok",
+		"persisted":    true,
+		"client_synced": clientSynced,
+		"tunnel":       newTunnel,
+	})
 }
 
-// Delete 删除指定隧道，同步到客户端节点
+// Delete 删除指定隧道，通过 TunnelConfigService 统一处理
 func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/v1/tunnels/")
 	name = strings.TrimRight(name, "/")
@@ -188,9 +210,7 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	// 查找拥有该隧道的节点
 	nodes := h.nodeMgr.GetAll(r.Context())
 	var targetNodeID string
-	var updatedTunnels []core.Tunnel
 	found := false
-
 	for _, n := range nodes {
 		if n.Status != core.NodeStatusOnline {
 			continue
@@ -203,21 +223,11 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if found {
-			// 构建不含该隧道的新列表
-			node, _ := h.nodeMgr.Get(r.Context(), targetNodeID)
-			if node != nil {
-				for _, t := range node.Tunnels {
-					if t.Name != name {
-						updatedTunnels = append(updatedTunnels, t)
-					}
-				}
-			}
 			break
 		}
 	}
 
 	if !found {
-		// 也尝试停止服务端管理的隧道
 		if h.gateway != nil {
 			h.gateway.StopTunnel(name)
 		}
@@ -225,25 +235,46 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 更新节点内存中的隧道配置
+	// 通过统一服务处理
+	if h.tunnelSvc != nil {
+		if err := h.tunnelSvc.RemoveTunnel(r.Context(), targetNodeID, name); err != nil {
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to remove tunnel: "+err.Error())
+			return
+		}
+		ResponseOK(w, map[string]any{
+			"status":    "ok",
+			"removed":   name,
+			"persisted": true,
+		})
+		return
+	}
+
+	// 降级：使用原有逻辑
+	node, _ := h.nodeMgr.Get(r.Context(), targetNodeID)
+	updatedTunnels := make([]core.Tunnel, 0, len(node.Tunnels))
+	for _, t := range node.Tunnels {
+		if t.Name != name {
+			updatedTunnels = append(updatedTunnels, t)
+		}
+	}
 	if err := h.nodeMgr.Update(r.Context(), targetNodeID, func(n *core.Node) {
 		n.Tunnels = updatedTunnels
 	}); err != nil {
 		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node: "+err.Error())
 		return
 	}
-
-	// 重建路由索引
 	if h.gateway != nil {
 		h.gateway.RebuildIndex(r.Context())
 	}
-
-	// 推送配置到客户端
 	if h.controlSrv != nil {
 		h.controlSrv.PushTunnelUpdate(r.Context(), targetNodeID, updatedTunnels)
 	}
-
-	ResponseOK(w, map[string]any{"status": "ok", "removed": name})
+	h.persistNode(r.Context(), targetNodeID)
+	ResponseOK(w, map[string]any{
+		"status":    "ok",
+		"removed":   name,
+		"persisted": true,
+	})
 }
 
 // persistNode 持久化节点隧道配置到数据库
@@ -261,4 +292,3 @@ func (h *TunnelHandler) persistNode(ctx context.Context, nodeID string) {
 		h.nodeRepo.Update(node)
 	}
 }
-

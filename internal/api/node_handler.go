@@ -108,12 +108,6 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
 	id = strings.TrimRight(id, "/")
 
-	node, ok := h.nodeMgr.Get(r.Context(), id)
-	if !ok {
-		ResponseError(w, http.StatusNotFound, 404, "Node not found")
-		return
-	}
-
 	var req struct {
 		Name    string        `json:"name"`
 		Tunnels []core.Tunnel `json:"tunnels"`
@@ -123,21 +117,28 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Name != "" {
-		node.Name = req.Name
-	}
-	if req.Tunnels != nil {
-		node.Tunnels = req.Tunnels
+	// 使用显式 Update 方法，避免共享指针副作用
+	if err := h.nodeMgr.Update(r.Context(), id, func(n *core.Node) {
+		if req.Name != "" {
+			n.Name = req.Name
+		}
+		if req.Tunnels != nil {
+			n.Tunnels = req.Tunnels
+		}
+	}); err != nil {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
 	}
 
-	// Save updated node back to in-memory manager
-	h.nodeMgr.Add(r.Context(), node)
-	// Persist to Redka
-	if err := h.nodeRepo.Update(node); err != nil {
-		slog.Warn("Failed to persist node update", "error", err)
+	// 持久化
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if err := h.nodeRepo.Update(node); err != nil {
+			slog.Warn("Failed to persist node update", "error", err)
+		}
+		ResponseOK(w, node)
+	} else {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 	}
-
-	ResponseOK(w, node)
 }
 
 // Delete handles DELETE /api/v1/nodes/{id} and DELETE /api/v1/nodes/{id}/connection

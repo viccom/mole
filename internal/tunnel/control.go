@@ -310,6 +310,9 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		return
 	}
 
+		// 独立绑定运行态会话（与 Node 领域模型分离）
+		cs.nodeMgr.AddSession(ctx, cmd.NodeID, smuxSession)
+
 	state.set(node)
 	slog.Info("Node registered",
 		"nodeId", cmd.NodeID,

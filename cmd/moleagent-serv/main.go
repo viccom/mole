@@ -20,6 +20,7 @@ import (
 	"moleAgent_Serv/internal/logging"
 	"moleAgent_Serv/internal/mqtt"
 	"moleAgent_Serv/internal/node"
+	"moleAgent_Serv/internal/service"
 	"moleAgent_Serv/internal/storage"
 	"moleAgent_Serv/internal/tunnel"
 )
@@ -73,8 +74,8 @@ func main() {
 
 	// --- 依赖注入 ---
 	db := storage.DB()
-	userRepo := storage.NewUserRepo()
-	roleRepo := storage.NewRoleRepo()
+	userRepo := storage.NewUserRepo(db)
+	roleRepo := storage.NewRoleRepo(db)
 
 	jwtMgr := auth.NewJWTManager(cfg.Auth.JWTSecret, parseExpiry(cfg.Auth.JWTExpiry))
 	rbacEngine := auth.NewRBACEngine(db, roleRepo)
@@ -84,14 +85,14 @@ func main() {
 	})
 
 	nodeMgr := node.NewShardedNodeManager(256)
-	nodeRepo := storage.NewNodeRepo()
+	nodeRepo := storage.NewNodeRepo(db)
 
 	// --- 节点管理器 + 健康检查 ---
 	go node.StartHealthCheck(ctx, nodeMgr)
 
 	// --- 网关服务（HTTP 隧道）---（在 controlSrv 之前创建，因为注册回调需要引用）
 	gateway := tunnel.NewTunnelGateway(nodeMgr, cfg.Server.MaxConcurrent)
-	tunnel.HyphenRouting = cfg.Server.Gateway.HyphenRouting
+	gateway.HyphenRouting = cfg.Server.Gateway.HyphenRouting
 
 	// --- 控制端口 ---
 	token := *nodeToken
@@ -124,18 +125,24 @@ func main() {
 		}
 	}()
 
+	// --- 隧道配置服务（单一变更入口）---
+	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv)
+
 	// --- MQTT Broker ---
 	var mqttBroker *mqtt.EmbeddedBroker
 	if cfg.MQTT.Enabled {
 		mqttBroker = mqtt.NewEmbeddedBroker(cfg.MQTT.TCPPort, cfg.MQTT.WSPort, authSvc, rbacEngine)
-		if err := mqttBroker.Start(ctx); err != nil {
-			slog.Error("MQTT broker error", "error", err)
-			cancel()
-		}
+		go func() {
+			slog.Info("MQTT broker starting...")
+			if err := mqttBroker.Start(ctx); err != nil {
+				slog.Error("MQTT broker error", "error", err)
+				cancel()
+			}
+		}()
 	}
 
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo)
+	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc)
 	adminDir, _ := os.Getwd()
 	adminFS := http.StripPrefix("/admin", http.FileServer(http.Dir(filepath.Join(adminDir, "admin"))))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +207,7 @@ func buildAPIRouter(
 	roleRepo core.RoleRepo,
 	rbacEngine *auth.RBACEngine,
 	nodeRepo core.NodeRepo,
+	tunnelSvc *service.TunnelConfigService,
 ) http.Handler {
 	router := api.NewRouter(mw)
 
@@ -208,7 +216,7 @@ func buildAPIRouter(
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost)
 	roleH := api.NewRoleHandler(roleRepo)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo)
-	tunnelH := api.NewTunnelHandler(nodeMgr, gateway, controlSrv, nodeRepo)
+	tunnelH := api.NewTunnelHandler(nodeMgr, gateway, controlSrv, nodeRepo, tunnelSvc)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 

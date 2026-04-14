@@ -37,7 +37,7 @@ func NewEmbeddedBroker(tcpAddr, wsAddr string, authSvc *auth.AuthService, rbac *
 	}
 }
 
-// Start starts the MQTT Broker
+// Start starts the MQTT Broker (non-blocking: Serve runs in background goroutine)
 func (b *EmbeddedBroker) Start(ctx context.Context) error {
 	// Add Auth Hook
 	b.server.AddHook(&authHook{authSvc: b.authSvc}, nil)
@@ -67,15 +67,27 @@ func (b *EmbeddedBroker) Start(ctx context.Context) error {
 		slog.Info("MQTT WebSocket listening", "addr", b.wsAddr)
 	}
 
+	// Serve in background goroutine, return errors via channel
+	serveErr := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
-		b.server.Close()
-		slog.Info("MQTT broker stopped")
+		if err := b.server.Serve(); err != nil {
+			serveErr <- fmt.Errorf("mqtt serve: %w", err)
+		}
+		close(serveErr)
 	}()
 
-	if err := b.server.Serve(); err != nil {
-		return fmt.Errorf("mqtt serve: %w", err)
-	}
+	// Watch for context cancellation and serve errors
+	go func() {
+		select {
+		case <-ctx.Done():
+			b.server.Close()
+			slog.Info("MQTT broker stopped")
+		case err := <-serveErr:
+			if err != nil {
+				slog.Error("MQTT broker serve error", "error", err)
+			}
+		}
+	}()
 
 	return nil
 }
@@ -102,9 +114,17 @@ func (b *EmbeddedBroker) GetClients() []core.MQTTClientInfo {
 	clients := b.server.Clients.GetAll()
 	result := make([]core.MQTTClientInfo, 0, len(clients))
 	for _, c := range clients {
+		// 从 UserProperties 恢复原始 username
+		username := string(c.Properties.Username)
+		for _, up := range c.Properties.Props.User {
+			if up.Key == "original_username" {
+				username = up.Val
+				break
+			}
+		}
 		result = append(result, core.MQTTClientInfo{
 			ClientID:  c.ID,
-			Username:  string(c.Properties.Username),
+			Username:  username,
 			Connected: c.Net.Conn != nil,
 		})
 	}
@@ -153,9 +173,15 @@ func (h *authHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 		return false
 	}
 
-	ok := h.authSvc.VerifyMQTTCredentials(username, password)
+	userID, ok := h.authSvc.VerifyMQTTCredentials(username, password)
 	if ok {
-		slog.Info("MQTT client authenticated", "clientId", cl.ID, "username", username)
+		// 将 userID 存入 client.Properties.Username 供 ACL 使用
+		cl.Properties.Username = []byte(userID)
+		// 保留原始 username 到 Props.UserProperties 供管理接口展示
+		cl.Properties.Props.User = append(cl.Properties.Props.User, packets.UserProperty{
+			Key: "original_username", Val: username,
+		})
+		slog.Info("MQTT client authenticated", "clientId", cl.ID, "username", username, "userID", userID)
 	} else {
 		slog.Warn("MQTT auth failed", "clientId", cl.ID, "username", username)
 	}
@@ -177,8 +203,8 @@ func (h *aclHook) Provides(b byte) bool {
 }
 
 func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
-	username := string(cl.Properties.Username)
-	if username == "" {
+	userID := string(cl.Properties.Username) // 已被 authHook 替换为 userID
+	if userID == "" {
 		return false
 	}
 
@@ -192,14 +218,14 @@ func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 		return true // fallback: allow if no RBAC engine
 	}
 
-	allowed, err := h.rbac.CheckPermission(username, "mqtt", action)
+	allowed, err := h.rbac.CheckPermission(userID, "mqtt", action)
 	if err != nil {
-		slog.Warn("MQTT ACL check error", "username", username, "error", err)
+		slog.Warn("MQTT ACL check error", "userID", userID, "error", err)
 		return false
 	}
 
 	if !allowed {
-		slog.Warn("MQTT ACL denied", "clientId", cl.ID, "username", username, "topic", topic, "action", action)
+		slog.Warn("MQTT ACL denied", "clientId", cl.ID, "userID", userID, "topic", topic, "action", action)
 	}
 	return allowed
 }

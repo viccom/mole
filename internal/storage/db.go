@@ -146,6 +146,9 @@ func seedData() error {
 			return err
 		}
 		slog.Info("Assigned admin role to admin user")
+
+		// 维护 username → userID 索引
+		db.Hash().Set("usernames", adminUser, adminUser)
 	}
 
 	return nil

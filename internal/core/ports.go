@@ -10,6 +10,7 @@ type NodeManager interface {
 	Remove(ctx context.Context, nodeID string) error
 	Get(ctx context.Context, nodeID string) (*Node, bool)
 	GetAll(ctx context.Context) []*Node
+	Update(ctx context.Context, nodeID string, fn func(*Node)) error
 	Disconnect(ctx context.Context, nodeID string) error
 }
 
@@ -41,7 +42,7 @@ type AuthService interface {
 	VerifyToken(token string) (*Claims, error)
 	RefreshToken(token string) (string, error)
 	ChangePassword(ctx context.Context, userID, oldPass, newPass string) error
-	VerifyMQTTCredentials(username, password string) bool
+	VerifyMQTTCredentials(username, password string) (string, bool)
 }
 
 // RBACChecker RBAC 权限检查接口

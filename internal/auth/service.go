@@ -118,18 +118,21 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID, oldPass, newPa
 	return s.userRepo.SetPasswordHash(userID, newHash)
 }
 
-// VerifyMQTTCredentials 验证 MQTT 凭据（复用统一用户体系）
-func (s *AuthService) VerifyMQTTCredentials(username, password string) bool {
+// VerifyMQTTCredentials 验证 MQTT 凭据，返回 userID（统一权限主体）
+func (s *AuthService) VerifyMQTTCredentials(username, password string) (string, bool) {
 	user, err := s.userRepo.GetByUsername(username)
 	if err != nil {
-		return false
+		return "", false
 	}
 	if user.Status != core.UserStatusActive {
-		return false
+		return "", false
 	}
 	hash, err := s.userRepo.GetPasswordHash(user.ID)
 	if err != nil {
-		return false
+		return "", false
 	}
-	return VerifyPassword(password, hash)
+	if !VerifyPassword(password, hash) {
+		return "", false
+	}
+	return user.ID, true
 }

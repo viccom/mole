@@ -28,7 +28,7 @@ func setupTestDB(t *testing.T) {
 
 func TestUserRepoCRUD(t *testing.T) {
 	setupTestDB(t)
-	repo := NewUserRepo()
+	repo := NewUserRepo(db)
 
 	// Create
 	user := &core.User{ID: "test1", Username: "testuser", Status: "active"}
@@ -97,7 +97,7 @@ func TestUserRepoCRUD(t *testing.T) {
 
 func TestUserRepoNotFound(t *testing.T) {
 	setupTestDB(t)
-	repo := NewUserRepo()
+	repo := NewUserRepo(db)
 
 	_, err := repo.GetByID("nonexistent")
 	if err == nil {
@@ -112,7 +112,7 @@ func TestUserRepoNotFound(t *testing.T) {
 
 func TestRoleRepoCRUD(t *testing.T) {
 	setupTestDB(t)
-	repo := NewRoleRepo()
+	repo := NewRoleRepo(db)
 
 	role := &core.Role{
 		ID:          "test-role",
@@ -161,7 +161,7 @@ func TestRoleRepoCRUD(t *testing.T) {
 
 func TestNodeRepoCRUD(t *testing.T) {
 	setupTestDB(t)
-	repo := NewNodeRepo()
+	repo := NewNodeRepo(db)
 
 	n := &core.Node{
 		ID:     "node1",
@@ -230,7 +230,7 @@ func TestSeedData(t *testing.T) {
 	}
 
 	// 验证 admin 角色存在
-	repo := NewRoleRepo()
+	repo := NewRoleRepo(db)
 	role, err := repo.GetByID("admin")
 	if err != nil {
 		t.Fatalf("admin role not found: %v", err)
@@ -249,7 +249,7 @@ func TestSeedData(t *testing.T) {
 	}
 
 	// 验证 admin 用户
-	userRepo := NewUserRepo()
+	userRepo := NewUserRepo(db)
 	user, err := userRepo.GetByID("admin")
 	if err != nil {
 		t.Fatalf("admin user not found: %v", err)

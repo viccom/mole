@@ -114,6 +114,9 @@ type TunnelGateway struct {
 
 	tunnelMu sync.RWMutex
 	tunnelIdx map[string]*tunnelRoute // tunnelName -> route
+
+	// HyphenRouting 泛域名分隔符：true=hyphen(-), false=dot(.)
+	HyphenRouting bool
 }
 
 type domainRoute struct {
@@ -127,11 +130,12 @@ type tunnelRoute struct {
 
 func NewTunnelGateway(nodeMgr NodeProvider, maxConcurrent int) *TunnelGateway {
 	return &TunnelGateway{
-		nodeMgr:   nodeMgr,
-		registry:  NewListenerRegistry(),
-		sem:       NewSemaphore(maxConcurrent),
-		domainIdx: make(map[string]*domainRoute),
-		tunnelIdx: make(map[string]*tunnelRoute),
+		nodeMgr:       nodeMgr,
+		registry:      NewListenerRegistry(),
+		sem:           NewSemaphore(maxConcurrent),
+		domainIdx:     make(map[string]*domainRoute),
+		tunnelIdx:     make(map[string]*tunnelRoute),
+		HyphenRouting: true, // 默认使用 hyphen(-) 作为泛域名分隔符
 	}
 }
 

@@ -53,9 +53,23 @@ admin/                  前端静态文件
 
 - `UserStatus` / `NodeStatus` 是类型化常量，不使用原始字符串
 - `core.UserRepo` / `core.RoleRepo` 是接口，storage 包提供实现
-- smux Session 存储在 `core.Node.Session`
+- smux Session 优先存储在 `ShardedNodeManager` 内部 sessions map（与领域模型分离），fallback 到 `core.Node.Session`（过渡期兼容）
 - API 路由注册在 `cmd/moleagent-serv/main.go` 的 `buildAPIRouter`
 - 种子数据在 `storage/db.go` 的 `seedData()`
+- **隧道配置真相源规则**：
+  - **持久化配置是管理真相源**（NodeRepo/Redka 持久化层）
+  - **在线节点内存态是运行副本**（ShardedNodeManager 内存）
+  - **客户端注册带来的配置更新**，必须经过统一入口落库
+  - 节点重连时，优先使用持久化配置覆盖客户端上报的空配置
+  - REST API 增删隧道时，同时更新内存态和持久化
+
+## 节点模型语义
+
+- **预配置节点**：通过 REST API 预先创建的离线节点，Status=offline，无 session
+- **在线节点**：通过控制端口注册并建立 smux 会话的节点，Status=online，有 session
+- **运行态连接**：smux Session 存储在 ShardedNodeManager.sessions map 中，与 Node 结构体分离
+- **持久化隧道配置**：存储在 Redka 的 `nodes` hash 中，重启后可恢复
+- **客户端注册与服务端持久化配置的优先关系**：节点注册时，服务端以持久化配置优先（覆盖客户端上报的空配置）
 
 ## 构建 & 运行
 

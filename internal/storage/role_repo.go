@@ -3,14 +3,18 @@ package storage
 import (
 	"encoding/json"
 
+	"github.com/nalgeon/redka"
+
 	"moleAgent_Serv/internal/core"
 )
 
-type roleRepo struct{}
+type roleRepo struct {
+	db *redka.DB
+}
 
 // NewRoleRepo 创建角色仓库
-func NewRoleRepo() core.RoleRepo {
-	return &roleRepo{}
+func NewRoleRepo(db *redka.DB) core.RoleRepo {
+	return &roleRepo{db: db}
 }
 
 func (r *roleRepo) Create(role *core.Role) error {
@@ -18,12 +22,12 @@ func (r *roleRepo) Create(role *core.Role) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Hash().Set("roles", role.ID, string(data))
+	_, err = r.db.Hash().Set("roles", role.ID, string(data))
 	return err
 }
 
 func (r *roleRepo) GetByID(id string) (*core.Role, error) {
-	val, err := db.Hash().Get("roles", id)
+	val, err := r.db.Hash().Get("roles", id)
 	if err != nil {
 		return nil, core.ErrRoleNotFound
 	}
@@ -35,7 +39,7 @@ func (r *roleRepo) GetByID(id string) (*core.Role, error) {
 }
 
 func (r *roleRepo) GetAll() ([]*core.Role, error) {
-	items, err := db.Hash().Items("roles")
+	items, err := r.db.Hash().Items("roles")
 	if err != nil {
 		return nil, err
 	}
@@ -55,11 +59,11 @@ func (r *roleRepo) Update(role *core.Role) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Hash().Set("roles", role.ID, string(data))
+	_, err = r.db.Hash().Set("roles", role.ID, string(data))
 	return err
 }
 
 func (r *roleRepo) Delete(id string) error {
-	_, err := db.Hash().Delete("roles", id)
+	_, err := r.db.Hash().Delete("roles", id)
 	return err
 }

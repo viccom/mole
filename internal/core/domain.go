@@ -15,6 +15,10 @@ const (
 )
 
 // Node 代表一个连接到服务端的代理节点
+// 语义说明：
+//   - 预配置节点：通过 REST API 预先创建，Status=offline，无 Session
+//   - 在线节点：通过控制端口注册，Status=online，有 Session
+//   - Session 字段已废弃：运行态会话存储在 ShardedNodeManager.sessions map 中
 type Node struct {
 	ID             string       `json:"id"`
 	Name           string       `json:"name"`
@@ -24,7 +28,7 @@ type Node struct {
 	RemoteAddr     string       `json:"remote_addr,omitempty"`
 	ConnectedAt    *time.Time   `json:"connected_at,omitempty"`
 	LastHeartbeat  *time.Time   `json:"last_heartbeat,omitempty"`
-	Session        *smux.Session `json:"-"`
+	Session        *smux.Session `json:"-"` // Deprecated: use ShardedNodeManager.GetSession()
 }
 
 // TunnelType 隧道类型

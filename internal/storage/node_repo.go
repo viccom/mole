@@ -3,14 +3,18 @@ package storage
 import (
 	"encoding/json"
 
+	"github.com/nalgeon/redka"
+
 	"moleAgent_Serv/internal/core"
 )
 
-type nodeRepo struct{}
+type nodeRepo struct {
+	db *redka.DB
+}
 
 // NewNodeRepo 创建节点仓库
-func NewNodeRepo() core.NodeRepo {
-	return &nodeRepo{}
+func NewNodeRepo(db *redka.DB) core.NodeRepo {
+	return &nodeRepo{db: db}
 }
 
 func (r *nodeRepo) Create(node *core.Node) error {
@@ -18,12 +22,12 @@ func (r *nodeRepo) Create(node *core.Node) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Hash().Set("nodes", node.ID, string(data))
+	_, err = r.db.Hash().Set("nodes", node.ID, string(data))
 	return err
 }
 
 func (r *nodeRepo) GetByID(id string) (*core.Node, error) {
-	val, err := db.Hash().Get("nodes", id)
+	val, err := r.db.Hash().Get("nodes", id)
 	if err != nil {
 		return nil, core.ErrNodeNotFound
 	}
@@ -35,7 +39,7 @@ func (r *nodeRepo) GetByID(id string) (*core.Node, error) {
 }
 
 func (r *nodeRepo) GetAll() ([]*core.Node, error) {
-	items, err := db.Hash().Items("nodes")
+	items, err := r.db.Hash().Items("nodes")
 	if err != nil {
 		return nil, err
 	}
@@ -55,11 +59,11 @@ func (r *nodeRepo) Update(node *core.Node) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Hash().Set("nodes", node.ID, string(data))
+	_, err = r.db.Hash().Set("nodes", node.ID, string(data))
 	return err
 }
 
 func (r *nodeRepo) Delete(id string) error {
-	_, err := db.Hash().Delete("nodes", id)
+	_, err := r.db.Hash().Delete("nodes", id)
 	return err
 }
