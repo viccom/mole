@@ -16,6 +16,11 @@ logs/
 *.swo
 *~
 
+# Node
+node_modules/
+admin/dist/
+admin/tsconfig.tsbuildinfo
+
 # OS
 .DS_Store
 Thumbs.db
