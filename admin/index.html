@@ -101,7 +101,7 @@ function uf(s){
   if(!s)return'-';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
   return(d>0?d+'天 ':'')+h+'时'+m+'分';
 }
-function eh(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function eh(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
 /* 根据隧道信息生成访问地址 */
 const GW_BASE=(function(){const p=location.hostname.split('.');return p.length>2?p.slice(1).join('.'):location.hostname})();
@@ -118,7 +118,7 @@ function tunnelUrl(t){
 }
 
 /* ===== 路由 ===== */
-const pages={login:pgLogin,dashboard:pgDash,nodes:pgNodes,tunnels:pgTunnels,users:pgUsers,mqtt:pgMQTT,settings:pgSettings};
+const pages={login:pgLogin,dashboard:pgDash,nodes:pgNodes,tunnels:pgTunnels,users:pgUsers,accesstokens:pgAccessTokens,mqtt:pgMQTT,settings:pgSettings};
 function route(){
   const h=location.hash.slice(1)||'dashboard';
   if(!tk&&h!=='login'){location.hash='#login';return}
@@ -131,13 +131,13 @@ window.addEventListener('hashchange',route);
 function shell(title,html){
   const u=JSON.parse(localStorage.getItem('ma_u')||'{}');
   const h=location.hash.slice(1)||'dashboard';
-  const nav=(p,l,ic)=>'<div class="ni'+(h===p?' on':'')+'" data-p="'+p+'" onclick="location.hash=\'#'+p+'\'">'+ic+'<span>'+l+'</span></div>';
+  const nav=(p,l,ic)=>'<div class="ni'+(h===p?' on':'')+'" data-p="'+p+'" onclick="location.hash=&#39;#&#39;+this.dataset.p">'+ic+'<span>'+l+'</span></div>';
   document.getElementById('app').innerHTML=
     '<div class="app"><aside class="sb"><div class="sb-b">'+I.logo+'<span>MoleAgent</span></div>'+
     '<nav class="sb-n">'+
     nav('dashboard','仪表盘',I.dash)+nav('nodes','节点管理',I.node)+
     nav('tunnels','隧道管理',I.tunnel)+nav('users','用户管理',I.user)+
-    nav('mqtt','MQTT',I.mqtt)+nav('settings','系统设置',I.gear)+
+    nav('accesstokens','接入Token',I.key)+nav('mqtt','MQTT',I.mqtt)+nav('settings','系统设置',I.gear)+
     '</nav><div class="sb-f"><div class="ui">'+eh(u.username||'admin')+'</div>'+
     '<button class="btn btn-g btn-sm" onclick="doOut()" style="color:rgba(255,255,255,.7);border-color:rgba(255,255,255,.2)">'+I.out+' 退出</button></div></aside>'+
     '<div class="mn"><div class="tb"><h2>'+eh(title)+'</h2></div><div class="ct">'+html+'</div></div></div>';
@@ -198,18 +198,18 @@ async function pgDash(){
 async function pgNodes(){
   shell('节点管理','<div class="ld"><div class="sp"></div></div>');
   try{
-    const r=await G('/nodes');const it=r.data.items||[];
+    const r=await G('/nodes');const it=(r.data&&Array.isArray(r.data.items))?r.data.items:[];
     shell('节点管理','<div class="cd"><div class="cd-h"><h3>节点列表 ('+r.data.total+')</h3>'+
       '<div style="display:flex;gap:8px"><span style="font-size:12px;color:var(--t2);align-self:center">node_id: 8字符, 字母开头</span>'+
       '<button class="btn btn-p btn-sm" onclick="pgNodes()">'+I.dash+' 刷新</button></div></div>'+
-      '<div class="cd-b"><table><thead><tr><th>ID</th><th>名称</th><th>状态</th><th>隧道</th><th>连接时间</th><th>心跳</th><th>远程地址</th><th>操作</th></tr></thead><tbody>'+
+      '<div class="cd-b"><table><thead><tr><th>ID</th><th>名称</th><th>归属</th><th>状态</th><th>隧道</th><th>连接时间</th><th>心跳</th><th>远程地址</th><th>操作</th></tr></thead><tbody>'+
       it.map(n=>
-        '<tr><td><code>'+eh(n.id)+'</code></td><td>'+eh(n.name)+'</td><td>'+
+        '<tr><td><code>'+eh(n.id)+'</code></td><td>'+eh(n.name)+'</td><td>'+(n.owner_user_id==='system'?'系统':eh(n.owner_user_id||'-'))+'</td><td>'+
         (n.status==='online'?'<span class="bdg bdg-ok">在线</span>':'<span class="bdg bdg-er">离线</span>')+'</td><td>'+n.tunnel_count+'</td><td>'+
         ta(n.connected_at)+'</td><td>'+ta(n.last_heartbeat)+'</td><td><code>'+eh(n.remote_addr||'-')+'</code></td>'+
-        '<td class="acts"><button class="btn btn-g btn-sm" onclick="ndet(\''+eh(n.id)+'\')">'+I.chev+'</button>'+
-        (n.status==='online'?'<button class="btn btn-g btn-sm" onclick="ndisc(\''+eh(n.id)+'\')" title="断开">'+I.unlink+'</button>':'')+
-        '<button class="btn btn-d btn-sm" onclick="ndel(\''+eh(n.id)+'\')" title="删除">'+I.del+'</button></td></tr>'+
+        '<td class="acts"><button class="btn btn-g btn-sm" onclick="ndet(&quot;' + eh(n.id) + '&quot;)">'+I.chev+'</button>'+
+        (n.status==='online'?'<button class="btn btn-g btn-sm" onclick="ndisc(&quot;' + eh(n.id) + '&quot;)" title="断开">'+I.unlink+'</button>':'')+
+        '<button class="btn btn-d btn-sm" onclick="ndel(&quot;' + eh(n.id) + '&quot;)" title="删除">'+I.del+'</button></td></tr>'+
         '<tr id="nd-'+eh(n.id)+'" style="display:none"><td colspan="8" class="dr"><div id="ndc-'+eh(n.id)+'">加载中...</div></td></tr>'
       ).join('')+'</tbody></table></div></div>');
   }catch(e){shell('节点管理','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
@@ -222,14 +222,16 @@ async function ndet(id){
       const d=await G('/nodes/'+id),n=d.data;
       const ts=(n.tunnels||[]).map(t=>{
         const url=tunnelUrl({type:t.type,name:t.name,node_id:id,domain:t.domain,listen_port:t.listen_port});
-        return '<div class="tchip"><strong>'+eh(t.name)+'</strong> · <span class="bdg bdg-in">'+t.type+'</span> · '+eh(t.target)+' · '+url+
-        ' <button class="td" onclick="tdelFromNode(\''+eh(t.name)+'\',\''+eh(id)+'\')" title="删除">'+I.del+'</button></div>';
+        return '<div class="tchip"><strong>'+eh(t.name)+'</strong> '+(t.enabled!==false?'<span class="bdg bdg-ok" style="font-size:11px;padding:1px 7px">启用</span>':'<span class="bdg bdg-er" style="font-size:11px;padding:1px 7px">禁用</span>')+
+        ' · <span class="bdg bdg-in">'+t.type+'</span> · '+eh(t.target||'-')+' · '+url+
+        ' <button class="td" onclick="tdelFromNode(&quot;' + eh(t.name) + '&quot;,&quot;' + eh(id) + '&quot;)" title="删除">'+I.del+'</button></div>';
       }).join('');
       c.innerHTML=
         '<div style="margin-bottom:8px"><strong>Token:</strong> <code>'+eh(n.token||'-')+'</code></div>'+
+        '<div style="margin-bottom:8px"><strong>归属:</strong> '+(n.owner_user_id==='system'?'系统':eh(n.owner_user_id||'-'))+'</div>'+
         '<div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">'+
           '<strong>隧道:</strong> '+(ts||'<span style="color:var(--t2)">无</span>')+
-          '<button class="btn btn-p btn-sm" onclick="naddt(\''+eh(id)+'\')">'+I.plus+' 添加隧道</button>'+
+          '<button class="btn btn-p btn-sm" onclick="naddt(&quot;' + eh(id) + '&quot;)">'+I.plus+' 添加隧道</button>'+
         '</div>'+
         '<div><strong>连接:</strong> '+(n.connected_at||'-')+' &nbsp; <strong>心跳:</strong> '+(n.last_heartbeat||'-')+'</div>';
     }catch(e){c.textContent='加载失败'}
@@ -255,24 +257,25 @@ async function pgTunnels(){
   shell('隧道管理','<div class="ld"><div class="sp"></div></div>');
   try{
     const[t,s]=await Promise.all([G('/tunnels').catch(()=>({data:{items:[],total:0}})),G('/tunnels/stats').catch(()=>({data:{}}))]);
-    const it=t.data.items||[],st=s.data||{};
+    const it=(t.data&&Array.isArray(t.data.items))?t.data.items:[],st=s.data||{};
     shell('隧道管理',
       '<div class="sg">'+
         '<div class="sc"><div class="si bl">'+I.tunnel+'</div><div><h3>'+(st.total_tunnels||0)+'</h3><p>隧道总数</p></div></div>'+
-        '<div class="sc"><div class="si gr">'+I.tunnel+'</div><div><h3>'+(st.http_tunnels||0)+'</h3><p>HTTP</p></div></div>'+
-        '<div class="sc"><div class="si pu">'+I.tunnel+'</div><div><h3>'+(st.tcp_tunnels||0)+'</h3><p>TCP</p></div></div>'+
-        '<div class="sc"><div class="si or">'+I.tunnel+'</div><div><h3>'+(st.udp_tunnels||0)+'</h3><p>UDP</p></div></div>'+
+        '<div class="sc"><div class="si gr">'+I.tunnel+'</div><div><h3>'+(st.enabled_tunnels||0)+'</h3><p>启用中</p></div></div>'+
+        '<div class="sc"><div class="si pu">'+I.tunnel+'</div><div><h3>'+(st.active_tunnels||0)+'</h3><p>活跃中</p></div></div>'+
+        '<div class="sc"><div class="si or">'+I.tunnel+'</div><div><h3>'+(st.http_tunnels||0)+'</h3><p>HTTP隧道数</p></div></div>'+
       '</div>'+
       '<div class="cd"><div class="cd-h"><h3>隧道列表</h3>'+
         '<button class="btn btn-p btn-sm" onclick="tcr()">'+I.plus+' 创建隧道</button></div>'+
-      '<div class="cd-b"><table><thead><tr><th>名称</th><th>类型</th><th>目标</th><th>访问地址</th><th>节点</th><th>操作</th></tr></thead><tbody>'+
+      '<div class="cd-b"><table><thead><tr><th>名称</th><th>状态</th><th>类型</th><th>目标</th><th>访问地址</th><th>节点</th><th>操作</th></tr></thead><tbody>'+
       it.map(x=>
-        '<tr><td><code>'+eh(x.name)+'</code></td><td><span class="bdg bdg-'+(x.type==='http'?'in':x.type==='tcp'?'pu':'wa')+'">'+(x.type||'').toUpperCase()+'</span></td>'+
+        '<tr><td><code>'+eh(x.name)+'</code></td><td>'+
+        (x.enabled!==false?'<span class="bdg bdg-ok">启用</span>':'<span class="bdg bdg-er">禁用</span>')+'</td><td><span class="bdg bdg-'+(x.type==='http'?'in':x.type==='tcp'?'pu':'wa')+'">'+(x.type||'').toUpperCase()+'</span></td>'+
         '<td><code>'+eh(x.target)+'</code></td><td>'+tunnelUrl(x)+'</td>'+
         '<td><code>'+eh(x.node_id)+'</code></td>'+
         '<td class="acts">'+
-          '<button class="btn btn-g btn-sm" onclick="tedit(\''+eh(x.name)+'\',\''+eh(x.type)+'\',\''+eh(x.target)+'\',\''+eh(x.domain||'')+'\','+(x.listen_port||0)+',\''+eh(x.node_id)+'\')">'+I.edit+'</button>'+
-          '<button class="btn btn-d btn-sm" onclick="tdel(\''+eh(x.name)+'\')">'+I.del+'</button>'+
+          '<button class="btn btn-g btn-sm" onclick="tedit(&quot;' + eh(x.name) + '&quot;, &quot;' + eh(x.type) + '&quot;, &quot;' + eh(x.target) + '&quot;, &quot;' + eh(x.domain||'') + '&quot;, ' + (x.listen_port||0) + ', &quot;' + eh(x.node_id) + '&quot;, ' + (x.enabled!==false) + ')">'+I.edit+'</button>'+
+          '<button class="btn btn-d btn-sm" onclick="tdel(&quot;' + eh(x.name) + '&quot;)">'+I.del+'</button>'+
         '</td></tr>'
       ).join('')+'</tbody></table></div></div>');
   }catch(e){shell('隧道管理','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
@@ -309,15 +312,16 @@ async function tcr(t,presetNodeId){
     '<div class="fg"><label>目标地址</label><input id="ttg" value="'+target+'" placeholder="http://127.0.0.1:8080 或 127.0.0.1:3306"></div>'+
     '<div class="fg" id="tfd"><label>域名</label><input id="ttd" value="'+domain+'" placeholder="app.example.com"></div>'+
     '<div class="fg" id="tfp" style="display:none"><label>监听端口</label><input id="ttp" type="number" value="'+(port||'')+'" placeholder="8080"></div>'+
-    '<div class="fg"><label>节点</label><select id="ttnode"><option value="">-- 选择节点 --</option>'+nodeOptions+'</select></div>',
+    '<div class="fg"><label>节点</label><select id="ttnode"><option value="">-- 选择节点 --</option>'+nodeOptions+'</select></div>'+
+    '<div class="fg"><label><input id="tten" type="checkbox" '+(isEdit?(t.enabled===false?'':'checked'):'checked')+'> 启用隧道</label></div>',
     '<button class="btn btn-g" onclick="cmodal()">取消</button>'+
-    '<button class="btn btn-p" onclick="tcrDo('+(isEdit?'true':'false')+')" id="tcrbtn">'+(isEdit?'保存':'创建')+'</button>');
+    '<button class="btn btn-p" onclick="tcrDo(' + (isEdit) + ')" id="tcrbtn">'+(isEdit?'保存':'创建')+'</button>');
   updateTF();
 }
 
 /* 编辑隧道 — 从列表中调用 */
-function tedit(name,type,target,domain,listenPort,nodeId){
-  tcr({name,type,target,domain,listen_port:listenPort,node_id:nodeId});
+function tedit(name,type,target,domain,listenPort,nodeId,enabled){
+  tcr({name,type,target,domain,listen_port:listenPort,node_id:nodeId,enabled:enabled});
 }
 
 /* type 字段联动：控制 domain / listen_port 显示 */
@@ -344,7 +348,7 @@ async function tcrDo(isEdit){
   btn.disabled=true;btn.textContent='提交中...';
 
   try{
-    const body={name,type,target,node_id:nodeId};
+    const body={name,type,target,node_id:nodeId,enabled:!!document.getElementById('tten').checked};
     if(type==='http'&&domain) body.domain=domain;
     if((type==='tcp'||type==='udp')&&listenPort) body.listen_port=listenPort;
     const r=await P('/tunnels',body);
@@ -358,15 +362,15 @@ async function pgUsers(){
   shell('用户管理','<div class="ld"><div class="sp"></div></div>');
   try{
     const[u,r]=await Promise.all([G('/users'),G('/roles')]);
-    const ul=u.data||[],rl=r.data||[];
+    const ul=Array.isArray(u.data)?u.data:[],rl=Array.isArray(r.data)?r.data:[];
     shell('用户管理',
-      '<div class="tabs"><div class="tab on" onclick="utab(this,\'ut\')">用户列表</div><div class="tab" onclick="utab(this,\'rt\')">角色管理</div></div>'+
+      '<div class="tabs"><div class="tab on" onclick="utab(this,&quot;ut&quot;)">用户列表</div><div class="tab" onclick="utab(this,&quot;rt&quot;)">角色管理</div></div>'+
       '<div id="ut"><div class="cd"><div class="cd-h"><h3>用户列表</h3><button class="btn btn-p btn-sm" onclick="ucr()">'+I.plus+' 创建用户</button></div>'+
       '<div class="cd-b"><table><thead><tr><th>ID</th><th>用户名</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>'+
       ul.map(x=>'<tr><td><code>'+eh(x.id)+'</code></td><td>'+eh(x.username)+'</td><td>'+
         (x.status==='active'?'<span class="bdg bdg-ok">活跃</span>':'<span class="bdg bdg-er">禁用</span>')+'</td><td>'+ta(x.created_at)+'</td>'+
-        '<td class="acts"><button class="btn btn-g btn-sm" onclick="uedit(\''+eh(x.id)+'\',\''+eh(x.username)+'\',\''+x.status+'\')">'+I.key+'</button>'+
-        (x.id!=='admin'?'<button class="btn btn-d btn-sm" onclick="udel(\''+eh(x.id)+'\')">'+I.del+'</button>':'')+
+        '<td class="acts"><button class="btn btn-g btn-sm" onclick="uedit(&quot;' + eh(x.id) + '&quot;, &quot;' + eh(x.username) + '&quot;, &quot;' + x.status + '&quot;)">'+I.key+'</button>'+
+        (x.id!=='admin'?'<button class="btn btn-d btn-sm" onclick="udel(&quot;' + eh(x.id) + '&quot;)">'+I.del+'</button>':'')+
         '</td></tr>').join('')+'</tbody></table></div></div></div>'+
       '<div id="rt" style="display:none"><div class="cd"><div class="cd-h"><h3>角色列表</h3></div><div class="cd-b"><table><thead><tr><th>ID</th><th>名称</th><th>描述</th><th>权限</th></tr></thead><tbody>'+
       rl.map(x=>'<tr><td><code>'+eh(x.id)+'</code></td><td>'+eh(x.name)+'</td><td>'+eh(x.description||'-')+'</td><td>'+
@@ -377,16 +381,70 @@ async function pgUsers(){
 function utab(el,id){el.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));el.classList.add('on');document.getElementById('ut').style.display=id==='ut'?'':'none';document.getElementById('rt').style.display=id==='rt'?'':'none'}
 function ucr(){modal('创建用户','<div class="fg"><label>用户名</label><input id="cuu" required></div><div class="fg"><label>密码</label><input id="cup" type="password" required></div>','<button class="btn btn-g" onclick="cmodal()">取消</button><button class="btn btn-p" onclick="ucrDo()">创建</button>')}
 async function ucrDo(){try{await P('/users',{username:document.getElementById('cuu').value,password:document.getElementById('cup').value,status:'active'});toast('创建成功','success');cmodal();pgUsers()}catch(e){toast(e.message,'error')}}
-function uedit(id,un,st){modal('编辑用户 - '+eh(un),'<div class="fg"><label>新密码（留空不修改）</label><input id="eup" type="password" placeholder="输入新密码"></div><div class="fg"><label>状态</label><select id="eus"><option value="active"'+(st==='active'?' selected':'')+'>活跃</option><option value="disabled"'+(st==='disabled'?' selected':'')+'>禁用</option></select></div>','<button class="btn btn-g" onclick="cmodal()">取消</button><button class="btn btn-p" onclick="ueditDo(\''+eh(id)+'\')">保存</button>')}
+function uedit(id,un,st){modal('编辑用户 - '+eh(un),'<div class="fg"><label>新密码（留空不修改）</label><input id="eup" type="password" placeholder="输入新密码"></div><div class="fg"><label>状态</label><select id="eus"><option value="active"'+(st==='active'?' selected':'')+'>活跃</option><option value="disabled"'+(st==='disabled'?' selected':'')+'>禁用</option></select></div>','<button class="btn btn-g" onclick="cmodal()">取消</button><button class="btn btn-p" onclick="ueditDo(&quot;' + eh(id) + '&quot;)">保存</button>')}
 async function ueditDo(id){try{const p=document.getElementById('eup').value,s=document.getElementById('eus').value;if(p)await U('/users/'+id+'/password',{password:p});await U('/users/'+id+'/status',{status:s});toast('已更新','success');cmodal();pgUsers()}catch(e){toast(e.message,'error')}}
-async function udel(id){if(!confirm('确定删除用户 '+id+'？'))return;try{await D('/users/'+id);toast('已删除','success');pgUsers()}catch(e){toast(e.message,'error')}}
+async function udel(id){if(!confirm('确定删除用户 '+id+'？删除后该用户的接入 Token 将被禁用，归属节点将转为系统归属。'))return;try{await D('/users/'+id);toast('已删除','success');pgUsers()}catch(e){toast(e.message,'error')}}
+
+/* ===== 接入 Token 管理 ===== */
+async function pgAccessTokens(){
+  shell('接入Token','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const r=await G('/me/access-tokens');
+    const items=(r.data&&Array.isArray(r.data.items))?r.data.items:(Array.isArray(r.data)?r.data:[]);
+    shell('接入Token',
+      '<div class="cd"><div class="cd-h"><h3>Token 列表</h3>'+
+        '<button class="btn btn-p btn-sm" onclick="atcr()">'+I.plus+' 创建 Token</button></div>'+
+      '<div class="cd-b"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody>'+
+      items.map(x=>
+        '<tr><td>'+eh(x.name)+'</td><td><code>'+eh(x.token_prefix||'-')+'</code></td><td>'+
+        (x.status==='active'?'<span class="bdg bdg-ok">活跃</span>':'<span class="bdg bdg-er">禁用</span>')+'</td>'+
+        '<td>'+ta(x.last_used_at)+'</td><td>'+ta(x.created_at)+'</td>'+
+        '<td class="acts"><button class="btn btn-g btn-sm" onclick="atrot(&quot;' + eh(x.id) + '&quot;)">'+I.key+'</button>'+
+        '<button class="btn btn-d btn-sm" onclick="atdel(&quot;' + eh(x.id) + '&quot;)">'+I.del+'</button></td></tr>'
+      ).join('')+
+      (items.length===0?'<tr><td colspan="6" class="empty">暂无 Token</td></tr>':'')+
+      '</tbody></table></div></div>'+
+      '<div id="atbox" style="display:none;margin-top:16px" class="cd"><div class="cd-h"><h3>新 Token</h3></div>'+
+      '<div class="cd-b pad"><p style="color:var(--wa);margin-bottom:8px">请妥善保存，关闭后将无法再次查看</p>'+
+      '<div style="display:flex;gap:8px"><input id="atval" readonly style="flex:1;font-family:monospace;font-size:13px;padding:8px;border:1px solid var(--bd);border-radius:var(--r);background:var(--bg)"><button class="btn btn-g btn-sm" onclick="navigator.clipboard.writeText(document.getElementById(&quot;atval&quot;).value);toast(&quot;已复制&quot;,&quot;success&quot;)">复制</button></div></div></div>');
+  }catch(e){shell('接入Token','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+
+function atcr(){modal('创建 Token','<div class="fg"><label>名称</label><input id="atn" placeholder="例如: 生产环境节点"></div>','<button class="btn btn-g" onclick="cmodal()">取消</button><button class="btn btn-p" onclick="atcrDo()">创建</button>')}
+async function atcrDo(){
+  const n=document.getElementById('atn').value.trim();
+  if(!n){toast('请输入名称','error');return}
+  try{
+    const r=await P('/me/access-tokens',{name:n});
+    toast('Token 已创建','success');
+    cmodal();
+    showAtBox(r.data.token);
+    pgAccessTokens();
+  }catch(e){toast(e.message,'error')}
+}
+async function atrot(id){
+  if(!confirm('确定轮换此 Token？旧 Token 将立即失效。'))return;
+  try{
+    const r=await P('/me/access-tokens/'+id+'/rotate');
+    toast('Token 已轮换','success');
+    showAtBox(r.data.token);
+  }catch(e){toast(e.message,'error')}
+}
+async function atdel(id){if(!confirm('确定删除 Token？'))return;try{await D('/me/access-tokens/'+id);toast('已删除','success');pgAccessTokens()}catch(e){toast(e.message,'error')}}
+function showAtBox(token){
+  const box=document.getElementById('atbox');
+  if(!box)return;
+  document.getElementById('atval').value=token||'';
+  box.style.display='';
+  setTimeout(()=>{if(box)box.style.display='none'},10000);
+}
 
 /* ===== MQTT 管理 ===== */
 async function pgMQTT(){
   shell('MQTT 管理','<div class="ld"><div class="sp"></div></div>');
   try{
     const[s,c,t]=await Promise.all([G('/mqtt/stats').catch(()=>({data:{}})),G('/mqtt/clients').catch(()=>({data:[]})),G('/mqtt/topics').catch(()=>({data:[]}))]);
-    const sd=s.data||{},cl=c.data||[],tp=t.data||[];
+    const sd=s.data||{},cl=Array.isArray(c.data)?c.data:[],tp=Array.isArray(t.data)?t.data:[];
     shell('MQTT 管理',
       '<div class="sg">'+
         '<div class="sc"><div class="si gr">'+I.node+'</div><div><h3>'+(sd.clients_connected||0)+'</h3><p>在线客户端</p></div></div>'+
