@@ -68,6 +68,19 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	nodes := h.nodeMgr.GetAll(r.Context())
+
+	// 归属过滤（无 claims 时视为管理员，与 checkNodeOwnership 放行惯例一致）
+	claims := auth.GetClaims(r.Context())
+	if claims != nil && !IsAdmin(claims) {
+		filtered := make([]*core.Node, 0, len(nodes))
+		for _, n := range nodes {
+			if n.OwnerUserID == claims.UserID {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
+
 	totalTunnels := 0
 	activeTunnels := 0
 	tcpCount := 0
@@ -132,6 +145,16 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" || req.Type == "" || req.Target == "" || req.NodeID == "" {
 		ResponseError(w, http.StatusBadRequest, 400, "name, type, target, node_id are required")
 		return
+	}
+
+	// 归属校验：非管理员只能给自己节点的隧道操作
+	claims := auth.GetClaims(r.Context())
+	if claims != nil && !IsAdmin(claims) {
+		node, ok := h.nodeMgr.Get(r.Context(), req.NodeID)
+		if !ok || node.OwnerUserID != claims.UserID {
+			ResponseError(w, http.StatusNotFound, 404, "Node not found")
+			return
+		}
 	}
 
 	tunnelType := core.TunnelType(req.Type)

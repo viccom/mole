@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -267,6 +268,109 @@ func TestTunnelHandler_List_AdminSeesAll(t *testing.T) {
 	total, _ := data["total"].(float64)
 	if total != 2 {
 		t.Fatalf("expected total=2, got %v", total)
+	}
+}
+
+func TestTunnelHandler_Create_NonOwner_404(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+
+	// Step 1: Create a node owned by userB
+	n := &core.Node{
+		ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB",
+		Tunnels: []core.Tunnel{},
+	}
+	if err := nodeMgr.Add(ctx, n); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Step 2: Inject userA claims (non-admin, non-owner)
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	body, _ := json.Marshal(map[string]any{
+		"name":    "evil-tunnel",
+		"type":    "http",
+		"target":  "http://127.0.0.1:6666",
+		"node_id": "NodeB1",
+	})
+	req := reqWithClaims(http.MethodPost, "/api/v1/tunnels", body, claims)
+	w := httptest.NewRecorder()
+
+	// Step 3 & 4: POST tunnel for userB's node -- should get 404
+	handler.Create(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-owner tunnel create, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	// Step 5: Verify tunnel was NOT added to the node
+	gotNode, ok := nodeMgr.Get(ctx, "NodeB1")
+	if !ok {
+		t.Fatal("node should still exist")
+	}
+	if len(gotNode.Tunnels) != 0 {
+		t.Fatalf("no tunnel should be added, got %d tunnels", len(gotNode.Tunnels))
+	}
+}
+
+func TestTunnelHandler_Stats_NonAdminOnlyOwnTunnels(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+
+	// Step 1: userA has 3 tunnels across 2 nodes
+	nodeA1 := &core.Node{
+		ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA",
+		Tunnels: []core.Tunnel{
+			{Name: "web", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8080"},
+			{Name: "api", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:9090"},
+		},
+	}
+	nodeA2 := &core.Node{
+		ID: "NodeA2", Name: "a2", Status: core.NodeStatusOnline, OwnerUserID: "userA",
+		Tunnels: []core.Tunnel{
+			{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22"},
+		},
+	}
+	// userB has 2 tunnels
+	nodeB1 := &core.Node{
+		ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB",
+		Tunnels: []core.Tunnel{
+			{Name: "db", Type: core.TunnelTypeTCP, Target: "127.0.0.1:3306"},
+			{Name: "cache", Type: core.TunnelTypeTCP, Target: "127.0.0.1:6379"},
+		},
+	}
+	for _, n := range []*core.Node{nodeA1, nodeA2, nodeB1} {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	// Step 2: Inject userA claims (non-admin)
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/tunnels/stats", nil, claims)
+	w := httptest.NewRecorder()
+
+	// Step 3: Call Stats
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	// Step 4: Verify total_tunnels=3 (only userA's tunnels)
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	if v, _ := data["total_tunnels"].(float64); v != 3 {
+		t.Fatalf("expected total_tunnels=3 (only userA's), got %v", v)
+	}
+	if v, _ := data["active_tunnels"].(float64); v != 3 {
+		t.Fatalf("expected active_tunnels=3 (only userA's, all online+enabled), got %v", v)
 	}
 }
 

@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/node"
 )
 
 // --- mock UserRepo ---
@@ -108,7 +110,7 @@ func TestUserHandler_Delete_DisablesAccessTokens(t *testing.T) {
 	atRepo.Create(tok1)
 	atRepo.Create(tok2)
 
-	handler := NewUserHandler(userRepo, nil, 10, nodeRepo, atRepo)
+	handler := NewUserHandler(userRepo, nil, 10, nodeRepo, atRepo, nil)
 
 	req := reqWithClaims(http.MethodDelete, "/api/v1/users/userA", nil,
 		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
@@ -164,7 +166,7 @@ func TestUserHandler_Delete_ReassignsNodesToSystem(t *testing.T) {
 	// Also create a node owned by another user (should NOT be reassigned)
 	nodeRepo.Create(&core.Node{ID: "NodeOther", Name: "other", OwnerUserID: "userB"})
 
-	handler := NewUserHandler(userRepo, nil, 10, nodeRepo, atRepo)
+	handler := NewUserHandler(userRepo, nil, 10, nodeRepo, atRepo, nil)
 
 	req := reqWithClaims(http.MethodDelete, "/api/v1/users/userA", nil,
 		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
@@ -211,7 +213,7 @@ func TestUserHandler_Delete_NilRepos_NoPanic(t *testing.T) {
 	userRepo.Create(user, "fake-hash")
 
 	// Handler with nil accessTokenRepo and nil nodeRepo
-	handler := NewUserHandler(userRepo, nil, 10, nil, nil)
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
 
 	req := reqWithClaims(http.MethodDelete, "/api/v1/users/userA", nil,
 		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
@@ -227,5 +229,74 @@ func TestUserHandler_Delete_NilRepos_NoPanic(t *testing.T) {
 	// User should be deleted
 	if _, err := userRepo.GetByID("userA"); err == nil {
 		t.Fatal("user should be deleted")
+	}
+}
+
+func TestUserHandler_Delete_SyncsRuntimeNodeOwner(t *testing.T) {
+	ctx := context.Background()
+	userRepo := newMockUserRepo()
+	atRepo := newMockAccessTokenRepo()
+	nodeRepo := newTestNodeRepo()
+
+	// Step 1: Create a ShardedNodeManager (real, from node package)
+	nodeMgr := node.NewShardedNodeManager(4)
+
+	// Step 2: Add an online node with OwnerUserID="userA" to nodeMgr
+	onlineNode := &core.Node{
+		ID: "RuntimeNode1", Name: "r1", Status: core.NodeStatusOnline, OwnerUserID: "userA",
+		Tunnels: []core.Tunnel{},
+	}
+	if err := nodeMgr.Add(ctx, onlineNode); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Also add a second node owned by a different user (should NOT change)
+	otherNode := &core.Node{
+		ID: "RuntimeNodeOther", Name: "other", Status: core.NodeStatusOnline, OwnerUserID: "userB",
+		Tunnels: []core.Tunnel{},
+	}
+	if err := nodeMgr.Add(ctx, otherNode); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Step 3: Create a userHandler with the nodeMgr
+	user := &core.User{
+		ID:        "userA",
+		Username:  "alice",
+		Status:    core.UserStatusActive,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	userRepo.Create(user, "fake-hash")
+
+	handler := NewUserHandler(userRepo, nil, 10, nodeRepo, atRepo, nodeMgr)
+
+	// Step 4: Delete userA
+	req := reqWithClaims(http.MethodDelete, "/api/v1/users/userA", nil,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+
+	handler.Delete(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	// Step 5: Verify the node in nodeMgr now has OwnerUserID="system"
+	gotNode, ok := nodeMgr.Get(ctx, "RuntimeNode1")
+	if !ok {
+		t.Fatal("RuntimeNode1 should still exist in nodeMgr")
+	}
+	if gotNode.OwnerUserID != "system" {
+		t.Fatalf("expected RuntimeNode1 OwnerUserID=system, got %s", gotNode.OwnerUserID)
+	}
+
+	// Verify other user's node is unchanged
+	gotOther, ok := nodeMgr.Get(ctx, "RuntimeNodeOther")
+	if !ok {
+		t.Fatal("RuntimeNodeOther should still exist in nodeMgr")
+	}
+	if gotOther.OwnerUserID != "userB" {
+		t.Fatalf("RuntimeNodeOther should still be owned by userB, got %s", gotOther.OwnerUserID)
 	}
 }

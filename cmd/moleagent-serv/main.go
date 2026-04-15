@@ -223,7 +223,7 @@ func buildAPIRouter(
 
 	// Handlers
 	authH := api.NewAuthHandler(authSvc)
-	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo)
+	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo, nodeMgr)
 	roleH := api.NewRoleHandler(roleRepo)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
 	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc)

@@ -213,13 +213,8 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) != 1 {
-		// 旧全局 token 不匹配，尝试用户级 token 认证
-		if cs.authenticator == nil {
-			writeControlResp(conn, "err", "invalid token")
-			slog.Warn("Node auth failed", "remote", remoteAddr, "reason", "invalid token")
-			return
-		}
+	// 统一走 authenticator 认证（内部实现：用户级 token 优先 → legacy 兜底）
+	if cs.authenticator != nil {
 		grant, err := cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
 		if err != nil {
 			writeControlResp(conn, "err", "invalid token")
@@ -233,14 +228,21 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		cs.setupSmuxAndAccept(ctx, conn, remoteAddr, grant)
 		return
 	}
-	writeControlResp(conn, "ok", "authenticated")
-	slog.Info("Node authenticated (legacy)", "remote", remoteAddr)
 
-	// 旧全局 token 认证成功，构造 legacy grant
-	cs.setupSmuxAndAccept(ctx, conn, remoteAddr, &core.NodeAccessGrant{
-		UserID:       "system",
-		LegacyGlobal: true,
-	})
+	// 无 authenticator 时回退到旧全局 token 直接比对（兼容未注入场景）
+	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) == 1 {
+		writeControlResp(conn, "ok", "authenticated")
+		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr)
+
+		cs.setupSmuxAndAccept(ctx, conn, remoteAddr, &core.NodeAccessGrant{
+			UserID:       "system",
+			LegacyGlobal: true,
+		})
+		return
+	}
+
+	writeControlResp(conn, "err", "invalid token")
+	slog.Warn("Node auth failed", "remote", remoteAddr, "reason", "invalid token")
 
 }
 

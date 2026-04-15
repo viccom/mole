@@ -6,10 +6,15 @@
 - [服务架构](#服务架构)
 - [配置文件](#配置文件)
 - [认证与授权](#认证与授权)
+- [节点接入认证](#节点接入认证)
+- [节点归属与资源可见性](#节点归属与资源可见性)
 - [REST API](#rest-api)
 - [节点连接协议](#节点连接协议)
+- [隧道启停控制](#隧道启停控制)
 - [MQTT Broker](#mqtt-broker)
 - [管理页面](#管理页面)
+- [日志](#日志)
+- [常见问题](#常见问题)
 
 ---
 
@@ -33,6 +38,8 @@ export MA_ADMIN_PASS="your-admin-password"
 
 ./moleagent-serv -nodetoken "your-node-token"
 ```
+
+> **注意**：`-nodetoken` 是旧全局接入凭据，所有节点共用一个 Token。推荐使用**用户级接入 Token**（见[节点接入认证](#节点接入认证)），`-nodetoken` 仅作兼容过渡保留。
 
 服务默认监听端口：
 
@@ -213,6 +220,85 @@ curl http://localhost:9983/api/v1/metrics \
 
 ---
 
+## 节点接入认证
+
+节点接入服务端时需要通过认证，系统支持两种接入凭据：
+
+### 用户级接入 Token（推荐）
+
+每个用户可以创建多个接入 Token，客户端使用某个用户的 Token 接入后，节点自动归属该用户。
+
+**接入流程**：
+
+1. 用户通过 API 创建接入 Token（`POST /api/v1/me/access-tokens`）
+2. 将返回的 `mat_xxxx...` 格式 Token 配置到客户端
+3. 客户端连接服务端控制端口时发送该 Token
+4. 服务端校验通过后，节点自动绑定 `OwnerUserID` 为该用户
+
+**Token 特点**：
+
+- 格式：`mat_` 前缀 + 32 字节随机 hex（共 68 字符）
+- 服务端仅存 sha256 hash，不存明文
+- 明文仅在创建/轮换时返回一次
+- 支持 `active` / `disabled` 两种状态
+- 支持轮换（rotate），旧 Token 立即失效
+
+### 旧全局 nodetoken（兼容保留）
+
+通过 `-nodetoken` 参数或 `MA_NODE_TOKEN` 环境变量设置的全局 Token。
+
+- 所有节点共用同一凭据，无法区分接入者
+- 兼容期内保留，使用旧 Token 接入的节点归属 `system`
+- 不推荐新增使用，后续版本将弃用
+
+### 认证优先级
+
+服务端按以下顺序校验：
+
+1. 先尝试用户级 Token（sha256 hash 查找）
+2. 找到且 active → 认证成功，绑定用户归属
+3. 未找到 → 尝试旧全局 Token（常量时间比较）
+4. 匹配 → 认证成功，归属标记为 `system`（legacy）
+5. 都不匹配 → 认证失败
+
+> **实现细节**：ControlServer 统一委托给 `NodeAccessAuthenticator` 处理认证，不直接比对旧全局 Token，保证优先级语义一致。仅在未注入认证服务时回退到直接比对模式。
+
+---
+
+## 节点归属与资源可见性
+
+### 归属模型
+
+每个节点有 `OwnerUserID` 字段，标识节点归属用户：
+
+- **用户级 Token 接入**：自动绑定为 Token 所属用户
+- **旧全局 Token 接入**：归属 `system`
+- **预配置节点**：通过 REST API 创建，管理员创建归 system，普通用户自动归自己
+
+### 可见性规则
+
+| 角色 | 节点/隧道可见范围 |
+|------|------------------|
+| `admin` | 全部节点和隧道 |
+| 普通用户 | 仅 `OwnerUserID == 自己` 的节点及其隧道 |
+
+**访问行为**：
+
+- 非管理员 `List` 只返回自己的节点/隧道
+- 非管理员 `Get/Update/Delete` 访问他人资源返回 `404`
+- Handler 层做归属过滤，Repo 层不感知归属
+- 非管理员创建/修改隧道时校验目标节点归属，只能操作自己的节点
+
+### 级联处理
+
+删除用户时：
+
+1. 该用户所有 AccessToken 标记为 `disabled`
+2. 归属节点的 `OwnerUserID` 改为 `system`（持久化层和运行态同步更新）
+3. 已在线节点不强制断开（但重连时 Token 已失效）
+
+---
+
 ## REST API
 
 ### 基础信息
@@ -330,6 +416,106 @@ curl -X POST http://localhost:9983/api/v1/roles \
   }'
 ```
 
+### 个人 Access Token 管理
+
+用户自助管理节点接入凭据，仅需要登录认证，无需额外 RBAC 权限。
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| GET | `/me/access-tokens` | 列出我的 Token | 是 |
+| POST | `/me/access-tokens` | 创建 Token | 是 |
+| DELETE | `/me/access-tokens/{id}` | 删除 Token | 是 |
+| POST | `/me/access-tokens/{id}/rotate` | 轮换 Token | 是 |
+
+**创建 Token**：
+
+```bash
+curl -X POST http://localhost:9983/api/v1/me/access-tokens \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "办公室网关"}'
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "id": "atk_1744617600000000000",
+    "name": "办公室网关",
+    "token": "mat_a1b2c3d4e5f6...（完整明文，仅此一次）",
+    "token_prefix": "mat_a1b2",
+    "created_at": "2026-04-14T12:00:00Z"
+  }
+}
+```
+
+> **重要**：完整 Token 仅在创建和轮换时返回一次，后续无法再查看。
+
+**列出 Token**：
+
+```bash
+curl http://localhost:9983/api/v1/me/access-tokens \
+  -H 'Authorization: Bearer <token>'
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "items": [
+      {
+        "id": "atk_1744617600000000000",
+        "name": "办公室网关",
+        "token_prefix": "mat_a1b2",
+        "status": "active",
+        "last_used_at": "2026-04-15T08:30:00Z",
+        "created_at": "2026-04-14T12:00:00Z"
+      }
+    ],
+    "total": 1
+  }
+}
+```
+
+**轮换 Token**：
+
+```bash
+curl -X POST http://localhost:9983/api/v1/me/access-tokens/atk_xxx/rotate \
+  -H 'Authorization: Bearer <token>'
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "id": "atk_1744617600000000000",
+    "name": "办公室网关",
+    "token": "mat_new_token_value...（新的完整明文）",
+    "token_prefix": "mat_new1"
+  }
+}
+```
+
+轮换后旧 Token 立即失效，使用新 Token 连接即可。已在线节点不会被断开。
+
+**删除 Token**：
+
+```bash
+curl -X DELETE http://localhost:9983/api/v1/me/access-tokens/atk_xxx \
+  -H 'Authorization: Bearer <token>'
+```
+
+删除后该 Token 不可用于新连接，已在线节点不会被断开。
+
 ### 节点管理
 
 | 方法 | 路径 | 说明 | 权限 |
@@ -353,10 +539,15 @@ curl -X POST http://localhost:9983/api/v1/nodes \
     "token": "node-auth-token",
     "tunnels": [
       {"name": "web", "type": "http", "target": "http://127.0.0.1:8080", "domain": "app.example.com"},
-      {"name": "db", "type": "tcp", "target": "127.0.0.1:3306", "listen_port": 20001}
+      {"name": "db", "type": "tcp", "target": "127.0.0.1:3306", "listen_port": 20001},
+      {"name": "admin", "type": "http", "target": "http://127.0.0.1:9090", "domain": "admin.example.com", "enabled": false}
     ]
   }'
 ```
+
+> **归属**：管理员创建的预配置节点自动归属 `system`；普通用户创建的节点自动归属当前用户。
+
+> **可见性**：管理员可查看全部节点；普通用户只能看到 `OwnerUserID` 为自己的节点。
 
 ### 隧道管理
 
@@ -366,6 +557,33 @@ curl -X POST http://localhost:9983/api/v1/nodes \
 | GET | `/tunnels/stats` | 隧道统计 | `tunnels:read` |
 | POST | `/tunnels` | 创建动态隧道 | `tunnels:write` |
 | DELETE | `/tunnels/{name}` | 删除隧道 | `tunnels:delete` |
+
+**隧道统计**：
+
+```bash
+curl http://localhost:9983/api/v1/tunnels/stats \
+  -H 'Authorization: Bearer <token>'
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "total_tunnels": 10,
+    "enabled_tunnels": 8,
+    "active_tunnels": 5
+  }
+}
+```
+
+- `total_tunnels`：所有隧道总数（含禁用）
+- `enabled_tunnels`：`enabled=true` 或未设置的隧道数
+- `active_tunnels`：在线节点上 `enabled=true` 的隧道数（正在服务中）
+
+> **可见性**：管理员可查看全部隧道；普通用户只能看到自己节点上的隧道。
 
 ### MQTT 管理
 
@@ -410,9 +628,9 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
      │                                   │
      │◀────── 32 字节 Challenge ─────────│
      │                                   │
-     │── JSON {"token":"xxx"} ──────────▶│ 验证 Token
+     │── JSON {"token":"mat_xxx"} ──────▶│ 验证 Token（用户级优先）
      │                                   │
-     │◀──── {"cmd":"ok"} ────────────────│ 认证成功
+     │◀──── {"cmd":"ok"} ────────────────│ 认证成功 + 绑定归属用户
      │                                   │
      │◀════════ smux session ═══════════▶│ 复用同一 TCP
      │                                   │
@@ -433,7 +651,7 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
   "cmd": "register",
   "node_id": "prod-server-01",
   "name": "生产服务器 01",
-  "token": "节点认证令牌",
+  "token": "mat_a1b2c3d4...",
   "tunnels": [
     {
       "name": "web",
@@ -452,6 +670,13 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
       "type": "udp",
       "target": "127.0.0.1:53",
       "listen_port": 20002
+    },
+    {
+      "name": "admin",
+      "type": "http",
+      "target": "http://127.0.0.1:9090",
+      "domain": "admin.example.com",
+      "enabled": false
     }
   ]
 }
@@ -464,6 +689,51 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
 | `http` | HTTP 反向代理 | `domain`（按 Host 匹配） |
 | `tcp` | TCP 端口映射 | `listen_port` |
 | `udp` | UDP 端口映射 | `listen_port` |
+
+---
+
+## 隧道启停控制
+
+每个隧道配置支持 `enabled` 字段，可控制隧道是否对外生效。
+
+### 字段语义
+
+| 值 | 行为 |
+|----|------|
+| 未设置（nil） | 启用（向后兼容旧数据） |
+| `true` | 启用 |
+| `false` | 禁用：配置保留，但不参与服务端路由和客户端转发 |
+
+### 使用方式
+
+在隧道配置中设置 `enabled` 字段：
+
+```json
+{
+  "name": "admin-panel",
+  "type": "http",
+  "target": "http://127.0.0.1:9090",
+  "domain": "admin.example.com",
+  "enabled": false
+}
+```
+
+禁用后：
+
+- 配置仍保留在服务端持久化存储中
+- 隧道出现在列表 API 中（带 `enabled: false` 标记）
+- 服务端路由不匹配该隧道（HTTP 域名索引跳过、TCP/UDP 请求分发跳过）
+- 客户端收到配置推送后，后续转发也忽略该隧道
+- 重新启用只需将 `enabled` 设为 `true`
+
+### 生效范围
+
+`enabled=false` 的过滤在以下位置生效：
+
+- **HTTP 网关**：域名索引构建、请求路由匹配均跳过
+- **TCP 转发**：`findNodeForTunnel` 查找 + 运行时二次检查
+- **UDP 转发**：同 TCP 模式
+- **统计 API**：`active_tunnels` 仅统计 online + enabled 的隧道
 
 ---
 
@@ -554,20 +824,67 @@ export MA_JWT_SECRET="your-secret-key-at-least-16-characters"
 
 ### Q: 节点连接被拒绝
 
-检查节点 Token 是否与服务端配置一致：
+检查节点使用的接入凭据：
 
 ```bash
-# 服务端启动时指定
-./moleagent-serv -nodetoken "your-node-token"
+# 方式一（推荐）：使用用户级接入 Token
+# 1. 登录 API 获取 JWT Token
+# 2. 创建接入 Token
+curl -X POST http://localhost:9983/api/v1/me/access-tokens \
+  -H 'Authorization: Bearer <jwt>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "my-node"}'
+# 3. 将返回的 mat_xxx... 配置到客户端
 
-# 节点客户端连接时使用相同 Token
+# 方式二（兼容）：使用旧全局 nodetoken
+./moleagent-serv -nodetoken "your-node-token"
+# 客户端连接时使用相同 Token
 ```
 
 ### Q: HTTP 隧道 502 Bad Gateway
 
 - 确认节点在线：`GET /api/v1/nodes`
 - 确认节点已注册隧道：`GET /api/v1/nodes/{id}/tunnels`
+- 确认隧道未被禁用（`enabled` 不为 `false`）
 - 检查节点后端服务是否正常运行
+
+### Q: 如何让隧道暂时不对外生效
+
+在隧道配置中设置 `"enabled": false`：
+
+```bash
+curl -X POST http://localhost:9983/api/v1/tunnels \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "web", "type": "http", "target": "http://127.0.0.1:8080", "domain": "app.example.com", "enabled": false}'
+```
+
+禁用后配置保留，重新启用只需将 `enabled` 改为 `true`。
+
+### Q: 如何轮换节点接入 Token
+
+```bash
+# 轮换 Token（需要登录后的 JWT）
+curl -X POST http://localhost:9983/api/v1/me/access-tokens/atk_xxx/rotate \
+  -H 'Authorization: Bearer <jwt>'
+```
+
+轮换后旧 Token 立即失效，新 Token 在响应中返回。已在线节点不会被断开，但重连时需使用新 Token。
+
+### Q: 普通用户看不到节点
+
+普通用户只能看到 `OwnerUserID` 等于自己的节点。确认：
+
+1. 节点是使用该用户的 Access Token 接入的（而非旧全局 nodetoken）
+2. 使用旧全局 Token 接入的节点归属 `system`，仅管理员可见
+
+### Q: 删除用户后其节点怎么办
+
+删除用户时系统自动处理：
+
+- 该用户的接入 Token 全部标记为 `disabled`（不可用于新连接）
+- 归属节点的 `OwnerUserID` 改为 `system`（持久化和运行态同步更新，管理员可重新分配）
+- 已在线节点不会被断开
 
 ### Q: 如何查看实时日志
 
@@ -581,3 +898,7 @@ grep "ERROR" logs/moleagent.log
 # JSON 格式查看
 cat logs/moleagent.log | jq
 ```
+
+### Q: 升级后旧节点看不到
+
+从旧版本升级后，已有节点的 `OwnerUserID` 为空。系统启动时自动迁移：将 `OwnerUserID == ""` 的节点设为 `"system"`，管理员可在管理页面重新分配归属。

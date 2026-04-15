@@ -16,10 +16,11 @@ type UserHandler struct {
 	bcryptCost     int
 	nodeRepo       core.NodeRepo
 	accessTokenRepo core.AccessTokenRepo
+	nodeMgr        core.NodeManager // 运行态节点管理器（同步归属）
 }
 
-func NewUserHandler(userRepo core.UserRepo, rbac *auth.RBACEngine, bcryptCost int, nodeRepo core.NodeRepo, accessTokenRepo core.AccessTokenRepo) *UserHandler {
-	return &UserHandler{userRepo: userRepo, rbac: rbac, bcryptCost: bcryptCost, nodeRepo: nodeRepo, accessTokenRepo: accessTokenRepo}
+func NewUserHandler(userRepo core.UserRepo, rbac *auth.RBACEngine, bcryptCost int, nodeRepo core.NodeRepo, accessTokenRepo core.AccessTokenRepo, nodeMgr core.NodeManager) *UserHandler {
+	return &UserHandler{userRepo: userRepo, rbac: rbac, bcryptCost: bcryptCost, nodeRepo: nodeRepo, accessTokenRepo: accessTokenRepo, nodeMgr: nodeMgr}
 }
 
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -209,8 +210,25 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if migrated > 0 {
-				slog.Info("Reassigned nodes from deleted user to system", "userId", id, "count", migrated)
+				slog.Info("Reassigned nodes from deleted user to system (persisted)", "userId", id, "count", migrated)
 			}
+		}
+	}
+
+	// 同步更新在线运行态中的归属
+	if h.nodeMgr != nil {
+		runtimeNodes := h.nodeMgr.GetAll(r.Context())
+		runtimeUpdated := 0
+		for _, n := range runtimeNodes {
+			if n.OwnerUserID == id {
+				h.nodeMgr.Update(r.Context(), n.ID, func(rn *core.Node) {
+					rn.OwnerUserID = "system"
+				})
+				runtimeUpdated++
+			}
+		}
+		if runtimeUpdated > 0 {
+			slog.Info("Reassigned online nodes from deleted user to system (runtime)", "userId", id, "count", runtimeUpdated)
 		}
 	}
 

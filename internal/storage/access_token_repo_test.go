@@ -48,8 +48,9 @@ func TestAccessTokenRepo_CreateAndGetByID(t *testing.T) {
 	if got.TokenPrefix != token.TokenPrefix {
 		t.Errorf("TokenPrefix: expected %s, got %s", token.TokenPrefix, got.TokenPrefix)
 	}
-	// Note: TokenHash has json:"-" tag, so it is not persisted and will be empty after retrieval.
-	// The hash index is stored separately in the access_token_hash_index hash.
+	if got.TokenHash != token.TokenHash {
+		t.Errorf("TokenHash: expected %s, got %s", token.TokenHash, got.TokenHash)
+	}
 	if got.Status != token.Status {
 		t.Errorf("Status: expected %s, got %s", token.Status, got.Status)
 	}
@@ -229,6 +230,59 @@ func TestAccessTokenRepo_Delete_NotFound(t *testing.T) {
 	err := repo.Delete("nonexistent")
 	if err != nil {
 		t.Errorf("Delete of nonexistent ID should not error, got %v", err)
+	}
+}
+
+func TestAccessTokenRepo_Update_MaintainsHashIndex(t *testing.T) {
+	setupTestDB(t)
+	repo := NewAccessTokenRepo(db)
+
+	// Step 1: Create a token with an initial hash
+	originalRaw := "mat_testraw_rotation_test"
+	token := newTestToken("user-1", "rotate-me")
+	token.TokenHash = GenerateTokenHash(originalRaw)
+	if err := repo.Create(token); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Step 2: Verify original hash finds it via GetByHash
+	got, err := repo.GetByHash(GenerateTokenHash(originalRaw))
+	if err != nil {
+		t.Fatalf("GetByHash with original hash should succeed: %v", err)
+	}
+	if got.ID != token.ID {
+		t.Errorf("expected ID %s, got %s", token.ID, got.ID)
+	}
+
+	// Step 3: Update the token with a new TokenHash (simulating rotation)
+	newRaw := "mat_testraw_rotated_brand_new"
+	token.TokenHash = GenerateTokenHash(newRaw)
+	if err := repo.Update(token); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	// Step 4: Verify the OLD hash no longer finds it (ErrNotFound)
+	_, err = repo.GetByHash(GenerateTokenHash(originalRaw))
+	if err != core.ErrNotFound {
+		t.Errorf("expected ErrNotFound for old hash after update, got %v", err)
+	}
+
+	// Step 5: Verify the NEW hash finds it correctly
+	got, err = repo.GetByHash(GenerateTokenHash(newRaw))
+	if err != nil {
+		t.Fatalf("GetByHash with new hash should succeed: %v", err)
+	}
+	if got.ID != token.ID {
+		t.Errorf("expected ID %s, got %s", token.ID, got.ID)
+	}
+
+	// Step 6: Verify persisted record also contains the latest TokenHash
+	gotByID, err := repo.GetByID(token.ID)
+	if err != nil {
+		t.Fatalf("GetByID after rotation should succeed: %v", err)
+	}
+	if gotByID.TokenHash != token.TokenHash {
+		t.Fatalf("expected persisted TokenHash=%s, got %s", token.TokenHash, gotByID.TokenHash)
 	}
 }
 

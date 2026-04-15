@@ -293,6 +293,46 @@ func TestNodeHandler_Get_NonOwnerGets404(t *testing.T) {
 	}
 }
 
+func TestNodeHandler_Create_BindsOwnerUserID(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+
+	// Step 2: Inject non-admin userA claims
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	body, _ := json.Marshal(map[string]any{
+		"name": "test-node-1",
+	})
+	req := reqWithClaims(http.MethodPost, "/api/v1/nodes", body, claims)
+	w := httptest.NewRecorder()
+
+	// Step 3: POST to create a node
+	handler.Create(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	// Step 4: Verify the created node has OwnerUserID="userA"
+	gotNode, ok := nodeMgr.Get(ctx, "test-node-1")
+	if !ok {
+		t.Fatal("created node not found in nodeMgr")
+	}
+	if gotNode.OwnerUserID != "userA" {
+		t.Fatalf("expected OwnerUserID=userA, got %s", gotNode.OwnerUserID)
+	}
+
+	// Also verify persisted node has correct owner
+	persisted, err := nodeRepo.GetByID("test-node-1")
+	if err != nil {
+		t.Fatalf("persisted node not found: %v", err)
+	}
+	if persisted.OwnerUserID != "userA" {
+		t.Fatalf("expected persisted OwnerUserID=userA, got %s", persisted.OwnerUserID)
+	}
+}
+
 func TestNodeHandler_Delete_NonOwnerGets404(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)

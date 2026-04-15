@@ -111,6 +111,16 @@ func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Status:  core.NodeStatusOffline,
 		Tunnels: req.Tunnels,
 	}
+
+	// 绑定归属：管理员创建的节点归属 system，普通用户归属自己
+	claims := auth.GetClaims(r.Context())
+	if claims != nil {
+		if IsAdmin(claims) {
+			node.OwnerUserID = "system"
+		} else {
+			node.OwnerUserID = claims.UserID
+		}
+	}
 	if err := h.nodeMgr.Add(r.Context(), node); err != nil {
 		ResponseError(w, http.StatusConflict, 409, "Node already exists")
 		return
