@@ -82,6 +82,16 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 	}
 	defer stream.Close()
 
+	// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
+	if _, err := stream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
+		slog.Error("Failed to send tunnel proxy header", "tunnel", tunnel.Name, "error", err)
+		return
+	}
+	if _, err := stream.Write([]byte{'\n'}); err != nil {
+		slog.Error("Failed to send tunnel proxy header newline", "tunnel", tunnel.Name, "error", err)
+		return
+	}
+
 	slog.Debug("TCP connection forwarded",
 		"tunnel", tunnel.Name,
 		"srcAddr", conn.RemoteAddr(),

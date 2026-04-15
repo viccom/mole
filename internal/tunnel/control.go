@@ -57,10 +57,11 @@ type ControlResponse struct {
 // connState 连接状态，用 mutex 保护节点指针的并发访问
 // 替代原来的 **core.Node 双重指针模式
 type connState struct {
-	mu      sync.Mutex
-	node    *core.Node
-	session *smux.Session
-	grant   *core.NodeAccessGrant // 认证结果（含归属信息）
+	mu         sync.Mutex
+	node       *core.Node
+	session    *smux.Session
+	grant      *core.NodeAccessGrant // 认证结果（含归属信息）
+	remoteAddr string                // 客户端连接地址
 }
 
 func (s *connState) setGrant(grant *core.NodeAccessGrant) {
@@ -262,7 +263,7 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 		return
 	}
 
-	state := &connState{session: session, grant: grant}
+	state := &connState{session: session, grant: grant, remoteAddr: remoteAddr}
 
 	defer func() {
 		node := state.get()
@@ -350,7 +351,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		Token:         cmd.Token,
 		Status:        core.NodeStatusOnline,
 		Tunnels:       cmd.Tunnels,
-		RemoteAddr:    "", // 不再从参数获取
+		RemoteAddr:    state.remoteAddr,
 		ConnectedAt:   &now,
 		LastHeartbeat: &now,
 	}
@@ -495,7 +496,7 @@ func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tu
 	if err != nil {
 		return fmt.Errorf("marshal tunnel_push: %w", err)
 	}
-	if _, err := stream.Write(data); err != nil {
+	if _, err := stream.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("send tunnel_push: %w", err)
 	}
 

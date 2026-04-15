@@ -130,6 +130,18 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				continue
 			}
 
+				// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
+				if _, err := stream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
+					slog.Error("Failed to send UDP proxy header", "tunnel", tunnel.Name, "error", err)
+					stream.Close()
+					continue
+				}
+				if _, err := stream.Write([]byte{'\n'}); err != nil {
+					slog.Error("Failed to send UDP proxy header newline", "tunnel", tunnel.Name, "error", err)
+					stream.Close()
+					continue
+				}
+
 			// 为响应 goroutine 创建独立 context
 			respCtx, respCancel := context.WithCancel(ctx)
 			sess = &udpSession{

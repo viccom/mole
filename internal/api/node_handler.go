@@ -40,19 +40,23 @@ func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
 		ID            string          `json:"id"`
 		Name          string          `json:"name"`
 		Status        core.NodeStatus `json:"status"`
+		OwnerUserID   string          `json:"owner_user_id"`
 		ConnectedAt   *string         `json:"connected_at,omitempty"`
 		LastHeartbeat *string         `json:"last_heartbeat,omitempty"`
 		TunnelCount   int             `json:"tunnel_count"`
+		Tunnels       []core.Tunnel   `json:"tunnels"`
 		RemoteAddr    string          `json:"remote_addr,omitempty"`
 	}
 	items := make([]nodeInfo, 0, len(nodes))
 	for _, n := range nodes {
 		ni := nodeInfo{
-			ID:          n.ID,
-			Name:        n.Name,
-			Status:      n.Status,
-			TunnelCount: len(n.Tunnels),
-			RemoteAddr:  n.RemoteAddr,
+			ID:            n.ID,
+			Name:          n.Name,
+			Status:        n.Status,
+			OwnerUserID:   n.OwnerUserID,
+			TunnelCount:   len(n.Tunnels),
+			Tunnels:       n.Tunnels,
+			RemoteAddr:    n.RemoteAddr,
 		}
 		if n.ConnectedAt != nil {
 			s := n.ConnectedAt.Format("2006-01-02T15:04:05Z")
