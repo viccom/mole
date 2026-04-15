@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
 )
@@ -29,13 +30,20 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 		Target     string `json:"target"`
 		Domain     string `json:"domain,omitempty"`
 		ListenPort int    `json:"listen_port,omitempty"`
+		Enabled    bool   `json:"enabled"`
 		NodeID     string `json:"node_id"`
 		Status     string `json:"status"`
 	}
 
+	claims := auth.GetClaims(r.Context())
+	isAdmin := IsAdmin(claims)
+
 	items := make([]tunnelInfo, 0)
 	for _, n := range nodes {
 		if n.Status != core.NodeStatusOnline {
+			continue
+		}
+		if !isAdmin && n.OwnerUserID != claims.UserID {
 			continue
 		}
 		for _, t := range n.Tunnels {
@@ -45,6 +53,7 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 				Target:     t.Target,
 				Domain:     t.Domain,
 				ListenPort: t.ListenPort,
+				Enabled:    t.IsEnabled(),
 				NodeID:     n.ID,
 				Status:     "active",
 			})
@@ -68,10 +77,10 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 
 	for _, n := range nodes {
 		totalTunnels += len(n.Tunnels)
-		if n.Status == core.NodeStatusOnline {
-			activeTunnels += len(n.Tunnels)
-		}
 		for _, t := range n.Tunnels {
+			if n.Status == core.NodeStatusOnline && t.IsEnabled() {
+				activeTunnels++
+			}
 			switch t.Type {
 			case core.TunnelTypeTCP:
 				tcpCount++
@@ -85,9 +94,19 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	enabledTunnels := 0
+	for _, n := range nodes {
+		for _, t := range n.Tunnels {
+			if t.IsEnabled() {
+				enabledTunnels++
+			}
+		}
+	}
+
 	ResponseOK(w, map[string]any{
-		"total_tunnels":  totalTunnels,
-		"active_tunnels": activeTunnels,
+		"total_tunnels":   totalTunnels,
+		"enabled_tunnels": enabledTunnels,
+		"active_tunnels":  activeTunnels,
 		"tcp_tunnels":    tcpCount,
 		"udp_tunnels":    udpCount,
 		"http_tunnels":   httpCount,
@@ -103,6 +122,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Target     string `json:"target"`
 		Domain     string `json:"domain,omitempty"`
 		ListenPort int    `json:"listen_port,omitempty"`
+		Enabled    *bool  `json:"enabled,omitempty"`
 		NodeID     string `json:"node_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -126,6 +146,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Target:     req.Target,
 		Domain:     req.Domain,
 		ListenPort: req.ListenPort,
+		Enabled:    req.Enabled,
 	}
 
 	if h.tunnelSvc == nil {
@@ -165,10 +186,14 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 查找拥有该隧道的节点
+	claims := auth.GetClaims(r.Context())
 	nodes := h.nodeMgr.GetAll(r.Context())
 	var targetNodeID string
 	found := false
 	for _, n := range nodes {
+		if !IsAdmin(claims) && n.OwnerUserID != claims.UserID {
+			continue
+		}
 		for _, t := range n.Tunnels {
 			if t.Name == name {
 				targetNodeID = n.ID

@@ -105,6 +105,20 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				slog.Debug("No node for UDP tunnel", "tunnel", tunnel.Name)
 				continue
 			}
+
+			// 检查隧道是否仍启用（索引可能过时）
+			tunnelEnabled := false
+			for _, t := range node.Tunnels {
+				if t.Name == tunnel.Name && t.IsEnabled() {
+					tunnelEnabled = true
+					break
+				}
+			}
+			if !tunnelEnabled {
+				slog.Debug("UDP tunnel disabled", "tunnel", tunnel.Name)
+				continue
+			}
+
 			session, err := tg.nodeMgr.GetSession(ctx, node.ID)
 				if err != nil {
 					slog.Error("Failed to get session for UDP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)

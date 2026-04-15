@@ -90,7 +90,7 @@ func (tg *TunnelGateway) findNodeTunnel(ctx context.Context, nodeID, mappingName
 		return nil, ""
 	}
 	for _, t := range node.Tunnels {
-		if t.Name == mappingName {
+		if t.Name == mappingName && t.IsEnabled() {
 			return node, t.Name
 		}
 	}
@@ -181,7 +181,7 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			for _, t := range n.Tunnels {
-				if t.Type == core.TunnelTypeHTTP && t.Domain == host {
+				if t.IsEnabled() && t.Type == core.TunnelTypeHTTP && t.Domain == host {
 					node = n
 					tunnelName = t.Name
 					break

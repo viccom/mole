@@ -107,6 +107,11 @@ func GetClaims(ctx context.Context) *core.Claims {
 	return nil
 }
 
+// SetClaims 向 context 注入 claims（用于测试）
+func SetClaims(ctx context.Context, claims *core.Claims) context.Context {
+	return context.WithValue(ctx, claimsCtxKey, claims)
+}
+
 func writeError(w http.ResponseWriter, httpStatus, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(httpStatus)

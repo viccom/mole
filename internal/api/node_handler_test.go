@@ -182,3 +182,141 @@ func TestNodeHandlerUpdate_NodeNotFound(t *testing.T) {
 		t.Fatalf("repo update should not be called when node is missing")
 	}
 }
+
+func TestNodeHandler_List_NonAdminFiltersByOwner(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+
+	// Create 3 nodes: 2 owned by userA, 1 owned by userB
+	nodes := []*core.Node{
+		{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA"},
+		{ID: "NodeA2", Name: "a2", Status: core.NodeStatusOnline, OwnerUserID: "userA"},
+		{ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB"},
+	}
+	for _, n := range nodes {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	// Inject userA claims (non-admin)
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/nodes", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	items, _ := data["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items for userA, got %d", len(items))
+	}
+	total, _ := data["total"].(float64)
+	if total != 2 {
+		t.Fatalf("expected total=2, got %v", total)
+	}
+}
+
+func TestNodeHandler_List_AdminSeesAll(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+
+	nodes := []*core.Node{
+		{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA"},
+		{ID: "NodeA2", Name: "a2", Status: core.NodeStatusOnline, OwnerUserID: "userA"},
+		{ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB"},
+	}
+	for _, n := range nodes {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	// Inject admin claims
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/nodes", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	items, _ := data["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("admin should see all 3 items, got %d", len(items))
+	}
+	total, _ := data["total"].(float64)
+	if total != 3 {
+		t.Fatalf("expected total=3, got %v", total)
+	}
+}
+
+func TestNodeHandler_Get_NonOwnerGets404(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+
+	n := &core.Node{ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB"}
+	if err := nodeMgr.Add(ctx, n); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Inject userA claims (non-admin, non-owner)
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/nodes/NodeB1", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.Get(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-owner, got %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestNodeHandler_Delete_NonOwnerGets404(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+
+	n := &core.Node{ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB"}
+	if err := nodeMgr.Add(ctx, n); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Inject userA claims (non-admin, non-owner)
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	req := reqWithClaims(http.MethodDelete, "/api/v1/nodes/NodeB1", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.Delete(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-owner delete, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	// Node should still exist
+	if _, ok := nodeMgr.Get(ctx, "NodeB1"); !ok {
+		t.Fatal("node should still exist after non-owner delete attempt")
+	}
+}

@@ -11,13 +11,15 @@ import (
 )
 
 type UserHandler struct {
-	userRepo   core.UserRepo
-	rbac       *auth.RBACEngine
-	bcryptCost int
+	userRepo       core.UserRepo
+	rbac           *auth.RBACEngine
+	bcryptCost     int
+	nodeRepo       core.NodeRepo
+	accessTokenRepo core.AccessTokenRepo
 }
 
-func NewUserHandler(userRepo core.UserRepo, rbac *auth.RBACEngine, bcryptCost int) *UserHandler {
-	return &UserHandler{userRepo: userRepo, rbac: rbac, bcryptCost: bcryptCost}
+func NewUserHandler(userRepo core.UserRepo, rbac *auth.RBACEngine, bcryptCost int, nodeRepo core.NodeRepo, accessTokenRepo core.AccessTokenRepo) *UserHandler {
+	return &UserHandler{userRepo: userRepo, rbac: rbac, bcryptCost: bcryptCost, nodeRepo: nodeRepo, accessTokenRepo: accessTokenRepo}
 }
 
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +178,42 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := strings.TrimRight(path, "/")
+
+	// 级联处理：禁用该用户的 AccessToken，节点归属改为 system
+	if h.accessTokenRepo != nil {
+		tokens, err := h.accessTokenRepo.ListByUser(id)
+		if err == nil {
+			for _, t := range tokens {
+				t.Status = core.AccessTokenDisabled
+				if updateErr := h.accessTokenRepo.Update(t); updateErr != nil {
+					slog.Warn("Failed to disable access token on user delete", "tokenId", t.ID, "error", updateErr)
+				}
+			}
+			if len(tokens) > 0 {
+				slog.Info("Disabled access tokens for deleted user", "userId", id, "count", len(tokens))
+			}
+		}
+	}
+	if h.nodeRepo != nil {
+		nodes, err := h.nodeRepo.GetAll()
+		if err == nil {
+			migrated := 0
+			for _, n := range nodes {
+				if n.OwnerUserID == id {
+					n.OwnerUserID = "system"
+					if updateErr := h.nodeRepo.Update(n); updateErr != nil {
+						slog.Warn("Failed to reassign node owner", "nodeId", n.ID, "error", updateErr)
+					} else {
+						migrated++
+					}
+				}
+			}
+			if migrated > 0 {
+				slog.Info("Reassigned nodes from deleted user to system", "userId", id, "count", migrated)
+			}
+		}
+	}
+
 	if err := h.userRepo.Delete(id); err != nil {
 		ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
 		return

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
 )
@@ -22,6 +23,19 @@ func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tu
 
 func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
 	nodes := h.nodeMgr.GetAll(r.Context())
+
+	// 归属过滤
+	claims := auth.GetClaims(r.Context())
+	if !IsAdmin(claims) {
+		filtered := make([]*core.Node, 0, len(nodes))
+		for _, n := range nodes {
+			if n.OwnerUserID == claims.UserID {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
+
 	type nodeInfo struct {
 		ID            string          `json:"id"`
 		Name          string          `json:"name"`
@@ -70,6 +84,9 @@ func (h *NodeHandler) Get(w http.ResponseWriter, r *http.Request) {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 		return
 	}
+	if !checkNodeOwnership(w, r, node) {
+		return
+	}
 	ResponseOK(w, node)
 }
 
@@ -116,6 +133,13 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
+	}
+
+	// 归属检查
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if !checkNodeOwnership(w, r, node) {
+			return
+		}
 	}
 
 	nameChanged := req.Name != ""
@@ -182,6 +206,12 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id = strings.TrimRight(id, "/")
+	// 归属检查
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if !checkNodeOwnership(w, r, node) {
+			return
+		}
+	}
 	h.nodeMgr.Disconnect(r.Context(), id)
 	h.nodeRepo.Delete(id)
 	ResponseOK(w, "deleted")
@@ -199,6 +229,9 @@ func (h *NodeHandler) listTunnels(w http.ResponseWriter, r *http.Request, nodeID
 	node, ok := h.nodeMgr.Get(r.Context(), nodeID)
 	if !ok {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+	if !checkNodeOwnership(w, r, node) {
 		return
 	}
 	ResponseOK(w, node.Tunnels)

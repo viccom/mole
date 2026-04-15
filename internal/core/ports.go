@@ -99,3 +99,18 @@ type NodeRepo interface {
 	Update(node *Node) error
 	Delete(id string) error
 }
+
+// AccessTokenRepo 接入 Token 仓库接口
+type AccessTokenRepo interface {
+	Create(token *AccessToken) error
+	GetByID(id string) (*AccessToken, error)
+	GetByHash(hash string) (*AccessToken, error)
+	ListByUser(userID string) ([]*AccessToken, error)
+	Update(token *AccessToken) error
+	Delete(id string) error
+}
+
+// NodeAccessAuthenticator 节点接入认证接口
+type NodeAccessAuthenticator interface {
+	AuthenticateNodeToken(ctx context.Context, rawToken string) (*NodeAccessGrant, error)
+}

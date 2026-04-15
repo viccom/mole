@@ -129,6 +129,11 @@ func main() {
 	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv)
 	controlSrv.SetTunnelConfigManager(tunnelSvc)
 
+	// --- 接入 Token 认证服务 ---
+	accessTokenRepo := storage.NewAccessTokenRepo(db)
+	nodeAccessAuth := service.NewAccessTokenAuthService(accessTokenRepo, token)
+	controlSrv.SetAuthenticator(nodeAccessAuth)
+
 	// --- MQTT Broker ---
 	var mqttBroker *mqtt.EmbeddedBroker
 	if cfg.MQTT.Enabled {
@@ -143,7 +148,7 @@ func main() {
 	}
 
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc)
+	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo)
 	adminDir, _ := os.Getwd()
 	adminFS := http.StripPrefix("/admin", http.FileServer(http.Dir(filepath.Join(adminDir, "admin"))))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -212,17 +217,19 @@ func buildAPIRouter(
 	rbacEngine *auth.RBACEngine,
 	nodeRepo core.NodeRepo,
 	tunnelSvc *service.TunnelConfigService,
+	accessTokenRepo core.AccessTokenRepo,
 ) http.Handler {
 	router := api.NewRouter(mw)
 
 	// Handlers
 	authH := api.NewAuthHandler(authSvc)
-	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost)
+	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo)
 	roleH := api.NewRoleHandler(roleRepo)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
 	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
+	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
 
 	// === 公开端点 ===
 	router.RegisterPublic("POST", "/api/v1/auth/login", authH.Login)
@@ -233,6 +240,12 @@ func buildAPIRouter(
 	router.RegisterAuth("POST", "/api/v1/auth/refresh", authH.Refresh)
 	router.RegisterAuth("GET", "/api/v1/auth/me", authH.Me)
 	router.RegisterAuth("POST", "/api/v1/auth/changepass", authH.ChangePass)
+
+	// === 个人 Access Token 管理 ===
+	router.RegisterAuth("GET", "/api/v1/me/access-tokens", tokenH.List)
+	router.RegisterAuth("POST", "/api/v1/me/access-tokens", tokenH.Create)
+	router.RegisterAuth("DELETE", "/api/v1/me/access-tokens/", tokenH.Delete)
+	router.RegisterAuth("POST", "/api/v1/me/access-tokens/", tokenH.Rotate)
 
 	// === 用户管理（RBAC） ===
 	router.Register("GET", "/api/v1/users", userH.List, "users", "read")

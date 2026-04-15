@@ -57,6 +57,19 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 		return
 	}
 
+	// 检查隧道是否仍启用（索引可能过时）
+	tunnelEnabled := false
+	for _, t := range node.Tunnels {
+		if t.Name == tunnel.Name && t.IsEnabled() {
+			tunnelEnabled = true
+			break
+		}
+	}
+	if !tunnelEnabled {
+		slog.Debug("TCP tunnel disabled", "tunnel", tunnel.Name)
+		return
+	}
+
 	session, err := tg.nodeMgr.GetSession(ctx, node.ID)
 	if err != nil {
 		slog.Error("Failed to get session for TCP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
@@ -92,7 +105,7 @@ func (tg *TunnelGateway) findNodeForTunnel(ctx context.Context, tunnelName strin
 			continue
 		}
 		for _, t := range n.Tunnels {
-			if t.Name == tunnelName {
+			if t.IsEnabled() && t.Name == tunnelName {
 				return n
 			}
 		}

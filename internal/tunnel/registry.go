@@ -155,6 +155,9 @@ func (tg *TunnelGateway) RebuildIndex(ctx context.Context) {
 			continue
 		}
 		for _, t := range n.Tunnels {
+			if !t.IsEnabled() {
+				continue
+			}
 			newTunnel[t.Name] = &tunnelRoute{nodeID: n.ID}
 			if t.Type == core.TunnelTypeHTTP && t.Domain != "" {
 				newDomain[t.Domain] = &domainRoute{nodeID: n.ID, tunnelName: t.Name}

@@ -44,6 +44,11 @@ func Init(cfg config.DatabaseConfig) error {
 		return err
 	}
 
+	// 迁移：为无归属节点设置 OwnerUserID = "system"
+	if err := migrateNodeOwnership(); err != nil {
+		slog.Warn("Failed to migrate node ownership", "error", err)
+	}
+
 	return nil
 }
 
@@ -194,4 +199,35 @@ func GetGlobalAccessKey() string {
 		return ""
 	}
 	return val.String()
+}
+
+// migrateNodeOwnership 将无归属节点的 OwnerUserID 设为 "system"
+func migrateNodeOwnership() error {
+	items, err := db.Hash().Items("nodes")
+	if err != nil {
+		return fmt.Errorf("migrate node ownership: %w", err)
+	}
+	migrated := 0
+	for key, val := range items {
+		var node core.Node
+		if err := json.Unmarshal([]byte(val.String()), &node); err != nil {
+			continue
+		}
+		if node.OwnerUserID == "" {
+			node.OwnerUserID = "system"
+			data, err := json.Marshal(node)
+			if err != nil {
+				continue
+			}
+			if _, err := db.Hash().Set("nodes", key, string(data)); err != nil {
+				slog.Warn("Failed to migrate node ownership", "nodeId", key, "error", err)
+				continue
+			}
+			migrated++
+		}
+	}
+	if migrated > 0 {
+		slog.Info("Migrated node ownership", "count", migrated, "ownerUserId", "system")
+	}
+	return nil
 }

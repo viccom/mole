@@ -60,6 +60,19 @@ type connState struct {
 	mu      sync.Mutex
 	node    *core.Node
 	session *smux.Session
+	grant   *core.NodeAccessGrant // 认证结果（含归属信息）
+}
+
+func (s *connState) setGrant(grant *core.NodeAccessGrant) {
+	s.mu.Lock()
+	s.grant = grant
+	s.mu.Unlock()
+}
+
+func (s *connState) getGrant() *core.NodeAccessGrant {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.grant
 }
 
 func (s *connState) set(node *core.Node) {
@@ -78,7 +91,8 @@ func (s *connState) get() *core.Node {
 type ControlServer struct {
 	addr         string
 	nodeMgr      *node.ShardedNodeManager
-	nodeToken    string      // 全局节点认证令牌
+	nodeToken    string                    // 全局节点认证令牌（兼容期保留）
+	authenticator core.NodeAccessAuthenticator // 用户级 token 认证服务
 	tlsConfig    *tls.Config // TLS 配置
 	listener     net.Listener
 	onNodeChange func()        // 节点变更回调
@@ -105,6 +119,11 @@ func (cs *ControlServer) SetOnNodeChange(fn func()) {
 // SetTunnelConfigManager 设置隧道配置统一服务
 func (cs *ControlServer) SetTunnelConfigManager(svc core.TunnelConfigManager) {
 	cs.tunnelSvc = svc
+}
+
+// SetAuthenticator 设置节点接入认证服务
+func (cs *ControlServer) SetAuthenticator(auth core.NodeAccessAuthenticator) {
+	cs.authenticator = auth
 }
 
 // Start 启动控制端口监听
@@ -195,14 +214,38 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) != 1 {
-		writeControlResp(conn, "err", "invalid token")
-		slog.Warn("Node auth failed", "remote", remoteAddr, "reason", "invalid token")
+		// 旧全局 token 不匹配，尝试用户级 token 认证
+		if cs.authenticator == nil {
+			writeControlResp(conn, "err", "invalid token")
+			slog.Warn("Node auth failed", "remote", remoteAddr, "reason", "invalid token")
+			return
+		}
+		grant, err := cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
+		if err != nil {
+			writeControlResp(conn, "err", "invalid token")
+			slog.Warn("Node auth failed", "remote", remoteAddr)
+			return
+		}
+		writeControlResp(conn, "ok", "authenticated")
+		slog.Info("Node authenticated", "remote", remoteAddr, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
+
+		// 建立 smux 会话并使用 grant
+		cs.setupSmuxAndAccept(ctx, conn, remoteAddr, grant)
 		return
 	}
 	writeControlResp(conn, "ok", "authenticated")
-	slog.Info("Node authenticated", "remote", remoteAddr)
+	slog.Info("Node authenticated (legacy)", "remote", remoteAddr)
 
-	// 2. 建立 smux 会话
+	// 旧全局 token 认证成功，构造 legacy grant
+	cs.setupSmuxAndAccept(ctx, conn, remoteAddr, &core.NodeAccessGrant{
+		UserID:       "system",
+		LegacyGlobal: true,
+	})
+
+}
+
+// setupSmuxAndAccept 建立 smux 会话并开始接收流
+func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, remoteAddr string, grant *core.NodeAccessGrant) {
 	session, err := smux.Server(conn, &smux.Config{
 		Version:           2,
 		KeepAliveDisabled: false,
@@ -217,7 +260,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	state := &connState{session: session} // 替代原来的 var registeredNode *core.Node
+	state := &connState{session: session, grant: grant}
 
 	defer func() {
 		node := state.get()
@@ -231,7 +274,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		session.Close()
 	}()
 
-	// 3. 接收流（注册、心跳）
+	// 接收流（注册、心跳）
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
@@ -310,6 +353,12 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		LastHeartbeat: &now,
 	}
 
+	// 从认证结果中读取归属信息
+	if grant := state.grant; grant != nil {
+		node.OwnerUserID = grant.UserID
+		node.AccessTokenID = grant.AccessTokenID
+	}
+
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
 		writeControlResp(stream, "err", err.Error())
 		return
@@ -323,6 +372,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		"nodeId", cmd.NodeID,
 		"name", cmd.Name,
 		"tunnels", len(cmd.Tunnels),
+		"ownerUserId", node.OwnerUserID,
 	)
 
 	if cs.onNodeChange != nil {

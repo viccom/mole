@@ -26,6 +26,8 @@ type Node struct {
 	RemoteAddr    string     `json:"remote_addr,omitempty"`
 	ConnectedAt   *time.Time `json:"connected_at,omitempty"`
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	OwnerUserID   string     `json:"owner_user_id,omitempty"`   // 归属用户 ID
+	AccessTokenID string     `json:"access_token_id,omitempty"` // 接入 Token ID（审计用）
 }
 
 // TunnelType 隧道类型
@@ -45,6 +47,12 @@ type Tunnel struct {
 	Target     string     `json:"target"`                // 后端地址，host:port 格式（如 127.0.0.1:8080）
 	Domain     string     `json:"domain,omitempty"`      // HTTP 隧道的域名
 	ListenPort int        `json:"listen_port,omitempty"` // TCP/UDP 隧道的监听端口
+	Enabled    *bool      `json:"enabled,omitempty"`     // 启用开关，nil/true=启用，false=禁用
+}
+
+// IsEnabled 返回隧道是否启用。零值（nil）视为启用，兼容旧数据。
+func (t Tunnel) IsEnabled() bool {
+	return t.Enabled == nil || *t.Enabled
 }
 
 // UserStatus 用户状态
@@ -123,4 +131,32 @@ type PaginatedResponse struct {
 	Page       int `json:"page"`
 	PerPage    int `json:"per_page"`
 	TotalPages int `json:"total_pages"`
+}
+
+// AccessTokenStatus 接入 Token 状态
+type AccessTokenStatus string
+
+const (
+	AccessTokenActive   AccessTokenStatus = "active"
+	AccessTokenDisabled AccessTokenStatus = "disabled"
+)
+
+// AccessToken 用户级节点接入凭据
+type AccessToken struct {
+	ID          string            `json:"id"`
+	UserID      string            `json:"user_id"`
+	Name        string            `json:"name"`
+	TokenPrefix string            `json:"token_prefix"`
+	TokenHash   string            `json:"token_hash"`
+	Status      AccessTokenStatus `json:"status"`
+	LastUsedAt  *time.Time        `json:"last_used_at,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+// NodeAccessGrant 节点接入认证结果
+type NodeAccessGrant struct {
+	UserID        string
+	AccessTokenID string
+	LegacyGlobal  bool // 是否使用旧全局 token 认证
 }

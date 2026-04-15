@@ -1,0 +1,285 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/node"
+)
+
+func TestTunnelHandler_List_NonAdminFiltersByOwner(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+
+	// userA: 2 online nodes with tunnels
+	nodeA1 := &core.Node{
+		ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA",
+		Tunnels: []core.Tunnel{
+			{Name: "web", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8080"},
+			{Name: "api", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:9090"},
+		},
+	}
+	nodeA2 := &core.Node{
+		ID: "NodeA2", Name: "a2", Status: core.NodeStatusOnline, OwnerUserID: "userA",
+		Tunnels: []core.Tunnel{
+			{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22"},
+		},
+	}
+	// userB: 1 online node with 1 tunnel
+	nodeB1 := &core.Node{
+		ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB",
+		Tunnels: []core.Tunnel{
+			{Name: "db", Type: core.TunnelTypeTCP, Target: "127.0.0.1:3306"},
+		},
+	}
+	for _, n := range []*core.Node{nodeA1, nodeA2, nodeB1} {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	// Inject userA claims (non-admin)
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/tunnels", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	items, _ := data["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("expected 3 tunnels for userA (2+1), got %d", len(items))
+	}
+	total, _ := data["total"].(float64)
+	if total != 3 {
+		t.Fatalf("expected total=3, got %v", total)
+	}
+}
+
+func TestTunnelHandler_List_DisabledTunnelShown(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+
+	disabled := false
+	enabled := true
+
+	n := &core.Node{
+		ID: "Node1", Name: "n1", Status: core.NodeStatusOnline, OwnerUserID: "admin",
+		Tunnels: []core.Tunnel{
+			{Name: "active-web", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8080", Enabled: &enabled},
+			{Name: "disabled-web", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8081", Enabled: &disabled},
+		},
+	}
+	if err := nodeMgr.Add(ctx, n); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Admin claims
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/tunnels", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	items, _ := data["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 tunnels (both shown), got %d", len(items))
+	}
+
+	// Verify one has enabled=false by re-encoding items
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			if enabled, _ := m["enabled"].(bool); !enabled {
+				// Found a disabled tunnel
+				return
+			}
+		}
+	}
+	t.Fatal("response should contain a tunnel with enabled=false")
+}
+
+func TestTunnelHandler_Stats_EnabledAndActive(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+
+	disabled := false
+
+	// Online node: 3 tunnels (2 enabled, 1 disabled)
+	onlineNode := &core.Node{
+		ID: "NodeOnline", Name: "online", Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{
+			{Name: "t1", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8080"},
+			{Name: "t2", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22"},
+			{Name: "t3", Type: core.TunnelTypeUDP, Target: "127.0.0.1:53", Enabled: &disabled},
+		},
+	}
+	// Offline node: 2 tunnels (both enabled)
+	offlineNode := &core.Node{
+		ID: "NodeOffline", Name: "offline", Status: core.NodeStatusOffline,
+		Tunnels: []core.Tunnel{
+			{Name: "t4", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:9090"},
+			{Name: "t5", Type: core.TunnelTypeTCP, Target: "127.0.0.1:3306"},
+		},
+	}
+	for _, n := range []*core.Node{onlineNode, offlineNode} {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tunnels/stats", nil)
+	w := httptest.NewRecorder()
+
+	handler.Stats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+
+	// total_tunnels=5
+	if v, _ := data["total_tunnels"].(float64); v != 5 {
+		t.Fatalf("expected total_tunnels=5, got %v", v)
+	}
+	// enabled_tunnels=4 (t1, t2, t4, t5 — t3 is disabled)
+	if v, _ := data["enabled_tunnels"].(float64); v != 4 {
+		t.Fatalf("expected enabled_tunnels=4, got %v", v)
+	}
+	// active_tunnels=2 (only online+enabled: t1 and t2)
+	if v, _ := data["active_tunnels"].(float64); v != 2 {
+		t.Fatalf("expected active_tunnels=2, got %v", v)
+	}
+}
+
+func TestTunnelHandler_Delete_NonOwner_404(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+
+	// Node owned by userB with a tunnel
+	n := &core.Node{
+		ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB",
+		Tunnels: []core.Tunnel{
+			{Name: "secret-db", Type: core.TunnelTypeTCP, Target: "127.0.0.1:3306"},
+		},
+	}
+	if err := nodeMgr.Add(ctx, n); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Inject userA claims (non-admin, non-owner)
+	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
+	req := reqWithClaims(http.MethodDelete, "/api/v1/tunnels/secret-db", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.Delete(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-owner tunnel delete, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	// Tunnel should still exist
+	gotNode, ok := nodeMgr.Get(ctx, "NodeB1")
+	if !ok {
+		t.Fatal("node should still exist")
+	}
+	if len(gotNode.Tunnels) != 1 {
+		t.Fatalf("tunnel should still exist, got %d tunnels", len(gotNode.Tunnels))
+	}
+}
+
+func TestTunnelHandler_List_AdminSeesAll(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+
+	nodeA := &core.Node{
+		ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA",
+		Tunnels: []core.Tunnel{
+			{Name: "web", Type: core.TunnelTypeHTTP, Target: "http://127.0.0.1:8080"},
+		},
+	}
+	nodeB := &core.Node{
+		ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB",
+		Tunnels: []core.Tunnel{
+			{Name: "db", Type: core.TunnelTypeTCP, Target: "127.0.0.1:3306"},
+		},
+	}
+	for _, n := range []*core.Node{nodeA, nodeB} {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	// Admin claims
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/tunnels", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	items, _ := data["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("admin should see all 2 tunnels, got %d", len(items))
+	}
+	total, _ := data["total"].(float64)
+	if total != 2 {
+		t.Fatalf("expected total=2, got %v", total)
+	}
+}
+
+// containsString checks if substr appears in s.
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
