@@ -6,6 +6,9 @@ moleagent-serv
 data/
 logs/
 
+# Worktrees
+.worktrees/
+
 # IDE
 .idea/
 .vscode/
