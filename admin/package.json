@@ -14,7 +14,6 @@
     "react-router-dom": "^6.26.0",
     "@headlessui/react": "^2.1.2",
     "lucide-react": "^0.424.0",
-    "zod": "^3.23.8",
     "clsx": "^2.1.1"
   },
   "devDependencies": {
