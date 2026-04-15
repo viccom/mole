@@ -23,6 +23,17 @@ type Tunnel struct {
 	Target     string     `json:"target"`
 	Domain     string     `json:"domain,omitempty"`
 	ListenPort int        `json:"listen_port,omitempty"`
+	Enabled    *bool      `json:"enabled,omitempty"` // 启用开关，nil/true=启用，false=禁用
+}
+
+// IsEnabled 返回隧道是否启用。零值（nil）视为启用，兼容旧数据。
+func (t Tunnel) IsEnabled() bool {
+	return t.Enabled == nil || *t.Enabled
+}
+
+// boolPtr 返回 bool 指针
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // Validate 校验隧道配置合法性
@@ -49,6 +60,7 @@ func (t Tunnel) toProtocol() protocol.Tunnel {
 		Target:     t.Target,
 		Domain:     t.Domain,
 		ListenPort: t.ListenPort,
+		Enabled:    t.Enabled,
 	}
 }
 
@@ -69,6 +81,7 @@ func fromProtocol(t protocol.Tunnel) Tunnel {
 		Target:     t.Target,
 		Domain:     t.Domain,
 		ListenPort: t.ListenPort,
+		Enabled:    t.Enabled,
 	}
 }
 

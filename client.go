@@ -434,6 +434,9 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 				defer c.mu.RUnlock()
 				targets := make(map[string]string, len(c.tunnels))
 				for _, t := range c.tunnels {
+					if !t.IsEnabled() {
+						continue
+					}
 					if t.Type == TunnelTypeHTTP || t.Type == TunnelTypeHTTPS {
 						if !strings.Contains(t.Target, "://") {
 							scheme := "http"
@@ -460,7 +463,7 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 		for _, t := range c.tunnels {
-			if t.Type == TunnelTypeTCP || t.Type == TunnelTypeUDP {
+			if t.IsEnabled() && (t.Type == TunnelTypeTCP || t.Type == TunnelTypeUDP) {
 				return t.Target
 			}
 		}

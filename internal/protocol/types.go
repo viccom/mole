@@ -16,6 +16,7 @@ type Tunnel struct {
 	Target     string     `json:"target"`
 	Domain     string     `json:"domain,omitempty"`
 	ListenPort int        `json:"listen_port,omitempty"`
+	Enabled    *bool      `json:"enabled,omitempty"`
 }
 
 // ControlCmd 控制命令
