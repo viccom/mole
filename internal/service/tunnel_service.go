@@ -8,10 +8,15 @@ import (
 	"strconv"
 
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/tunnel"
 )
 
 type routeIndexer interface {
 	RebuildIndex(ctx context.Context)
+	StartTCP(ctx context.Context, t core.Tunnel) error
+	StartUDP(ctx context.Context, t core.Tunnel) error
+	StopTunnel(name string)
+	Registry() *tunnel.ListenerRegistry
 }
 
 type tunnelPusher interface {
@@ -242,13 +247,53 @@ func (s *TunnelConfigService) LoadPersisted(ctx context.Context, nodeID string) 
 }
 
 func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
+	// 获取旧隧道（Update 前获取，用于清理旧监听器）
+	oldNode, _ := s.nodeMgr.Get(ctx, nodeID)
+	var oldTunnels []core.Tunnel
+	if oldNode != nil {
+		oldTunnels = oldNode.Tunnels
+	}
+
 	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
 		n.Tunnels = append([]core.Tunnel(nil), tunnels...)
 	}); err != nil {
 		return err
 	}
+
 	if s.gateway != nil {
 		s.gateway.RebuildIndex(ctx)
+
+		// 停止已删除的 TCP/UDP 监听器
+		newNames := make(map[string]bool, len(tunnels))
+		for _, t := range tunnels {
+			newNames[t.Name] = true
+		}
+		for _, t := range oldTunnels {
+			if !newNames[t.Name] && (t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP) {
+				s.gateway.StopTunnel(t.Name)
+			}
+		}
+
+		// 在线节点：启动 TCP/UDP 监听器
+		node, ok := s.nodeMgr.Get(ctx, nodeID)
+		if ok && node.Status == core.NodeStatusOnline {
+			for i := range tunnels {
+				t := tunnels[i]
+				if !t.IsEnabled() {
+					continue
+				}
+				switch t.Type {
+				case core.TunnelTypeTCP:
+					if err := s.gateway.StartTCP(ctx, t); err != nil {
+						slog.Error("Failed to start TCP listener", "tunnel", t.Name, "error", err)
+					}
+				case core.TunnelTypeUDP:
+					if err := s.gateway.StartUDP(ctx, t); err != nil {
+						slog.Error("Failed to start UDP listener", "tunnel", t.Name, "error", err)
+					}
+				}
+			}
+		}
 	}
 
 	slog.Info("Node tunnels updated",
