@@ -1,5 +1,5 @@
 # 编译产物
-moleagent-serv
+/moleagent-serv
 *.exe
 
 # 运行时数据

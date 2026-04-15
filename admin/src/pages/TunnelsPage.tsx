@@ -272,6 +272,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
 
     try {
       setSubmitting(true)
+      // Backend POST /tunnels is an upsert (ApplyTunnel), so this works for both create and edit
       await api.createTunnel({
         name: name.trim(),
         type,

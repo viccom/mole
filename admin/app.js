@@ -1,0 +1,476 @@
+
+/* ===== SVG 图标 ===== */
+const I={
+logo:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>',
+dash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+node:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1"/><circle cx="6" cy="18" r="1"/></svg>',
+tunnel:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>',
+user:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+mqtt:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+out:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+del:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+x:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+send:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
+unlink:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.84 12.25l1.72-1.71a3.55 3.55 0 0 0-5-5L13.85 7.25"/><path d="M5.16 11.75l-1.72 1.71a3.55 3.55 0 0 0 5 5l1.71-1.71"/><line x1="2" y1="2" x2="22" y2="22"/></svg>',
+key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
+chev:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>',
+edit:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
+};
+
+/* ===== 全局状态与 API ===== */
+const API='/api/v1';
+let tk=localStorage.getItem('ma_tk');
+
+async function api(p,o={}){
+  const h={'Content-Type':'application/json',...(o.h||{})};
+  if(tk) h.Authorization='Bearer '+tk;
+  const r=await fetch(API+p,{...o,headers:h});
+  if(r.status===401){localStorage.removeItem('ma_tk');tk=null;route();return null}
+  const d=await r.json();
+  if(d.code!==0&&d.code!==undefined) throw new Error(d.msg||'Error');
+  return d;
+}
+const G=p=>api(p),
+  P=(p,b)=>api(p,{method:'POST',body:JSON.stringify(b)}),
+  U=(p,b)=>api(p,{method:'PUT',body:JSON.stringify(b)}),
+  D=p=>api(p,{method:'DELETE'});
+
+/* ===== UI 工具函数 ===== */
+function toast(m,t='info'){
+  const e=document.createElement('div');
+  e.className='toast toast-'+(t==='success'?'ok':t==='error'?'er':'in');
+  e.textContent=m;
+  document.getElementById('toasts').appendChild(e);
+  setTimeout(()=>e.remove(),3000);
+}
+function modal(t,b,f){
+  document.getElementById('mlc').innerHTML=
+    '<div class="ml-h"><h3>'+t+'</h3><button class="ml-x" onclick="cmodal()">'+I.x+'</button></div>'+
+    '<div class="ml-b">'+b+'</div>'+
+    (f?'<div class="ml-f">'+f+'</div>':'');
+  document.getElementById('modal').classList.add('show');
+}
+function cmodal(){document.getElementById('modal').classList.remove('show')}
+function ta(s){
+  if(!s)return'-';
+  const d=new Date(s),n=Date.now(),f=Math.floor((n-d.getTime())/1000);
+  if(f<60)return f+'秒前';if(f<3600)return Math.floor(f/60)+'分钟前';
+  if(f<86400)return Math.floor(f/3600)+'小时前';return Math.floor(f/86400)+'天前';
+}
+function uf(s){
+  if(!s)return'-';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  return(d>0?d+'天 ':'')+h+'时'+m+'分';
+}
+function eh(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+
+/* 根据隧道信息生成访问地址 */
+const GW_BASE=(function(){const p=location.hostname.split('.');return p.length>2?p.slice(1).join('.'):location.hostname})();
+const GW_PROTO=location.protocol==='https:'?'https':'http';
+function tunnelUrl(t){
+  if(t.type==='http'){
+    const host=t.domain||(t.name+'-'+t.node_id+'.'+GW_BASE);
+    return '<a href="'+GW_PROTO+'://'+eh(host)+'" target="_blank" style="color:var(--in);text-decoration:none"><code>'+eh(host)+'</code></a>';
+  }
+  if(t.listen_port){
+    return '<code>'+t.type+'://'+location.hostname+':'+t.listen_port+'</code>';
+  }
+  return '-';
+}
+
+/* ===== 路由 ===== */
+const pages={login:pgLogin,dashboard:pgDash,nodes:pgNodes,tunnels:pgTunnels,users:pgUsers,accesstokens:pgAccessTokens,mqtt:pgMQTT,settings:pgSettings};
+function route(){
+  const h=location.hash.slice(1)||'dashboard';
+  if(!tk&&h!=='login'){location.hash='#login';return}
+  if(tk&&h==='login'){location.hash='#dashboard';return}
+  (pages[h]||pages.dashboard)();
+  document.querySelectorAll('.ni').forEach(e=>e.classList.toggle('on',e.dataset.p===h));
+}
+window.addEventListener('hashchange',route);
+
+function shell(title,html){
+  const u=JSON.parse(localStorage.getItem('ma_u')||'{}');
+  const h=location.hash.slice(1)||'dashboard';
+  const nav=(p,l,ic)=>'<div class="ni'+(h===p?' on':'')+'" data-p="'+p+'" onclick="location.hash=&#39;#&#39;+this.dataset.p">'+ic+'<span>'+l+'</span></div>';
+  document.getElementById('app').innerHTML=
+    '<div class="app"><aside class="sb"><div class="sb-b">'+I.logo+'<span>MoleAgent</span></div>'+
+    '<nav class="sb-n">'+
+    nav('dashboard','仪表盘',I.dash)+nav('nodes','节点管理',I.node)+
+    nav('tunnels','隧道管理',I.tunnel)+nav('users','用户管理',I.user)+
+    nav('accesstokens','接入Token',I.key)+nav('mqtt','MQTT',I.mqtt)+nav('settings','系统设置',I.gear)+
+    '</nav><div class="sb-f"><div class="ui">'+eh(u.username||'admin')+'</div>'+
+    '<button class="btn btn-g btn-sm" onclick="doOut()" style="color:rgba(255,255,255,.7);border-color:rgba(255,255,255,.2)">'+I.out+' 退出</button></div></aside>'+
+    '<div class="mn"><div class="tb"><h2>'+eh(title)+'</h2></div><div class="ct">'+html+'</div></div></div>';
+}
+
+/* ===== 登录 ===== */
+function pgLogin(){
+  document.getElementById('app').innerHTML=
+    '<div class="login-wrap"><div class="lc"><div class="logo">'+I.logo+'</div>'+
+    '<h1>MoleAgent</h1><p class="sub">管理后台登录</p>'+
+    '<form onsubmit="doLogin(event)"><div class="fg"><label>用户名</label><input id="lu" type="text" autocomplete="username" required autofocus></div>'+
+    '<div class="fg"><label>密码</label><input id="lp" type="password" autocomplete="current-password" required></div>'+
+    '<button type="submit" class="btn btn-p btn-blk" id="lb">登 录</button></form></div></div>';
+}
+async function doLogin(e){
+  e.preventDefault();const b=document.getElementById('lb');
+  b.disabled=true;b.textContent='登录中...';
+  try{
+    const r=await P('/auth/login',{username:document.getElementById('lu').value,password:document.getElementById('lp').value});
+    tk=r.data.token;localStorage.setItem('ma_tk',tk);localStorage.setItem('ma_u',JSON.stringify(r.data.user));
+    toast('登录成功','success');location.hash='#dashboard';
+  }catch(ex){toast(ex.message,'error');b.disabled=false;b.textContent='登 录'}
+}
+function doOut(){P('/auth/logout').catch(()=>{});localStorage.removeItem('ma_tk');localStorage.removeItem('ma_u');tk=null;location.hash='#login'}
+
+/* ===== 仪表盘 ===== */
+async function pgDash(){
+  shell('仪表盘','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const[n,m]=await Promise.all([G('/nodes').catch(()=>({data:{items:[],total:0}})),G('/metrics').catch(()=>({data:{}}))]);
+    const nl=n.data||{},on=(nl.items||[]).filter(x=>x.status==='online').length,
+      tc=(nl.items||[]).reduce((s,x)=>s+x.tunnel_count,0),md=m.data||{};
+    shell('仪表盘',
+      '<div class="sg">'+
+        '<div class="sc"><div class="si gr">'+I.node+'</div><div><h3>'+on+'/'+(nl.total||0)+'</h3><p>在线节点</p></div></div>'+
+        '<div class="sc"><div class="si bl">'+I.tunnel+'</div><div><h3>'+tc+'</h3><p>隧道总数</p></div></div>'+
+        '<div class="sc"><div class="si pu">'+I.dash+'</div><div><h3>'+(md.goroutines||'-')+'</h3><p>Goroutines</p></div></div>'+
+        '<div class="sc"><div class="si or">'+I.gear+'</div><div><h3>'+uf(md.uptime_seconds)+'</h3><p>运行时长</p></div></div>'+
+      '</div>'+
+      '<div class="cd"><div class="cd-h"><h3>系统资源</h3></div><div class="cd-b pad"><div class="cg" style="gap:12px">'+
+        '<div class="cc"><h4>运行信息</h4>'+
+          '<div class="ci"><span class="l">内存分配</span><span class="v">'+((md.memory_alloc_mb||0).toFixed(1))+' MB</span></div>'+
+          '<div class="ci"><span class="l">系统内存</span><span class="v">'+((md.memory_sys_mb||0).toFixed(1))+' MB</span></div>'+
+          '<div class="ci"><span class="l">CPU 核数</span><span class="v">'+(md.cpu_num||'-')+'</span></div>'+
+        '</div></div></div></div>'+
+      '<div class="cd" style="margin-top:16px"><div class="cd-h"><h3>最近节点</h3></div><div class="cd-b">'+
+        '<table><thead><tr><th>ID</th><th>名称</th><th>状态</th><th>隧道</th><th>连接时间</th><th>心跳</th><th>远程地址</th></tr></thead><tbody>'+
+        (nl.items||[]).slice(0,5).map(x=>
+          '<tr><td><code>'+eh(x.id)+'</code></td><td>'+eh(x.name)+'</td><td>'+
+          (x.status==='online'?'<span class="bdg bdg-ok">在线</span>':'<span class="bdg bdg-er">离线</span>')+'</td><td>'+
+          x.tunnel_count+'</td><td>'+ta(x.connected_at)+'</td><td>'+ta(x.last_heartbeat)+'</td><td><code>'+eh(x.remote_addr||'-')+'</code></td></tr>'
+        ).join('')+
+        '<tr><td colspan="7" class="empty">'+((nl.items||[]).length===0?'暂无节点':'')+'</td></tr></tbody></table></div></div>');
+  }catch(e){shell('仪表盘','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+
+/* ===== 节点管理 ===== */
+async function pgNodes(){
+  shell('节点管理','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const r=await G('/nodes');const it=(r.data&&Array.isArray(r.data.items))?r.data.items:[];
+    shell('节点管理','<div class="cd"><div class="cd-h"><h3>节点列表 ('+r.data.total+')</h3>'+
+      '<div style="display:flex;gap:8px"><span style="font-size:12px;color:var(--t2);align-self:center">node_id: 8字符, 字母开头</span>'+
+      '<button class="btn btn-p btn-sm" onclick="pgNodes()">'+I.dash+' 刷新</button></div></div>'+
+      '<div class="cd-b"><table><thead><tr><th>ID</th><th>名称</th><th>归属</th><th>状态</th><th>隧道</th><th>连接时间</th><th>心跳</th><th>远程地址</th><th>操作</th></tr></thead><tbody>'+
+      it.map(n=>
+        '<tr><td><code>'+eh(n.id)+'</code></td><td>'+eh(n.name)+'</td><td>'+(n.owner_user_id==='system'?'系统':eh(n.owner_user_id||'-'))+'</td><td>'+
+        (n.status==='online'?'<span class="bdg bdg-ok">在线</span>':'<span class="bdg bdg-er">离线</span>')+'</td><td>'+n.tunnel_count+'</td><td>'+
+        ta(n.connected_at)+'</td><td>'+ta(n.last_heartbeat)+'</td><td><code>'+eh(n.remote_addr||'-')+'</code></td>'+
+        '<td class="acts"><button class="btn btn-g btn-sm" onclick="ndet(&quot;' + eh(n.id) + '&quot;)">'+I.chev+'</button>'+
+        (n.status==='online'?'<button class="btn btn-g btn-sm" onclick="ndisc(&quot;' + eh(n.id) + '&quot;)" title="断开">'+I.unlink+'</button>':'')+
+        '<button class="btn btn-d btn-sm" onclick="ndel(&quot;' + eh(n.id) + '&quot;)" title="删除">'+I.del+'</button></td></tr>'+
+        '<tr id="nd-'+eh(n.id)+'" style="display:none"><td colspan="8" class="dr"><div id="ndc-'+eh(n.id)+'">加载中...</div></td></tr>'
+      ).join('')+'</tbody></table></div></div>');
+  }catch(e){shell('节点管理','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+async function ndet(id){
+  const r=document.getElementById('nd-'+id),c=document.getElementById('ndc-'+id);
+  if(r.style.display==='none'){
+    r.style.display='';
+    try{
+      const d=await G('/nodes/'+id),n=d.data;
+      const ts=(n.tunnels||[]).map(t=>{
+        const url=tunnelUrl({type:t.type,name:t.name,node_id:id,domain:t.domain,listen_port:t.listen_port});
+        return '<div class="tchip"><strong>'+eh(t.name)+'</strong> '+(t.enabled!==false?'<span class="bdg bdg-ok" style="font-size:11px;padding:1px 7px">启用</span>':'<span class="bdg bdg-er" style="font-size:11px;padding:1px 7px">禁用</span>')+
+        ' · <span class="bdg bdg-in">'+t.type+'</span> · '+eh(t.target||'-')+' · '+url+
+        ' <button class="td" onclick="tdelFromNode(&quot;' + eh(t.name) + '&quot;,&quot;' + eh(id) + '&quot;)" title="删除">'+I.del+'</button></div>';
+      }).join('');
+      c.innerHTML=
+        '<div style="margin-bottom:8px"><strong>Token:</strong> <code>'+eh(n.token||'-')+'</code></div>'+
+        '<div style="margin-bottom:8px"><strong>归属:</strong> '+(n.owner_user_id==='system'?'系统':eh(n.owner_user_id||'-'))+'</div>'+
+        '<div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">'+
+          '<strong>隧道:</strong> '+(ts||'<span style="color:var(--t2)">无</span>')+
+          '<button class="btn btn-p btn-sm" onclick="naddt(&quot;' + eh(id) + '&quot;)">'+I.plus+' 添加隧道</button>'+
+        '</div>'+
+        '<div><strong>连接:</strong> '+(n.connected_at||'-')+' &nbsp; <strong>心跳:</strong> '+(n.last_heartbeat||'-')+'</div>';
+    }catch(e){c.textContent='加载失败'}
+  }else r.style.display='none';
+}
+async function ndisc(id){if(!confirm('确定断开节点 '+id+'？'))return;try{await D('/nodes/'+id+'/connection');toast('已断开','success');pgNodes()}catch(e){toast(e.message,'error')}}
+async function ndel(id){if(!confirm('确定删除节点 '+id+'？'))return;try{await D('/nodes/'+id);toast('已删除','success');pgNodes()}catch(e){toast(e.message,'error')}}
+
+/* 从节点详情中删除隧道 */
+async function tdelFromNode(name,nodeId){
+  if(!confirm('确定删除隧道 '+name+'？'))return;
+  try{await D('/tunnels/'+name);toast('已删除','success');ndet(nodeId);ndet(nodeId)}
+  catch(e){toast(e.message,'error')}
+}
+
+/* 从节点详情中添加隧道 — 复用隧道创建 modal，预填 node_id */
+async function naddt(nodeId){
+  await tcr(null,nodeId);
+}
+
+/* ===== 隧道管理 ===== */
+async function pgTunnels(){
+  shell('隧道管理','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const[t,s]=await Promise.all([G('/tunnels').catch(()=>({data:{items:[],total:0}})),G('/tunnels/stats').catch(()=>({data:{}}))]);
+    const it=(t.data&&Array.isArray(t.data.items))?t.data.items:[],st=s.data||{};
+    shell('隧道管理',
+      '<div class="sg">'+
+        '<div class="sc"><div class="si bl">'+I.tunnel+'</div><div><h3>'+(st.total_tunnels||0)+'</h3><p>隧道总数</p></div></div>'+
+        '<div class="sc"><div class="si gr">'+I.tunnel+'</div><div><h3>'+(st.enabled_tunnels||0)+'</h3><p>启用中</p></div></div>'+
+        '<div class="sc"><div class="si pu">'+I.tunnel+'</div><div><h3>'+(st.active_tunnels||0)+'</h3><p>活跃中</p></div></div>'+
+        '<div class="sc"><div class="si or">'+I.tunnel+'</div><div><h3>'+(st.http_tunnels||0)+'</h3><p>HTTP隧道数</p></div></div>'+
+      '</div>'+
+      '<div class="cd"><div class="cd-h"><h3>隧道列表</h3>'+
+        '<button class="btn btn-p btn-sm" onclick="tcr()">'+I.plus+' 创建隧道</button></div>'+
+      '<div class="cd-b"><table><thead><tr><th>名称</th><th>状态</th><th>类型</th><th>目标</th><th>访问地址</th><th>节点</th><th>操作</th></tr></thead><tbody>'+
+      it.map(x=>
+        '<tr><td><code>'+eh(x.name)+'</code></td><td>'+
+        (x.enabled!==false?'<span class="bdg bdg-ok">启用</span>':'<span class="bdg bdg-er">禁用</span>')+'</td><td><span class="bdg bdg-'+(x.type==='http'?'in':x.type==='tcp'?'pu':'wa')+'">'+(x.type||'').toUpperCase()+'</span></td>'+
+        '<td><code>'+eh(x.target)+'</code></td><td>'+tunnelUrl(x)+'</td>'+
+        '<td><code>'+eh(x.node_id)+'</code></td>'+
+        '<td class="acts">'+
+          '<button class="btn btn-g btn-sm" onclick="tedit(&quot;' + eh(x.name) + '&quot;, &quot;' + eh(x.type) + '&quot;, &quot;' + eh(x.target) + '&quot;, &quot;' + eh(x.domain||'') + '&quot;, ' + (x.listen_port||0) + ', &quot;' + eh(x.node_id) + '&quot;, ' + (x.enabled!==false) + ')">'+I.edit+'</button>'+
+          '<button class="btn btn-d btn-sm" onclick="tdel(&quot;' + eh(x.name) + '&quot;)">'+I.del+'</button>'+
+        '</td></tr>'
+      ).join('')+'</tbody></table></div></div>');
+  }catch(e){shell('隧道管理','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+
+/* 删除隧道 */
+async function tdel(n){if(!confirm('确定删除隧道 '+n+'？'))return;try{await D('/tunnels/'+n);toast('已删除','success');pgTunnels()}catch(e){toast(e.message,'error')}}
+
+/* 创建/编辑隧道 modal — isEdit=true 时为编辑模式，t 为已有隧道数据 */
+async function tcr(t,presetNodeId){
+  // 获取在线节点列表用于 node_id 选择器
+  let nodes=[];
+  try{const r=await G('/nodes');nodes=(r.data.items||[]).filter(n=>n.status==='online')}
+  catch(e){/* ignore */}
+
+  const isEdit=!!t;
+  const name=isEdit?eh(t.name||''):'';
+  const type=isEdit?eh(t.type||'http'):'http';
+  const target=isEdit?eh(t.target||''):'';
+  const domain=isEdit?eh(t.domain||''):'';
+  const port=isEdit?(t.listen_port||0):0;
+  const nodeId=isEdit?eh(t.node_id||''):(presetNodeId||'');
+
+  const nodeOptions=nodes.map(n=>'<option value="'+eh(n.id)+'"'+(n.id===nodeId?' selected':'')+'>'+eh(n.name)+' ('+eh(n.id)+')</option>').join('');
+
+  modal(isEdit?'编辑隧道 — '+name:'创建隧道',
+    '<div class="fg"><label>隧道名称</label><input id="ttn" value="'+name+'"'+(isEdit?' readonly style="background:var(--bg)"':'')+'>'+
+    (isEdit?'<div class="hint">编辑模式下名称不可修改</div>':'')+'</div>'+
+    '<div class="fg"><label>类型</label><select id="ttt" onchange="updateTF()">'+
+      '<option value="http"'+(type==='http'?' selected':'')+'>HTTP</option>'+
+      '<option value="tcp"'+(type==='tcp'?' selected':'')+'>TCP</option>'+
+      '<option value="udp"'+(type==='udp'?' selected':'')+'>UDP</option>'+
+    '</select></div>'+
+    '<div class="fg"><label>目标地址</label><input id="ttg" value="'+target+'" placeholder="http://127.0.0.1:8080 或 127.0.0.1:3306"></div>'+
+    '<div class="fg" id="tfd"><label>域名</label><input id="ttd" value="'+domain+'" placeholder="app.example.com"></div>'+
+    '<div class="fg" id="tfp" style="display:none"><label>监听端口</label><input id="ttp" type="number" value="'+(port||'')+'" placeholder="8080"></div>'+
+    '<div class="fg"><label>节点</label><select id="ttnode"><option value="">-- 选择节点 --</option>'+nodeOptions+'</select></div>'+
+    '<div class="fg"><label><input id="tten" type="checkbox" '+(isEdit?(t.enabled===false?'':'checked'):'checked')+'> 启用隧道</label></div>',
+    '<button class="btn btn-g" onclick="cmodal()">取消</button>'+
+    '<button class="btn btn-p" onclick="tcrDo(' + (isEdit) + ')" id="tcrbtn">'+(isEdit?'保存':'创建')+'</button>');
+  updateTF();
+}
+
+/* 编辑隧道 — 从列表中调用 */
+function tedit(name,type,target,domain,listenPort,nodeId,enabled){
+  tcr({name,type,target,domain,listen_port:listenPort,node_id:nodeId,enabled:enabled});
+}
+
+/* type 字段联动：控制 domain / listen_port 显示 */
+function updateTF(){
+  const t=document.getElementById('ttt').value;
+  document.getElementById('tfd').style.display=t==='http'?'':'none';
+  document.getElementById('tfp').style.display=t==='http'?'none':'';
+}
+
+/* 提交创建/编辑 */
+async function tcrDo(isEdit){
+  const name=document.getElementById('ttn').value.trim();
+  const type=document.getElementById('ttt').value;
+  const target=document.getElementById('ttg').value.trim();
+  const domain=document.getElementById('ttd').value.trim();
+  const listenPort=parseInt(document.getElementById('ttp').value)||0;
+  const nodeId=document.getElementById('ttnode').value;
+
+  if(!name){toast('请输入隧道名称','error');return}
+  if(!target){toast('请输入目标地址','error');return}
+  if(!nodeId){toast('请选择节点','error');return}
+
+  const btn=document.getElementById('tcrbtn');
+  btn.disabled=true;btn.textContent='提交中...';
+
+  try{
+    const body={name,type,target,node_id:nodeId,enabled:!!document.getElementById('tten').checked};
+    if(type==='http'&&domain) body.domain=domain;
+    if((type==='tcp'||type==='udp')&&listenPort) body.listen_port=listenPort;
+    const r=await P('/tunnels',body);
+    toast(isEdit?'隧道已更新':'隧道已创建','success');
+    cmodal();pgTunnels();
+  }catch(e){toast(e.message,'error');btn.disabled=false;btn.textContent=isEdit?'保存':'创建'}
+}
+
+/* ===== 用户管理 ===== */
+async function pgUsers(){
+  shell('用户管理','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const[u,r]=await Promise.all([G('/users'),G('/roles')]);
+    const ul=Array.isArray(u.data)?u.data:[],rl=Array.isArray(r.data)?r.data:[];
+    shell('用户管理',
+      '<div class="tabs"><div class="tab on" onclick="utab(this,&quot;ut&quot;)">用户列表</div><div class="tab" onclick="utab(this,&quot;rt&quot;)">角色管理</div></div>'+
+      '<div id="ut"><div class="cd"><div class="cd-h"><h3>用户列表</h3><button class="btn btn-p btn-sm" onclick="ucr()">'+I.plus+' 创建用户</button></div>'+
+      '<div class="cd-b"><table><thead><tr><th>ID</th><th>用户名</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>'+
+      ul.map(x=>'<tr><td><code>'+eh(x.id)+'</code></td><td>'+eh(x.username)+'</td><td>'+
+        (x.status==='active'?'<span class="bdg bdg-ok">活跃</span>':'<span class="bdg bdg-er">禁用</span>')+'</td><td>'+ta(x.created_at)+'</td>'+
+        '<td class="acts"><button class="btn btn-g btn-sm" onclick="uedit(&quot;' + eh(x.id) + '&quot;, &quot;' + eh(x.username) + '&quot;, &quot;' + x.status + '&quot;)">'+I.key+'</button>'+
+        (x.id!=='admin'?'<button class="btn btn-d btn-sm" onclick="udel(&quot;' + eh(x.id) + '&quot;)">'+I.del+'</button>':'')+
+        '</td></tr>').join('')+'</tbody></table></div></div></div>'+
+      '<div id="rt" style="display:none"><div class="cd"><div class="cd-h"><h3>角色列表</h3></div><div class="cd-b"><table><thead><tr><th>ID</th><th>名称</th><th>描述</th><th>权限</th></tr></thead><tbody>'+
+      rl.map(x=>'<tr><td><code>'+eh(x.id)+'</code></td><td>'+eh(x.name)+'</td><td>'+eh(x.description||'-')+'</td><td>'+
+        (x.permissions||[]).map(p=>'<span class="bdg bdg-in" style="margin:2px">'+eh(p.resource)+':'+eh(p.action)+'</span>').join('')+'</td></tr>').join('')+
+      '</tbody></table></div></div></div>');
+  }catch(e){shell('用户管理','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+function utab(el,id){el.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));el.classList.add('on');document.getElementById('ut').style.display=id==='ut'?'':'none';document.getElementById('rt').style.display=id==='rt'?'':'none'}
+function ucr(){modal('创建用户','<div class="fg"><label>用户名</label><input id="cuu" required></div><div class="fg"><label>密码</label><input id="cup" type="password" required></div>','<button class="btn btn-g" onclick="cmodal()">取消</button><button class="btn btn-p" onclick="ucrDo()">创建</button>')}
+async function ucrDo(){try{await P('/users',{username:document.getElementById('cuu').value,password:document.getElementById('cup').value,status:'active'});toast('创建成功','success');cmodal();pgUsers()}catch(e){toast(e.message,'error')}}
+function uedit(id,un,st){modal('编辑用户 - '+eh(un),'<div class="fg"><label>新密码（留空不修改）</label><input id="eup" type="password" placeholder="输入新密码"></div><div class="fg"><label>状态</label><select id="eus"><option value="active"'+(st==='active'?' selected':'')+'>活跃</option><option value="disabled"'+(st==='disabled'?' selected':'')+'>禁用</option></select></div>','<button class="btn btn-g" onclick="cmodal()">取消</button><button class="btn btn-p" onclick="ueditDo(&quot;' + eh(id) + '&quot;)">保存</button>')}
+async function ueditDo(id){try{const p=document.getElementById('eup').value,s=document.getElementById('eus').value;if(p)await U('/users/'+id+'/password',{password:p});await U('/users/'+id+'/status',{status:s});toast('已更新','success');cmodal();pgUsers()}catch(e){toast(e.message,'error')}}
+async function udel(id){if(!confirm('确定删除用户 '+id+'？删除后该用户的接入 Token 将被禁用，归属节点将转为系统归属。'))return;try{await D('/users/'+id);toast('已删除','success');pgUsers()}catch(e){toast(e.message,'error')}}
+
+/* ===== 接入 Token 管理 ===== */
+async function pgAccessTokens(){
+  shell('接入Token','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const r=await G('/me/access-tokens');
+    const items=(r.data&&Array.isArray(r.data.items))?r.data.items:(Array.isArray(r.data)?r.data:[]);
+    shell('接入Token',
+      '<div class="cd"><div class="cd-h"><h3>Token 列表</h3>'+
+        '<button class="btn btn-p btn-sm" onclick="atcr()">'+I.plus+' 创建 Token</button></div>'+
+      '<div class="cd-b"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody>'+
+      items.map(x=>
+        '<tr><td>'+eh(x.name)+'</td><td><code>'+eh(x.token_prefix||'-')+'</code></td><td>'+
+        (x.status==='active'?'<span class="bdg bdg-ok">活跃</span>':'<span class="bdg bdg-er">禁用</span>')+'</td>'+
+        '<td>'+ta(x.last_used_at)+'</td><td>'+ta(x.created_at)+'</td>'+
+        '<td class="acts"><button class="btn btn-g btn-sm" onclick="atrot(&quot;' + eh(x.id) + '&quot;)">'+I.key+'</button>'+
+        '<button class="btn btn-d btn-sm" onclick="atdel(&quot;' + eh(x.id) + '&quot;)">'+I.del+'</button></td></tr>'
+      ).join('')+
+      (items.length===0?'<tr><td colspan="6" class="empty">暂无 Token</td></tr>':'')+
+      '</tbody></table></div></div>'+
+      '<div id="atbox" style="display:none;margin-top:16px" class="cd"><div class="cd-h"><h3>新 Token</h3></div>'+
+      '<div class="cd-b pad"><p style="color:var(--wa);margin-bottom:8px">请妥善保存，关闭后将无法再次查看</p>'+
+      '<div style="display:flex;gap:8px"><input id="atval" readonly style="flex:1;font-family:monospace;font-size:13px;padding:8px;border:1px solid var(--bd);border-radius:var(--r);background:var(--bg)"><button class="btn btn-g btn-sm" onclick="navigator.clipboard.writeText(document.getElementById(&quot;atval&quot;).value);toast(&quot;已复制&quot;,&quot;success&quot;)">复制</button></div></div></div>');
+  }catch(e){shell('接入Token','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+
+function atcr(){modal('创建 Token','<div class="fg"><label>名称</label><input id="atn" placeholder="例如: 生产环境节点"></div>','<button class="btn btn-g" onclick="cmodal()">取消</button><button class="btn btn-p" onclick="atcrDo()">创建</button>')}
+async function atcrDo(){
+  const n=document.getElementById('atn').value.trim();
+  if(!n){toast('请输入名称','error');return}
+  try{
+    const r=await P('/me/access-tokens',{name:n});
+    toast('Token 已创建','success');
+    cmodal();
+    showAtBox(r.data.token);
+    pgAccessTokens();
+  }catch(e){toast(e.message,'error')}
+}
+async function atrot(id){
+  if(!confirm('确定轮换此 Token？旧 Token 将立即失效。'))return;
+  try{
+    const r=await P('/me/access-tokens/'+id+'/rotate');
+    toast('Token 已轮换','success');
+    showAtBox(r.data.token);
+  }catch(e){toast(e.message,'error')}
+}
+async function atdel(id){if(!confirm('确定删除 Token？'))return;try{await D('/me/access-tokens/'+id);toast('已删除','success');pgAccessTokens()}catch(e){toast(e.message,'error')}}
+function showAtBox(token){
+  const box=document.getElementById('atbox');
+  if(!box)return;
+  document.getElementById('atval').value=token||'';
+  box.style.display='';
+  setTimeout(()=>{if(box)box.style.display='none'},10000);
+}
+
+/* ===== MQTT 管理 ===== */
+async function pgMQTT(){
+  shell('MQTT 管理','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const[s,c,t]=await Promise.all([G('/mqtt/stats').catch(()=>({data:{}})),G('/mqtt/clients').catch(()=>({data:[]})),G('/mqtt/topics').catch(()=>({data:[]}))]);
+    const sd=s.data||{},cl=Array.isArray(c.data)?c.data:[],tp=Array.isArray(t.data)?t.data:[];
+    shell('MQTT 管理',
+      '<div class="sg">'+
+        '<div class="sc"><div class="si gr">'+I.node+'</div><div><h3>'+(sd.clients_connected||0)+'</h3><p>在线客户端</p></div></div>'+
+        '<div class="sc"><div class="si bl">'+I.tunnel+'</div><div><h3>'+(sd.subscriptions||0)+'</h3><p>订阅数</p></div></div>'+
+        '<div class="sc"><div class="si pu">'+I.send+'</div><div><h3>'+(sd.messages_published||0)+'</h3><p>已发布</p></div></div>'+
+      '</div>'+
+      '<div class="cd" style="margin-bottom:16px"><div class="cd-h"><h3>消息发布</h3></div><div class="cd-b pad">'+
+        '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">'+
+          '<div class="fg" style="flex:2;min-width:200px;margin:0"><label>Topic</label><input id="mt" placeholder="sensors/temperature"></div>'+
+          '<div class="fg" style="flex:2;min-width:200px;margin:0"><label>Payload</label><input id="mp" placeholder="hello"></div>'+
+          '<button class="btn btn-p" onclick="mqpub()">'+I.send+' 发布</button>'+
+        '</div></div></div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'+
+        '<div class="cd"><div class="cd-h"><h3>客户端 ('+cl.length+')</h3></div><div class="cd-b"><table><thead><tr><th>Client ID</th><th>用户名</th></tr></thead><tbody>'+
+        cl.map(x=>'<tr><td><code>'+eh(x.client_id||x.ID||'')+'</code></td><td>'+eh(x.username||'-')+'</td></tr>').join('')+'</tbody></table></div></div>'+
+        '<div class="cd"><div class="cd-h"><h3>Topics ('+tp.length+')</h3></div><div class="cd-b"><table><thead><tr><th>Topic</th><th>QoS</th><th>订阅</th></tr></thead><tbody>'+
+        tp.map(x=>'<tr><td><code>'+eh(x.topic||x.Topic||x.filter||'')+'</code></td><td>'+(x.qos||x.Qos||'-')+'</td><td>'+(x.subscribers||x.Subscribers||'-')+'</td></tr>').join('')+'</tbody></table></div></div>'+
+      '</div>');
+  }catch(e){shell('MQTT 管理','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+async function mqpub(){const t=document.getElementById('mt').value,p=document.getElementById('mp').value;if(!t){toast('请输入 Topic','error');return}try{await P('/mqtt/publish',{topic:t,payload:p,qos:1,retain:false});toast('已发布','success')}catch(e){toast(e.message,'error')}}
+
+/* ===== 系统设置 ===== */
+async function pgSettings(){
+  shell('系统设置','<div class="ld"><div class="sp"></div></div>');
+  try{
+    const[c,ak]=await Promise.all([G('/config').catch(()=>({data:{}})),G('/accesskey').catch(()=>({data:{}}))]);
+    const d=c.data||{};
+    shell('系统设置',
+      '<div class="cg">'+
+        '<div class="cd"><div class="cd-h"><h3>服务器配置</h3></div><div class="cd-b pad"><div class="cg" style="gap:12px">'+
+          '<div class="cc"><h4>网络</h4>'+
+            '<div class="ci"><span class="l">控制端口</span><span class="v">'+eh(d.server?.control_port||'-')+'</span></div>'+
+            '<div class="ci"><span class="l">网关端口</span><span class="v">'+eh(d.server?.gateway_port||'-')+'</span></div>'+
+            '<div class="ci"><span class="l">API 端口</span><span class="v">'+eh(d.server?.api_port||'-')+'</span></div>'+
+            '<div class="ci"><span class="l">TLS</span><span class="v">'+(d.server?.tls_enabled?'已启用':'未启用')+'</span></div>'+
+          '</div>'+
+          '<div class="cc"><h4>MQTT</h4>'+
+            '<div class="ci"><span class="l">状态</span><span class="v">'+(d.mqtt?.enabled?'已启用':'未启用')+'</span></div>'+
+            '<div class="ci"><span class="l">TCP</span><span class="v">'+eh(d.mqtt?.tcp_port||'-')+'</span></div>'+
+            '<div class="ci"><span class="l">WS</span><span class="v">'+eh(d.mqtt?.ws_port||'-')+'</span></div>'+
+          '</div>'+
+          '<div class="cc"><h4>认证</h4>'+
+            '<div class="ci"><span class="l">JWT 有效期</span><span class="v">'+eh(d.auth?.jwt_expiry||'-')+'</span></div>'+
+            '<div class="ci"><span class="l">Bcrypt Cost</span><span class="v">'+(d.auth?.bcrypt_cost||'-')+'</span></div>'+
+          '</div>'+
+          '<div class="cc"><h4>数据库</h4>'+
+            '<div class="ci"><span class="l">路径</span><span class="v">'+eh(d.database?.path||'-')+'</span></div>'+
+          '</div>'+
+        '</div></div></div>'+
+        '<div class="cd"><div class="cd-h"><h3>修改密码</h3></div><div class="cd-b pad"><div style="max-width:400px">'+
+          '<div class="fg"><label>当前密码</label><input id="cpo" type="password"></div>'+
+          '<div class="fg"><label>新密码</label><input id="cpn" type="password"></div>'+
+          '<button class="btn btn-p" onclick="chpw()">修改密码</button></div></div></div>'+
+        '<div class="cd"><div class="cd-h"><h3>Access Key</h3><div>'+
+          (ak.data?.enabled?'<button class="btn btn-d btn-sm" onclick="akdis()">禁用</button>':'<button class="btn btn-s btn-sm" onclick="akset()">启用</button>')+
+        '</div></div><div class="cd-b pad"><p style="color:var(--t2);margin-bottom:12px">Access Key 用于 API 简单认证。</p>'+
+          '<div class="fg"><label>设置 Key</label><div style="display:flex;gap:8px"><input id="akv" placeholder="输入新的 Access Key" style="flex:1"><button class="btn btn-p" onclick="akset()">保存</button></div></div>'+
+        '</div></div>'+
+      '</div>');
+  }catch(e){shell('系统设置','<div class="empty">加载失败: '+eh(e.message)+'</div>')}
+}
+async function chpw(){const o=document.getElementById('cpo').value,n=document.getElementById('cpn').value;if(!o||!n){toast('请填写完整','error');return}try{await P('/auth/changepass',{old_password:o,new_password:n});toast('密码已修改','success');document.getElementById('cpo').value='';document.getElementById('cpn').value=''}catch(e){toast(e.message,'error')}}
+async function akset(){const k=document.getElementById('akv')?.value;if(!k){toast('请输入 Key','error');return}try{await U('/accesskey',{key:k});toast('已设置','success');pgSettings()}catch(e){toast(e.message,'error')}}
+async function akdis(){if(!confirm('确定禁用？'))return;try{await D('/accesskey');toast('已禁用','success');pgSettings()}catch(e){toast(e.message,'error')}}
+
+route();

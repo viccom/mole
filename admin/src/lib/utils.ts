@@ -4,6 +4,12 @@ export function cn(...inputs: ClassValue[]) {
   return clsx(inputs)
 }
 
+export function getErrorMessage(err: unknown, fallback = '操作失败'): string {
+  if (err instanceof Error) return err.message || fallback
+  if (typeof err === 'string') return err || fallback
+  return fallback
+}
+
 export function formatTimeAgo(dateStr?: string | null): string {
   if (!dateStr) return '-'
   const date = new Date(dateStr)

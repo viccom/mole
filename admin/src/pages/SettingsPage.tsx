@@ -9,6 +9,29 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { Shield, Lock, Eye, EyeOff } from 'lucide-react'
 
+function PasswordInput({ value, onChange, show, onToggle, placeholder }: {
+  value: string; onChange: (v: string) => void; show: boolean; onToggle: () => void; placeholder: string
+}) {
+  return (
+    <div className="relative">
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+      />
+      <button
+        type="button"
+        onClick={onToggle}
+        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
+      >
+        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+      </button>
+    </div>
+  )
+}
+
 export function SettingsPage() {
   const { toast } = useToast()
   const [config, setConfig] = useState<ServerConfig | null>(null)
@@ -89,27 +112,6 @@ export function SettingsPage() {
   }
 
   if (loading) return <Loading />
-
-  const PasswordInput = ({ value, onChange, show, onToggle, placeholder }: {
-    value: string; onChange: (v: string) => void; show: boolean; onToggle: () => void; placeholder: string
-  }) => (
-    <div className="relative">
-      <input
-        type={show ? 'text' : 'password'}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-      />
-      <button
-        type="button"
-        onClick={onToggle}
-        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
-      >
-        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-      </button>
-    </div>
-  )
 
   return (
     <>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useMemo, useRef, useEffect, type ReactNode } from 'react'
 
 type ToastType = 'success' | 'error' | 'info'
 
@@ -18,15 +18,31 @@ let nextId = 0
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
+  const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
+
+  // Cleanup all timers on unmount
+  useEffect(() => {
+    const timers = timersRef.current
+    return () => {
+      timers.forEach(t => clearTimeout(t))
+      timers.clear()
+    }
+  }, [])
 
   const toast = useCallback((message: string, type: ToastType = 'info') => {
     const id = ++nextId
     setToasts(prev => [...prev, { id, message, type }])
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000)
+    const timer = setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+      timersRef.current.delete(id)
+    }, 3000)
+    timersRef.current.set(id, timer)
   }, [])
 
+  const value = useMemo(() => ({ toast }), [toast])
+
   return (
-    <ToastContext.Provider value={{ toast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div className="fixed top-5 right-5 z-[2000] flex flex-col gap-2">
         {toasts.map(t => (

@@ -11,7 +11,7 @@ import { Modal } from '../components/Modal'
 import { FormField } from '../components/FormField'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useToast } from '../hooks/useToast'
-import { cn } from '../lib/utils'
+import { cn, getErrorMessage } from '../lib/utils'
 
 // ---------------------------------------------------------------------------
 // CreateUserModal
@@ -44,8 +44,8 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
       toast('用户创建成功', 'success')
       onCreated()
       onClose()
-    } catch (err: any) {
-      toast(err.message || '创建失败', 'error')
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, '创建失败'), 'error')
     } finally {
       setSubmitting(false)
     }
@@ -155,8 +155,8 @@ function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => 
       toast('用户更新成功', 'success')
       onSaved()
       onClose()
-    } catch (err: any) {
-      toast(err.message || '更新失败', 'error')
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, '更新失败'), 'error')
     } finally {
       setSubmitting(false)
     }
@@ -276,8 +276,8 @@ function RoleFormModal({ role, onClose, onSaved }: { role?: Role; onClose: () =>
       toast(isEdit ? '角色更新成功' : '角色创建成功', 'success')
       onSaved()
       onClose()
-    } catch (err: any) {
-      toast(err.message || '操作失败', 'error')
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, '操作失败'), 'error')
     } finally {
       setSubmitting(false)
     }
@@ -402,8 +402,8 @@ export function UsersPage() {
       toast('用户已删除', 'success')
       setDeleteTarget(null)
       loadData()
-    } catch (err: any) {
-      toast(err.message || '删除失败', 'error')
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, '删除失败'), 'error')
     }
   }
 
@@ -414,8 +414,8 @@ export function UsersPage() {
       toast('角色已删除', 'success')
       setDeleteRoleTarget(null)
       loadData()
-    } catch (err: any) {
-      toast(err.message || '删除失败', 'error')
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, '删除失败'), 'error')
     }
   }
 

@@ -184,18 +184,6 @@ function NodeRowGroup({
   onAddTunnel: () => void
   onDeleteTunnel: (name: string) => void
 }) {
-  const { toast } = useToast()
-
-  const handleDeleteTunnel = async (name: string) => {
-    try {
-      await api.deleteTunnel(name)
-      toast('隧道已删除', 'success')
-      onDeleteTunnel(name)
-    } catch (err: unknown) {
-      toast((err as Error).message || '删除隧道失败', 'error')
-    }
-  }
-
   return (
     <>
       <tr className="hover:bg-gray-50/50">
@@ -291,7 +279,7 @@ function NodeRowGroup({
                         </Badge>
                         <span className="text-gray-400 text-xs">{t.target}</span>
                         <button
-                          onClick={() => handleDeleteTunnel(t.name)}
+                          onClick={() => onDeleteTunnel(t.name)}
                           title="删除隧道"
                           className="ml-1 text-gray-300 hover:text-red-500"
                         >

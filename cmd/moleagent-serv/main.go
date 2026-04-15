@@ -150,10 +150,32 @@ func main() {
 	// --- HTTP API 服务（静态文件 + API） ---
 	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo)
 	adminDir, _ := os.Getwd()
-	adminFS := http.StripPrefix("/admin", http.FileServer(http.Dir(filepath.Join(adminDir, "admin"))))
+	distDir := filepath.Join(adminDir, "admin", "dist")
+	fileServer := http.FileServer(http.Dir(distDir))
+	adminFS := http.StripPrefix("/admin", fileServer)
+	// SPA fallback: 每次从磁盘读取 index.html，前端重新编译后无需重启
+	indexPath := filepath.Join(distDir, "index.html")
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/admin") {
-			adminFS.ServeHTTP(w, r)
+			// 尝试匹配静态文件
+			staticPath := strings.TrimPrefix(r.URL.Path, "/admin")
+			if staticPath == "" {
+				staticPath = "/"
+			}
+			fullPath := filepath.Join(distDir, filepath.Clean(staticPath))
+			if fi, err := os.Stat(fullPath); err == nil && !fi.IsDir() {
+				adminFS.ServeHTTP(w, r)
+				return
+			}
+			// 带扩展名的资源请求不 fallback，直接 404
+				if strings.Contains(staticPath, ".") {
+					http.NotFound(w, r)
+					return
+				}
+				// SPA fallback: 返回 index.html
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			html, _ := os.ReadFile(indexPath)
+			w.Write(html)
 			return
 		}
 		apiRouter.ServeHTTP(w, r)
