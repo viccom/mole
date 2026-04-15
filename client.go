@@ -401,10 +401,11 @@ func (c *Client) acceptLoop(ctx context.Context) {
 }
 
 // dispatchStream 分发服务端发来的流
-// 启发式检测（协议不变）：
+// 启发式检测：
 //   - 首字节 '{' 且 JSON 含 cmd:"tunnel_push" → 控制推送
+//   - 首字节 '\x00' → TCP/UDP 代理（含隧道名标识头）
 //   - 可解析为 HTTP 请求 → HTTP 代理
-//   - 其他 → TCP/UDP 原始转发
+//   - 其他 → TCP/UDP 原始转发（兼容旧服务端）
 func (c *Client) dispatchStream(stream *smux.Stream) {
 	defer stream.Close()
 
@@ -419,6 +420,26 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	// 尝试作为控制命令（tunnel_push）
 	if peek[0] == '{' {
 		if c.handlePossiblePush(stream, br) {
+			return
+		}
+	}
+
+	// 检查 TCP/UDP 代理协议头：\x00<tunnel-name>\n
+	if peek[0] == 0x00 {
+		line, err := br.ReadBytes('\n')
+		if err == nil && len(line) > 1 {
+			tunnelName := string(line[1 : len(line)-1]) // 跳过 \x00 和 \n
+			stream.SetReadDeadline(time.Time{})
+			proxy.HandleRawStream(stream, br, func() string {
+				c.mu.RLock()
+				defer c.mu.RUnlock()
+				for _, t := range c.tunnels {
+					if t.Name == tunnelName && t.IsEnabled() && (t.Type == TunnelTypeTCP || t.Type == TunnelTypeUDP) {
+						return t.Target
+					}
+				}
+				return ""
+			})
 			return
 		}
 	}
@@ -457,7 +478,7 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 		return
 	}
 
-	// fallback：TCP/UDP 原始转发
+	// fallback：TCP/UDP 原始转发（兼容旧服务端，匹配第一个 TCP/UDP 隧道）
 	stream.SetReadDeadline(time.Time{})
 	proxy.HandleRawStream(stream, br, func() string {
 		c.mu.RLock()
