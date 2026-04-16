@@ -221,6 +221,50 @@ func TestTunnelHandler_Delete_NonOwner_404(t *testing.T) {
 	}
 }
 
+func TestTunnelHandler_Delete_UsesNodeIDQueryForPreciseMatch(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
+
+	for _, n := range []*core.Node{
+		{
+			ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "admin",
+			Tunnels: []core.Tunnel{{Name: "shared", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22"}},
+		},
+		{
+			ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "admin",
+			Tunnels: []core.Tunnel{{Name: "shared", Type: core.TunnelTypeTCP, Target: "127.0.0.1:2222"}},
+		},
+	} {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	req := reqWithClaims(http.MethodDelete, "/api/v1/tunnels/shared?node_id=NodeB1", nil, claims)
+	w := httptest.NewRecorder()
+
+	handler.Delete(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	nodeA, ok := nodeMgr.Get(ctx, "NodeA1")
+	if !ok || len(nodeA.Tunnels) != 1 {
+		t.Fatalf("NodeA1 tunnel should remain, got %+v", nodeA)
+	}
+	nodeB, ok := nodeMgr.Get(ctx, "NodeB1")
+	if !ok {
+		t.Fatal("NodeB1 should still exist")
+	}
+	if len(nodeB.Tunnels) != 0 {
+		t.Fatalf("NodeB1 tunnel should be removed, got %+v", nodeB.Tunnels)
+	}
+}
+
 func TestTunnelHandler_List_AdminSeesAll(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)

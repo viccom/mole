@@ -66,6 +66,7 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"total": len(items),
 	})
+
 }
 
 func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
@@ -215,8 +216,12 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	nodes := h.nodeMgr.GetAll(r.Context())
 	var targetNodeID string
 	found := false
+	requestedNodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
 	for _, n := range nodes {
 		if !IsAdmin(claims) && n.OwnerUserID != claims.UserID {
+			continue
+		}
+		if requestedNodeID != "" && n.ID != requestedNodeID {
 			continue
 		}
 		for _, t := range n.Tunnels {

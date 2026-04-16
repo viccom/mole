@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api } from '../api/client'
 import type { MQTTStats, MQTTClient, MQTTTopic } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -6,6 +6,7 @@ import { StatCard } from '../components/StatCard'
 import { Loading } from '../components/Loading'
 import { Empty } from '../components/Empty'
 import { useToast } from '../hooks/useToast'
+import { useRequest } from '../hooks/useRequest'
 import { Users, BookOpen, Send } from 'lucide-react'
 
 // MQTT API may return PascalCase fields; normalize them
@@ -24,33 +25,33 @@ function normalizeTopic(t: Record<string, unknown>): { topic: string; qos: numbe
   }
 }
 
+function asRecordList(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value as Record<string, unknown>[] : []
+}
+
 export function MQTTPage() {
   const { toast } = useToast()
-  const [stats, setStats] = useState<MQTTStats | null>(null)
-  const [clients, setClients] = useState<{ client_id: string; username: string }[]>([])
-  const [topics, setTopics] = useState<{ topic: string; qos: number; subscribers: number }[]>([])
-  const [loading, setLoading] = useState(true)
-
   // Publish form
   const [pubTopic, setPubTopic] = useState('')
   const [pubPayload, setPubPayload] = useState('')
   const [publishing, setPublishing] = useState(false)
+  const { data, loading, run: fetchData } = useRequest(async () => {
+    const [statsRes, clientsRes, topicsRes] = await Promise.all([
+      api.getMQTTStats().catch(() => null as MQTTStats | null),
+      api.getMQTTClients().catch(() => [] as MQTTClient[]),
+      api.getMQTTTopics().catch(() => [] as MQTTTopic[]),
+    ])
 
-  const fetchData = () => {
-    Promise.all([
-      api.getMQTTStats().catch(() => null),
-      api.getMQTTClients().catch(() => []),
-      api.getMQTTTopics().catch(() => []),
-    ]).then(([statsRes, clientsRes, topicsRes]) => {
-      if (statsRes) setStats(statsRes)
-      setClients((clientsRes as Record<string, unknown>[]).map(normalizeClient))
-      setTopics((topicsRes as Record<string, unknown>[]).map(normalizeTopic))
-    }).finally(() => setLoading(false))
-  }
+    return {
+      stats: statsRes,
+      clients: asRecordList(clientsRes).map(normalizeClient),
+      topics: asRecordList(topicsRes).map(normalizeTopic),
+    }
+  })
 
-  useEffect(() => {
-    fetchData()
-  }, [])
+  const stats = data?.stats || null
+  const clients = data?.clients || []
+  const topics = data?.topics || []
 
   const handlePublish = async () => {
     if (!pubTopic.trim()) {

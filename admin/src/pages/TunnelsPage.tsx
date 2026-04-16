@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useMemo, useState } from 'react'
 import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, Activity, Globe, ArrowDown, ArrowUp, Users } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
@@ -6,57 +6,74 @@ import { PageHeader } from '../components/PageHeader'
 import { Badge } from '../components/Badge'
 import { Loading } from '../components/Loading'
 import { Empty } from '../components/Empty'
-import { Modal } from '../components/Modal'
-import { FormField } from '../components/FormField'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { StatCard } from '../components/StatCard'
+import { TunnelFormModal } from '../components/TunnelFormModal'
 import { useToast } from '../hooks/useToast'
+import { useRequest } from '../hooks/useRequest'
 import { tunnelAccessUrl, formatBytes, formatTimeAgo } from '../lib/utils'
+
+type TunnelPageData = {
+  tunnels: Tunnel[]
+  stats: TunnelStats | null
+  nodes: Node[]
+  usageMap: Record<string, TunnelUsageItem>
+}
 
 export function TunnelsPage() {
   const { toast } = useToast()
-  const [tunnels, setTunnels] = useState<Tunnel[]>([])
-  const [stats, setStats] = useState<TunnelStats | null>(null)
-  const [usageMap, setUsageMap] = useState<Record<string, TunnelUsageItem>>({})
-  const [nodes, setNodes] = useState<Node[]>([])
-  const [loading, setLoading] = useState(true)
   const [formModal, setFormModal] = useState<{
     tunnel?: Tunnel
     presetNodeId?: string
   } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Tunnel | null>(null)
 
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true)
+  const { data, loading, run: fetchData } = useRequest<TunnelPageData>(
+    async () => {
       const [tunnelsRes, statsRes, usageRes, nodesRes] = await Promise.all([
         api.getTunnels(),
         api.getTunnelStats(),
         api.getTunnelUsage(),
         api.getNodes(),
       ])
-      setTunnels(tunnelsRes.items || [])
-      setStats(statsRes)
-      setNodes(nodesRes.items || [])
-      // Build usage lookup map by composite key (nodeID:name)
+
       const map: Record<string, TunnelUsageItem> = {}
       for (const item of usageRes.items || []) {
         map[`${item.node_id}:${item.name}`] = item
       }
-      setUsageMap(map)
-    } catch (err: unknown) {
-      toast((err as Error).message || '加载数据失败', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [toast])
 
-  useEffect(() => { fetchData() }, [fetchData])
+      return {
+        tunnels: tunnelsRes.items || [],
+        stats: statsRes,
+        nodes: nodesRes.items || [],
+        usageMap: map,
+      }
+    },
+    {
+      onError: (error) => {
+        toast(error.message || '加载数据失败', 'error')
+      },
+    },
+  )
+
+  const tunnels = data?.tunnels || []
+  const stats = data?.stats || null
+  const nodes = data?.nodes || []
+  const usageMap = data?.usageMap || {}
+
+  const nodeMap = useMemo(
+    () => Object.fromEntries(nodes.map(node => [node.id, node])),
+    [nodes],
+  )
 
   const handleDelete = async () => {
     if (!deleteTarget) return
+    if (!deleteTarget.node_id) {
+      toast('缺少节点信息，无法删除隧道', 'error')
+      return
+    }
     try {
-      await api.deleteTunnel(deleteTarget.name)
+      await api.deleteTunnel(deleteTarget.node_id, deleteTarget.name)
       toast('隧道已删除', 'success')
       fetchData()
     } catch (err: unknown) {
@@ -154,7 +171,7 @@ export function TunnelsPage() {
             <tbody className="divide-y divide-gray-100">
               {tunnels.map(tunnel => {
                 const url = tunnelAccessUrl(tunnel)
-                const ownerNode = nodes.find(n => n.id === tunnel.node_id)
+                const ownerNode = tunnel.node_id ? nodeMap[tunnel.node_id] : undefined
                 const usage = usageMap[`${tunnel.node_id}:${tunnel.name}`]
                 return (
                   <tr key={`${tunnel.name}-${tunnel.node_id}`} className="hover:bg-gray-50/50">
@@ -267,184 +284,5 @@ export function TunnelsPage() {
         />
       )}
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// TunnelFormModal — shared form for create / edit tunnel
-// ---------------------------------------------------------------------------
-
-interface TunnelFormModalProps {
-  tunnel?: Tunnel
-  presetNodeId?: string
-  onClose: () => void
-  onSuccess: () => void
-}
-
-export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: TunnelFormModalProps) {
-  const { toast } = useToast()
-  const isEdit = !!tunnel
-
-  const [name, setName] = useState(tunnel?.name || '')
-  const [type, setType] = useState<'http' | 'https' | 'tcp' | 'udp'>(tunnel?.type || 'http')
-  const [target, setTarget] = useState(tunnel?.target || '')
-  const [domain, setDomain] = useState(tunnel?.domain || '')
-  const [listenPort, setListenPort] = useState(tunnel?.listen_port?.toString() || '')
-  const [nodeId, setNodeId] = useState(presetNodeId || tunnel?.node_id || '')
-  const [enabled, setEnabled] = useState(tunnel?.enabled !== false)
-  const [submitting, setSubmitting] = useState(false)
-
-  const [nodes, setNodes] = useState<Node[]>([])
-  const [nodesLoading, setNodesLoading] = useState(true)
-
-  useEffect(() => {
-    api.getNodes()
-      .then(res => setNodes(res.items || []))
-      .catch(() => {})
-      .finally(() => setNodesLoading(false))
-  }, [])
-
-  const onlineNodes = nodes.filter(n => n.status === 'online')
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    if (!name.trim()) { toast('请输入隧道名称', 'error'); return }
-    if (!target.trim()) { toast('请输入目标地址', 'error'); return }
-    if (!isEdit && !nodeId) { toast('请选择节点', 'error'); return }
-
-    try {
-      setSubmitting(true)
-      await api.createTunnel({
-        name: name.trim(),
-        type,
-        target: target.trim(),
-        domain: (type === 'http' || type === 'https') && domain.trim() ? domain.trim() : undefined,
-        listen_port: (type === 'tcp' || type === 'udp') && listenPort ? Number(listenPort) : undefined,
-        enabled,
-        node_id: nodeId,
-      })
-      toast(isEdit ? '隧道已更新' : '隧道已创建', 'success')
-      onSuccess()
-    } catch (err: unknown) {
-      toast((err as Error).message || '操作失败', 'error')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const inputClass = "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
-  const selectClass = inputClass
-
-  return (
-    <Modal title={isEdit ? '编辑隧道' : '创建隧道'} onClose={onClose}>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <FormField label="隧道名称">
-          <input
-            type="text"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            disabled={isEdit}
-            placeholder="例如: my-web"
-            className={inputClass}
-          />
-        </FormField>
-
-        <FormField label="类型">
-          <select
-            value={type}
-            onChange={e => setType(e.target.value as 'http' | 'https' | 'tcp' | 'udp')}
-            className={selectClass}
-          >
-            <option value="http">HTTP</option>
-            <option value="https">HTTPS</option>
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-          </select>
-        </FormField>
-
-        <FormField label="目标地址">
-          <input
-            type="text"
-            value={target}
-            onChange={e => setTarget(e.target.value)}
-            placeholder="例如: 127.0.0.1:8080"
-            className={inputClass}
-          />
-        </FormField>
-
-        {(type === 'http' || type === 'https') && (
-          <FormField label="域名（可选）">
-            <input
-              type="text"
-              value={domain}
-              onChange={e => setDomain(e.target.value)}
-              placeholder="例如: app.example.com"
-              className={inputClass}
-            />
-          </FormField>
-        )}
-
-        {(type === 'tcp' || type === 'udp') && (
-          <FormField label="监听端口">
-            <input
-              type="number"
-              value={listenPort}
-              onChange={e => setListenPort(e.target.value)}
-              placeholder="例如: 8080"
-              className={inputClass}
-            />
-          </FormField>
-        )}
-
-        {!isEdit && (
-          <FormField label="节点">
-            <select
-              value={nodeId}
-              onChange={e => setNodeId(e.target.value)}
-              disabled={nodesLoading || !!presetNodeId}
-              className={selectClass}
-            >
-              <option value="">{nodesLoading ? '加载中...' : '选择节点'}</option>
-              {onlineNodes.map(n => (
-                <option key={n.id} value={n.id}>{n.name} ({n.id.slice(0, 8)})</option>
-              ))}
-            </select>
-            {!nodesLoading && onlineNodes.length === 0 && (
-              <p className="text-xs text-amber-600 mt-1">暂无在线节点</p>
-            )}
-          </FormField>
-        )}
-
-        <FormField label="启用">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={e => setEnabled(e.target.checked)}
-              className="w-4 h-4 text-primary rounded border-gray-300 focus:ring-primary"
-            />
-            <span className="text-sm text-gray-600">启用此隧道</span>
-          </label>
-        </FormField>
-
-        <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
-          >
-            取消
-          </button>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="px-4 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
-          >
-            {submitting ? '提交中...' : isEdit ? '保存' : '创建'}
-          </button>
-        </div>
-      </form>
-    </Modal>
   )
 }

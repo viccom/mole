@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { Node, SystemMetrics } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -6,23 +5,25 @@ import { StatCard } from '../components/StatCard'
 import { Badge } from '../components/Badge'
 import { Loading } from '../components/Loading'
 import { Empty } from '../components/Empty'
-import { Server, Network, Activity, Clock } from 'lucide-react'
+import { useRequest } from '../hooks/useRequest'
+import { Server, Network, Activity, Clock, RefreshCw } from 'lucide-react'
 import { formatTimeAgo, formatUptime } from '../lib/utils'
 
 export function DashboardPage() {
-  const [nodes, setNodes] = useState<Node[]>([])
-  const [metrics, setMetrics] = useState<SystemMetrics | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    Promise.all([
+  const { data, loading, run: refresh } = useRequest(async () => {
+    const [nodesRes, metricsRes] = await Promise.all([
       api.getNodes().catch(() => ({ items: [] as Node[], total: 0 })),
-      api.getMetrics().catch(() => null),
-    ]).then(([nodesRes, metricsRes]) => {
-      setNodes(nodesRes.items || [])
-      setMetrics(metricsRes)
-    }).finally(() => setLoading(false))
-  }, [])
+      api.getMetrics().catch(() => null as SystemMetrics | null),
+    ])
+
+    return {
+      nodes: nodesRes.items || [],
+      metrics: metricsRes,
+    }
+  })
+
+  const nodes = data?.nodes || []
+  const metrics = data?.metrics || null
 
   if (loading) return <Loading />
 
@@ -31,7 +32,18 @@ export function DashboardPage() {
 
   return (
     <>
-      <PageHeader title="仪表盘" />
+      <PageHeader
+        title="仪表盘"
+        actions={
+          <button
+            onClick={() => { void refresh().catch(() => {}) }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            <RefreshCw className="w-4 h-4" />
+            刷新
+          </button>
+        }
+      />
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="grid grid-cols-4 gap-4">
           <StatCard icon={Server} iconBg="bg-emerald-100" iconColor="text-emerald-600" value={`${onlineCount}/${nodes.length}`} label="在线节点" />

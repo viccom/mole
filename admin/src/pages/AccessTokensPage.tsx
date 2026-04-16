@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { AccessToken } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -9,13 +9,12 @@ import { Modal } from '../components/Modal'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { FormField } from '../components/FormField'
 import { useToast } from '../hooks/useToast'
+import { useRequest } from '../hooks/useRequest'
 import { formatTimeAgo } from '../lib/utils'
 import { Plus, RefreshCw, Trash2, Copy, Check } from 'lucide-react'
 
 export function AccessTokensPage() {
   const { toast } = useToast()
-  const [tokens, setTokens] = useState<AccessToken[]>([])
-  const [loading, setLoading] = useState(true)
 
   // New token display
   const [revealedToken, setRevealedToken] = useState<string | null>(null)
@@ -34,17 +33,15 @@ export function AccessTokensPage() {
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<AccessToken | null>(null)
   const [deleting, setDeleting] = useState(false)
-
-  const fetchTokens = () => {
-    api.getAccessTokens()
-      .then(res => setTokens(res.items || []))
-      .catch(() => toast('获取 Token 列表失败', 'error'))
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => {
-    fetchTokens()
-  }, [])
+  const { data, loading, run: fetchTokens } = useRequest(
+    () => api.getAccessTokens(),
+    {
+      onError: () => {
+        toast('获取 Token 列表失败', 'error')
+      },
+    },
+  )
+  const tokens = data?.items || []
 
   // Auto-hide revealed token after 10 seconds
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus } from 'lucide-react'
 import { api } from '../api/client'
 import type { Node } from '../types/api'
@@ -7,31 +7,25 @@ import { Badge } from '../components/Badge'
 import { Loading } from '../components/Loading'
 import { Empty } from '../components/Empty'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { TunnelFormModal } from '../components/TunnelFormModal'
 import { useToast } from '../hooks/useToast'
+import { useRequest } from '../hooks/useRequest'
 import { formatTimeAgo } from '../lib/utils'
-import { TunnelFormModal } from './TunnelsPage'
 
 export function NodesPage() {
   const { toast } = useToast()
-  const [nodes, setNodes] = useState<Node[]>([])
-  const [loading, setLoading] = useState(true)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [deleteTarget, setDeleteTarget] = useState<Node | null>(null)
   const [tunnelModal, setTunnelModal] = useState<{ presetNodeId: string } | null>(null)
-
-  const fetchNodes = useCallback(async () => {
-    try {
-      setLoading(true)
-      const res = await api.getNodes()
-      setNodes(res.items || [])
-    } catch (err: unknown) {
-      toast((err as Error).message || '加载节点失败', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [toast])
-
-  useEffect(() => { fetchNodes() }, [fetchNodes])
+  const { data, loading, run: fetchNodes } = useRequest(
+    () => api.getNodes(),
+    {
+      onError: (error) => {
+        toast(error.message || '加载节点失败', 'error')
+      },
+    },
+  )
+  const nodes = data?.items || []
 
   const toggleExpand = (id: string) => {
     setExpandedIds(prev => {
@@ -55,9 +49,9 @@ export function NodesPage() {
     }
   }
 
-  const handleDeleteTunnel = async (name: string) => {
+  const handleDeleteTunnel = async (nodeId: string, name: string) => {
     try {
-      await api.deleteTunnel(name)
+      await api.deleteTunnel(nodeId, name)
       toast('隧道已删除', 'success')
       fetchNodes()
     } catch (err: unknown) {
@@ -159,7 +153,7 @@ function NodeRowGroup({
   onToggle: () => void
   onDelete: () => void
   onAddTunnel: () => void
-  onDeleteTunnel: (name: string) => void
+  onDeleteTunnel: (nodeId: string, name: string) => void
 }) {
   return (
     <>
@@ -242,7 +236,7 @@ function NodeRowGroup({
                           <span className="text-gray-400 text-xs">:{t.listen_port}</span>
                         )}
                         <button
-                          onClick={() => onDeleteTunnel(t.name)}
+                          onClick={() => onDeleteTunnel(node.id, t.name)}
                           title="删除隧道"
                           className="ml-1 text-gray-300 hover:text-red-500"
                         >

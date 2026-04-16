@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api } from '../api/client'
 import type { ServerConfig } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -7,6 +7,7 @@ import { Loading } from '../components/Loading'
 import { FormField } from '../components/FormField'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useToast } from '../hooks/useToast'
+import { useRequest } from '../hooks/useRequest'
 import { Shield, Lock, Eye, EyeOff } from 'lucide-react'
 
 function PasswordInput({ value, onChange, show, onToggle, placeholder }: {
@@ -34,8 +35,6 @@ function PasswordInput({ value, onChange, show, onToggle, placeholder }: {
 
 export function SettingsPage() {
   const { toast } = useToast()
-  const [config, setConfig] = useState<ServerConfig | null>(null)
-  const [loading, setLoading] = useState(true)
 
   // Change password
   const [oldPassword, setOldPassword] = useState('')
@@ -49,16 +48,19 @@ export function SettingsPage() {
   const [accessKeyValue, setAccessKeyValue] = useState('')
   const [savingKey, setSavingKey] = useState(false)
   const [showDisableConfirm, setShowDisableConfirm] = useState(false)
+  const { data, loading } = useRequest(async () => {
+    const [configRes, keyRes] = await Promise.all([
+      api.getConfig().catch(() => null as ServerConfig | null),
+      api.getAccessKey().catch(() => null as { enabled: boolean } | null),
+    ])
 
-  useEffect(() => {
-    Promise.all([
-      api.getConfig().catch(() => null),
-      api.getAccessKey().catch(() => null),
-    ]).then(([configRes, keyRes]) => {
-      if (configRes) setConfig(configRes)
-      if (keyRes) setAccessKeyEnabled(keyRes.enabled)
-    }).finally(() => setLoading(false))
-  }, [])
+    if (keyRes) {
+      setAccessKeyEnabled(keyRes.enabled)
+    }
+
+    return { config: configRes }
+  })
+  const config = data?.config || null
 
   const handleChangePassword = async () => {
     if (!oldPassword) {

@@ -70,8 +70,24 @@ func (m *testTunnelConfigManager) ApplyTunnel(context.Context, string, core.Tunn
 	return core.TunnelChangeResult{}, nil
 }
 
-func (m *testTunnelConfigManager) RemoveTunnel(context.Context, string, string) (core.TunnelChangeResult, error) {
-	return core.TunnelChangeResult{}, nil
+func (m *testTunnelConfigManager) RemoveTunnel(ctx context.Context, nodeID string, tunnelName string) (core.TunnelChangeResult, error) {
+	if err := m.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
+		updated := make([]core.Tunnel, 0, len(n.Tunnels))
+		for _, t := range n.Tunnels {
+			if t.Name != tunnelName {
+				updated = append(updated, t)
+			}
+		}
+		n.Tunnels = updated
+	}); err != nil {
+		return core.TunnelChangeResult{}, err
+	}
+	if node, ok := m.nodeMgr.Get(ctx, nodeID); ok && m.nodeRepo != nil {
+		if err := m.nodeRepo.Update(node); err != nil {
+			return core.TunnelChangeResult{}, err
+		}
+	}
+	return core.TunnelChangeResult{Status: "ok", Persisted: true, ClientSynced: true}, nil
 }
 
 func (m *testTunnelConfigManager) ReplaceTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) (core.TunnelChangeResult, error) {

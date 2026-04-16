@@ -1,4 +1,4 @@
-import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, AuthUser } from '../types/api'
+import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig } from '../types/api'
 
 const API = '/api/v1'
 let token = localStorage.getItem('ma_tk')
@@ -14,13 +14,24 @@ export function getToken() {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...((options.headers as Record<string, string>) || {}),
+  const headers = new Headers(options.headers)
+  if (!headers.has('Content-Type') && options.body !== undefined) {
+    headers.set('Content-Type', 'application/json')
   }
-  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (token) headers.set('Authorization', `Bearer ${token}`)
 
   const res = await fetch(`${API}${path}`, { ...options, headers })
+  const contentType = res.headers.get('content-type') || ''
+  const rawBody = await res.text()
+  let parsed: { code?: number; msg?: string; message?: string; data?: T } | null = null
+
+  if (rawBody && contentType.includes('application/json')) {
+    try {
+      parsed = JSON.parse(rawBody) as { code?: number; msg?: string; message?: string; data?: T }
+    } catch {
+      parsed = null
+    }
+  }
 
   if (res.status === 401) {
     setToken(null)
@@ -28,11 +39,40 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error('Unauthorized')
   }
 
-  const data = await res.json()
-  if (data.code !== undefined && data.code !== 0) {
-    throw new Error(data.msg || 'Request failed')
+  if (!res.ok) {
+    const message =
+      parsed?.msg ||
+      parsed?.message ||
+      rawBody.trim() ||
+      `Request failed (${res.status})`
+    throw new Error(message)
   }
-  return data.data as T
+
+  if (!rawBody) {
+    return undefined as T
+  }
+
+  if (parsed) {
+    if (parsed.code !== undefined && parsed.code !== 0) {
+      throw new Error(parsed.msg || parsed.message || 'Request failed')
+    }
+    if ('data' in parsed) {
+      return parsed.data as T
+    }
+    return parsed as T
+  }
+
+  return rawBody as T
+}
+
+type TunnelPayload = {
+  name: string
+  type: string
+  target: string
+  domain?: string
+  listen_port?: number
+  enabled?: boolean
+  node_id: string
 }
 
 export const api = {
@@ -90,9 +130,12 @@ export const api = {
     const qs = query.toString()
     return request<TunnelUsageResponse>(`/tunnels/usage${qs ? '?' + qs : ''}`)
   },
-  createTunnel: (data: { name: string; type: string; target: string; domain?: string; listen_port?: number; enabled?: boolean; node_id: string }) =>
+  createTunnel: (data: TunnelPayload) =>
     request('/tunnels', { method: 'POST', body: JSON.stringify(data) }),
-  deleteTunnel: (name: string) => request(`/tunnels/${name}`, { method: 'DELETE' }),
+  updateTunnel: (data: TunnelPayload) =>
+    request('/tunnels', { method: 'POST', body: JSON.stringify(data) }),
+  deleteTunnel: (nodeId: string, name: string) =>
+    request(`/tunnels/${encodeURIComponent(name)}?node_id=${encodeURIComponent(nodeId)}`, { method: 'DELETE' }),
 
   // Access Tokens
   getAccessTokens: () => request<{ items: AccessToken[]; total: number }>('/me/access-tokens'),
