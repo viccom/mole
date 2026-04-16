@@ -214,6 +214,9 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
+	tg.stats.ConnOpened(tunnelName)
+	defer tg.stats.ConnClosed(tunnelName)
+
 	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
 	if err != nil {
 		slog.Error("Failed to get session for HTTP", "tunnel", tunnelName, "nodeId", node.ID, "error", err)
@@ -234,13 +237,20 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		"nodeId", node.ID,
 	)
 
-	if err := r.Write(stream); err != nil {
+	// 统计请求字节数（bytesIn: 外部→隧道）
+	trackedStream := &countingConn{
+		Conn:    stream,
+		onWrite: func(n int) { tg.stats.RecordBytesIn(tunnelName, int64(n)) },
+		onRead:  func(n int) { tg.stats.RecordBytesOut(tunnelName, int64(n)) },
+	}
+
+	if err := r.Write(trackedStream); err != nil {
 		slog.Error("Failed to write request to stream", "error", err)
 		http.Error(w, "Upstream error", http.StatusBadGateway)
 		return
 	}
 
-	br := bufio.NewReader(stream)
+	br := bufio.NewReader(trackedStream)
 	resp, err := http.ReadResponse(br, r)
 	if err != nil {
 		slog.Error("Failed to read response from stream", "error", err)
@@ -259,6 +269,9 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 }
 
 func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
+	tg.stats.ConnOpened(tunnelName)
+	defer tg.stats.ConnClosed(tunnelName)
+
 	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
 	if err != nil {
 		slog.Error("Failed to get session for WS", "tunnel", tunnelName, "nodeId", node.ID, "error", err)
@@ -311,7 +324,13 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 
 	resp.Write(clientConn)
 	slog.Debug("WebSocket connected", "tunnel", tunnelName, "nodeId", node.ID)
-	biCopy(stream, clientConn)
+
+	trackedConn := &countingConn{
+		Conn:    clientConn,
+		onRead:  func(n int) { tg.stats.RecordBytesIn(tunnelName, int64(n)) },
+		onWrite: func(n int) { tg.stats.RecordBytesOut(tunnelName, int64(n)) },
+	}
+	biCopy(stream, trackedConn)
 }
 
 func isWebSocketRequest(r *http.Request) bool {

@@ -57,6 +57,7 @@ func (g *mockGateway) StartTCP(_ context.Context, _ core.Tunnel) error { return 
 func (g *mockGateway) StartUDP(_ context.Context, _ core.Tunnel) error { return nil }
 func (g *mockGateway) StopTunnel(_ string)                       {}
 func (g *mockGateway) Registry() *tunnel.ListenerRegistry        { return nil }
+func (g *mockGateway) Stats() core.TunnelStatsReader             { return nil }
 
 type mockPusher struct {
 	err   error

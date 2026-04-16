@@ -11,6 +11,9 @@ import (
 	"moleAgent_Serv/internal/core"
 )
 
+// 确保 StatsTracker 实现 core.TunnelStatsReader 接口
+var _ core.TunnelStatsReader = (*StatsTracker)(nil)
+
 // ListenerRegistry 管理所有隧道的监听器
 type ListenerRegistry struct {
 	mu        sync.RWMutex
@@ -107,6 +110,7 @@ type TunnelGateway struct {
 	nodeMgr  NodeProvider
 	registry *ListenerRegistry
 	sem      *Semaphore
+	stats    *StatsTracker
 
 	// 路由索引：加速域名和隧道名称查找
 	domainMu sync.RWMutex
@@ -133,6 +137,7 @@ func NewTunnelGateway(nodeMgr NodeProvider, maxConcurrent int) *TunnelGateway {
 		nodeMgr:       nodeMgr,
 		registry:      NewListenerRegistry(),
 		sem:           NewSemaphore(maxConcurrent),
+		stats:         NewStatsTracker(),
 		domainIdx:     make(map[string]*domainRoute),
 		tunnelIdx:     make(map[string]*tunnelRoute),
 		HyphenRouting: true, // 默认使用 hyphen(-) 作为泛域名分隔符
@@ -141,6 +146,11 @@ func NewTunnelGateway(nodeMgr NodeProvider, maxConcurrent int) *TunnelGateway {
 
 func (tg *TunnelGateway) Registry() *ListenerRegistry {
 	return tg.registry
+}
+
+// Stats 返回统计追踪器（实现 routeIndexer 接口）
+func (tg *TunnelGateway) Stats() core.TunnelStatsReader {
+	return tg.stats
 }
 
 // RebuildIndex 根据当前节点数据重建路由索引

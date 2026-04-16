@@ -1,4 +1,4 @@
-import type { User, Role, Node, Tunnel, TunnelStats, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, AuthUser } from '../types/api'
+import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, AuthUser } from '../types/api'
 
 const API = '/api/v1'
 let token = localStorage.getItem('ma_tk')
@@ -82,6 +82,14 @@ export const api = {
   // Tunnels
   getTunnels: () => request<{ items: Tunnel[]; total: number }>('/tunnels'),
   getTunnelStats: () => request<TunnelStats>('/tunnels/stats'),
+  getTunnelUsage: (params?: { node_id?: string; type?: string; status?: string }) => {
+    const query = new URLSearchParams()
+    if (params?.node_id) query.set('node_id', params.node_id)
+    if (params?.type) query.set('type', params.type)
+    if (params?.status) query.set('status', params.status)
+    const qs = query.toString()
+    return request<TunnelUsageResponse>(`/tunnels/usage${qs ? '?' + qs : ''}`)
+  },
   createTunnel: (data: { name: string; type: string; target: string; domain?: string; listen_port?: number; enabled?: boolean; node_id: string }) =>
     request('/tunnels', { method: 'POST', body: JSON.stringify(data) }),
   deleteTunnel: (name: string) => request(`/tunnels/${name}`, { method: 'DELETE' }),

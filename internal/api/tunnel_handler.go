@@ -13,12 +13,14 @@ import (
 type TunnelHandler struct {
 	nodeMgr   *node.ShardedNodeManager
 	tunnelSvc core.TunnelConfigManager // 隧道配置单一变更入口
+	stats     core.TunnelStatsReader   // 运行时统计读取
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager) *TunnelHandler {
+func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader) *TunnelHandler {
 	return &TunnelHandler{
 		nodeMgr:   nodeMgr,
 		tunnelSvc: tunnelSvc,
+		stats:     stats,
 	}
 }
 
@@ -254,5 +256,98 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		"persisted":     result.Persisted,
 		"client_synced": result.ClientSynced,
 		"warning":       result.Warning,
+	})
+}
+
+// Usage 返回隧道运行时使用情况（流量、连接数、活跃状态）
+func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
+	nodes := h.nodeMgr.GetAll(r.Context())
+
+	// 归属过滤
+	claims := auth.GetClaims(r.Context())
+	if claims != nil && !IsAdmin(claims) {
+		filtered := make([]*core.Node, 0, len(nodes))
+		for _, n := range nodes {
+			if n.OwnerUserID == claims.UserID {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
+
+	// 查询参数过滤
+	filterNodeID := r.URL.Query().Get("node_id")
+	filterType := r.URL.Query().Get("type")
+	filterStatus := r.URL.Query().Get("status")
+
+	// 收集所有运行时统计
+	var allStats map[string]*core.TunnelRuntimeStats
+	if h.stats != nil {
+		allStats = h.stats.GetAll()
+	}
+
+	type usageItem struct {
+		Name         string `json:"name"`
+		Type         string `json:"type"`
+		Target       string `json:"target"`
+		Domain       string `json:"domain,omitempty"`
+		ListenPort   int    `json:"listen_port,omitempty"`
+		Enabled      bool   `json:"enabled"`
+		NodeID       string `json:"node_id"`
+		NodeStatus   string `json:"node_status"`
+		OwnerUserID  string `json:"owner_user_id"`
+		BytesIn      int64  `json:"bytes_in"`
+		BytesOut     int64  `json:"bytes_out"`
+		TotalConns   int64  `json:"total_connections"`
+		ActiveConns  int64  `json:"active_connections"`
+		LastActivity string `json:"last_activity,omitempty"`
+	}
+
+	items := make([]usageItem, 0)
+	for _, n := range nodes {
+		if filterNodeID != "" && n.ID != filterNodeID {
+			continue
+		}
+
+		for _, t := range n.Tunnels {
+			if filterType != "" && string(t.Type) != filterType {
+				continue
+			}
+
+			item := usageItem{
+				Name:        t.Name,
+				Type:        string(t.Type),
+				Target:      t.Target,
+				Domain:      t.Domain,
+				ListenPort:  t.ListenPort,
+				Enabled:     t.IsEnabled(),
+				NodeID:      n.ID,
+				NodeStatus:  string(n.Status),
+				OwnerUserID: n.OwnerUserID,
+			}
+
+			// 关联运行时统计
+			if allStats != nil {
+				if s, ok := allStats[t.Name]; ok {
+					item.BytesIn = s.BytesIn
+					item.BytesOut = s.BytesOut
+					item.TotalConns = s.TotalConns
+					item.ActiveConns = s.ActiveConns
+					item.LastActivity = s.LastActivity
+				}
+			}
+
+			// 状态过滤
+			if filterStatus == "active" && item.ActiveConns <= 0 {
+				continue
+			}
+
+			items = append(items, item)
+		}
+	}
+
+	ResponseOK(w, map[string]any{
+		"items": items,
+		"total": len(items),
 	})
 }

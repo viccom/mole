@@ -87,9 +87,6 @@ func main() {
 	nodeMgr := node.NewShardedNodeManager(256)
 	nodeRepo := storage.NewNodeRepo(db)
 
-	// --- 节点管理器 + 健康检查 ---
-	go node.StartHealthCheck(ctx, nodeMgr)
-
 	// --- 网关服务（HTTP 隧道）---（在 controlSrv 之前创建，因为注册回调需要引用）
 	gateway := tunnel.NewTunnelGateway(nodeMgr, cfg.Server.MaxConcurrent)
 	gateway.HyphenRouting = cfg.Server.Gateway.HyphenRouting
@@ -128,6 +125,15 @@ func main() {
 	// --- 隧道配置服务（单一变更入口）---
 	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv)
 	controlSrv.SetTunnelConfigManager(tunnelSvc)
+
+	// --- 节点断开回调：清理隧道运行时资源（监听器、路由索引、统计）---
+	disconnectHandler := func(nodeID string, tunnels []core.Tunnel) {
+		tunnelSvc.ReleaseNodeResources(context.Background(), nodeID, tunnels)
+	}
+	controlSrv.SetOnNodeDisconnect(disconnectHandler)
+
+	// --- 节点管理器 + 健康检查 ---
+	go node.StartHealthCheck(ctx, nodeMgr, disconnectHandler)
 
 	// --- 接入 Token 认证服务 ---
 	accessTokenRepo := storage.NewAccessTokenRepo(db)
@@ -248,7 +254,7 @@ func buildAPIRouter(
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo, nodeMgr)
 	roleH := api.NewRoleHandler(roleRepo)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
-	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc)
+	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats())
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
@@ -295,6 +301,7 @@ func buildAPIRouter(
 	// === 隧道管理 ===
 	router.Register("GET", "/api/v1/tunnels", tunnelH.List, "tunnels", "read")
 	router.Register("GET", "/api/v1/tunnels/stats", tunnelH.Stats, "tunnels", "read")
+	router.Register("GET", "/api/v1/tunnels/usage", tunnelH.Usage, "tunnels", "read")
 	router.Register("POST", "/api/v1/tunnels", tunnelH.Create, "tunnels", "write")
 	router.Register("DELETE", "/api/v1/tunnels/", tunnelH.Delete, "tunnels", "delete")
 

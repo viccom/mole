@@ -54,6 +54,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					if now.Sub(s.lastSeen) > udpSessionTimeout {
 						s.cancel()
 						s.stream.Close()
+						tg.stats.ConnClosed(tunnel.Name)
 						delete(sessions, key)
 						slog.Debug("UDP session expired", "tunnel", tunnel.Name, "src", key)
 					}
@@ -70,6 +71,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 		for _, s := range sessions {
 			s.cancel()
 			s.stream.Close()
+			tg.stats.ConnClosed(tunnel.Name)
 		}
 		sessions = make(map[string]*udpSession)
 		mu.Unlock()
@@ -92,7 +94,11 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			}
 		}
 
+		// 统计入站字节数
+		tg.stats.RecordBytesIn(tunnel.Name, int64(n))
+
 		key := addr.String()
+		var fwdStream net.Conn // 锁内捕获，锁外安全使用
 
 		mu.Lock()
 		sess, ok := sessions[key]
@@ -120,33 +126,36 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			}
 
 			session, err := tg.nodeMgr.GetSession(ctx, node.ID)
-				if err != nil {
-					slog.Error("Failed to get session for UDP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
-					continue
-				}
-				stream, err := session.OpenStream()
-				if err != nil {
-					slog.Error("Failed to open smux stream for UDP", "tunnel", tunnel.Name, "error", err)
+			if err != nil {
+				slog.Error("Failed to get session for UDP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
+				continue
+			}
+			newStream, err := session.OpenStream()
+			if err != nil {
+				slog.Error("Failed to open smux stream for UDP", "tunnel", tunnel.Name, "error", err)
 				continue
 			}
 
-				// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
-				if _, err := stream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
-					slog.Error("Failed to send UDP proxy header", "tunnel", tunnel.Name, "error", err)
-					stream.Close()
-					continue
-				}
-				if _, err := stream.Write([]byte{'\n'}); err != nil {
-					slog.Error("Failed to send UDP proxy header newline", "tunnel", tunnel.Name, "error", err)
-					stream.Close()
-					continue
-				}
+			// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
+			if _, err := newStream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
+				slog.Error("Failed to send UDP proxy header", "tunnel", tunnel.Name, "error", err)
+				newStream.Close()
+				continue
+			}
+			if _, err := newStream.Write([]byte{'\n'}); err != nil {
+				slog.Error("Failed to send UDP proxy header newline", "tunnel", tunnel.Name, "error", err)
+				newStream.Close()
+				continue
+			}
+
+			// 统计：新 UDP 会话视为一个连接
+			tg.stats.ConnOpened(tunnel.Name)
 
 			// 为响应 goroutine 创建独立 context
 			respCtx, respCancel := context.WithCancel(ctx)
 			sess = &udpSession{
 				srcAddr:  addr,
-				stream:   stream,
+				stream:   newStream,
 				lastSeen: time.Now(),
 				cancel:   respCancel,
 			}
@@ -161,8 +170,8 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					default:
 					}
 					// 设置读取超时，避免永久阻塞
-					stream.SetReadDeadline(time.Now().Add(30 * time.Second))
-					rn, err := stream.Read(respBuf)
+					newStream.SetReadDeadline(time.Now().Add(30 * time.Second))
+					rn, err := newStream.Read(respBuf)
 					if err != nil {
 						if respCtx.Err() != nil {
 							return // context 已取消，正常退出
@@ -173,22 +182,30 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 						}
 						return
 					}
+					// 统计出站字节数
+					tg.stats.RecordBytesOut(tunnel.Name, int64(rn))
 					conn.WriteToUDP(respBuf[:rn], addr)
 				}
 			}()
 
 			mu.Lock()
 			sessions[key] = sess
+			fwdStream = sess.stream
 			mu.Unlock()
 
 			slog.Debug("UDP session created", "tunnel", tunnel.Name, "src", key)
 		} else {
 			sess.lastSeen = time.Now()
+			fwdStream = sess.stream
 			mu.Unlock()
 		}
 
-		// 在锁外转发数据
-		sess.stream.Write(buf[:n])
+		// 在锁外转发数据（使用锁内捕获的 stream 引用，避免竞态）
+		if fwdStream != nil {
+			if _, err := fwdStream.Write(buf[:n]); err != nil {
+				slog.Debug("UDP write to stream failed", "tunnel", tunnel.Name, "error", err)
+			}
+		}
 	}
 }
 

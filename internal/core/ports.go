@@ -114,3 +114,10 @@ type AccessTokenRepo interface {
 type NodeAccessAuthenticator interface {
 	AuthenticateNodeToken(ctx context.Context, rawToken string) (*NodeAccessGrant, error)
 }
+
+// TunnelStatsReader 隧道运行时统计读取接口（解耦 api 层与 tunnel 层）
+type TunnelStatsReader interface {
+	Get(name string) *TunnelRuntimeStats
+	GetAll() map[string]*TunnelRuntimeStats
+	Remove(name string)
+}

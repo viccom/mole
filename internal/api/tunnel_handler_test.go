@@ -15,7 +15,7 @@ func TestTunnelHandler_List_NonAdminFiltersByOwner(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
-	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
 
 	// userA: 2 online nodes with tunnels
 	nodeA1 := &core.Node{
@@ -74,7 +74,7 @@ func TestTunnelHandler_List_DisabledTunnelShown(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
-	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
 
 	disabled := false
 	enabled := true
@@ -127,7 +127,7 @@ func TestTunnelHandler_Stats_EnabledAndActive(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
-	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
 
 	disabled := false
 
@@ -187,7 +187,7 @@ func TestTunnelHandler_Delete_NonOwner_404(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
-	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
 
 	// Node owned by userB with a tunnel
 	n := &core.Node{
@@ -225,7 +225,7 @@ func TestTunnelHandler_List_AdminSeesAll(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
-	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
 
 	nodeA := &core.Node{
 		ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA",
@@ -275,7 +275,7 @@ func TestTunnelHandler_Create_NonOwner_404(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
-	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
 
 	// Step 1: Create a node owned by userB
 	n := &core.Node{
@@ -318,7 +318,7 @@ func TestTunnelHandler_Stats_NonAdminOnlyOwnTunnels(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
-	handler := NewTunnelHandler(nodeMgr, tunnelSvc)
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil)
 
 	// Step 1: userA has 3 tunnels across 2 nodes
 	nodeA1 := &core.Node{

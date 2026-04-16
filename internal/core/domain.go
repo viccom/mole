@@ -160,3 +160,12 @@ type NodeAccessGrant struct {
 	AccessTokenID string
 	LegacyGlobal  bool // 是否使用旧全局 token 认证
 }
+
+// TunnelRuntimeStats 单条隧道的运行时统计
+type TunnelRuntimeStats struct {
+	BytesIn      int64  `json:"bytes_in"`
+	BytesOut     int64  `json:"bytes_out"`
+	TotalConns   int64  `json:"total_connections"`
+	ActiveConns  int64  `json:"active_connections"`
+	LastActivity string `json:"last_activity,omitempty"`
+}

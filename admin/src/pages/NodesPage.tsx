@@ -234,7 +234,7 @@ function NodeRowGroup({
                         <Badge variant={t.enabled !== false ? 'success' : 'error'}>
                           {t.enabled !== false ? '启用' : '禁用'}
                         </Badge>
-                        <Badge variant={t.type === 'http' ? 'info' : t.type === 'tcp' ? 'purple' : 'warning'}>
+                        <Badge variant={t.type === 'http' || t.type === 'https' ? 'info' : t.type === 'tcp' ? 'purple' : 'warning'}>
                           {t.type.toUpperCase()}
                         </Badge>
                         <span className="text-gray-400 text-xs">{t.target}</span>

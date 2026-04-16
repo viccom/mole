@@ -17,6 +17,7 @@ type routeIndexer interface {
 	StartUDP(ctx context.Context, t core.Tunnel) error
 	StopTunnel(name string)
 	Registry() *tunnel.ListenerRegistry
+	Stats() core.TunnelStatsReader
 }
 
 type tunnelPusher interface {
@@ -323,6 +324,24 @@ func (s *TunnelConfigService) persistUpdatedNode(ctx context.Context, nodeID str
 		return nil
 	}
 	return s.nodeRepo.Update(&persisted)
+}
+
+// ReleaseNodeResources 释放离线节点的隧道运行时资源（监听器、路由索引、统计条目）
+// 不修改持久化配置，节点重连时可通过 applyRuntimeTunnels 重新激活
+func (s *TunnelConfigService) ReleaseNodeResources(ctx context.Context, nodeID string, tunnels []core.Tunnel) {
+	if s.gateway == nil {
+		return
+	}
+	for _, t := range tunnels {
+		if t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP {
+			s.gateway.StopTunnel(t.Name)
+		}
+		if s.gateway.Stats() != nil {
+			s.gateway.Stats().Remove(t.Name)
+		}
+	}
+	s.gateway.RebuildIndex(ctx)
+	slog.Info("Released node tunnel resources", "nodeId", nodeID, "tunnels", len(tunnels))
 }
 
 // pushToClient 推送配置到客户端（同步，便于准确返回结果）

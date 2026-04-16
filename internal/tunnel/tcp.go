@@ -50,6 +50,9 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 	}
 	defer tg.sem.Release()
 
+	tg.stats.ConnOpened(tunnel.Name)
+	defer tg.stats.ConnClosed(tunnel.Name)
+
 	// 使用索引查找目标节点
 	node := tg.findNodeForTunnel(ctx, tunnel.Name)
 	if node == nil {
@@ -98,7 +101,12 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 		"nodeId", node.ID,
 	)
 
-	biCopy(stream, conn)
+	trackedConn := &countingConn{
+		Conn:    conn,
+		onRead:  func(n int) { tg.stats.RecordBytesIn(tunnel.Name, int64(n)) },
+		onWrite: func(n int) { tg.stats.RecordBytesOut(tunnel.Name, int64(n)) },
+	}
+	biCopy(stream, trackedConn)
 }
 
 // findNodeForTunnel 查找拥有指定隧道的在线节点

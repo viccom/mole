@@ -90,15 +90,16 @@ func (s *connState) get() *core.Node {
 
 // ControlServer 控制端口服务
 type ControlServer struct {
-	addr         string
-	nodeMgr      *node.ShardedNodeManager
-	nodeToken    string                    // 全局节点认证令牌（兼容期保留）
-	authenticator core.NodeAccessAuthenticator // 用户级 token 认证服务
-	tlsConfig    *tls.Config // TLS 配置
-	listener     net.Listener
-	onNodeChange func()        // 节点变更回调
-	nodeRepo     core.NodeRepo // 隧道持久化仓库
-	tunnelSvc    core.TunnelConfigManager
+	addr            string
+	nodeMgr         *node.ShardedNodeManager
+	nodeToken       string                    // 全局节点认证令牌（兼容期保留）
+	authenticator   core.NodeAccessAuthenticator // 用户级 token 认证服务
+	tlsConfig       *tls.Config // TLS 配置
+	listener        net.Listener
+	onNodeChange    func()        // 节点变更回调
+	onNodeDisconnect func(nodeID string, tunnels []core.Tunnel) // 节点断开回调
+	nodeRepo        core.NodeRepo // 隧道持久化仓库
+	tunnelSvc       core.TunnelConfigManager
 }
 
 // NewControlServer 创建控制端口服务
@@ -115,6 +116,11 @@ func NewControlServer(addr string, nodeMgr *node.ShardedNodeManager, nodeToken s
 // SetOnNodeChange 设置节点变更回调
 func (cs *ControlServer) SetOnNodeChange(fn func()) {
 	cs.onNodeChange = fn
+}
+
+// SetOnNodeDisconnect 设置节点断开回调（用于清理隧道运行时资源）
+func (cs *ControlServer) SetOnNodeDisconnect(fn func(nodeID string, tunnels []core.Tunnel)) {
+	cs.onNodeDisconnect = fn
 }
 
 // SetTunnelConfigManager 设置隧道配置统一服务
@@ -268,10 +274,18 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 	defer func() {
 		node := state.get()
 		if node != nil {
+			// 快照隧道列表（Remove 后将无法从 nodeMgr 获取）
+			tunnels := append([]core.Tunnel(nil), node.Tunnels...)
+
 			cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
 				n.Status = core.NodeStatusOffline
 			})
 			cs.nodeMgr.Remove(ctx, node.ID)
+
+			// 回调清理隧道运行时资源（监听器、路由索引、统计）
+			if cs.onNodeDisconnect != nil {
+				cs.onNodeDisconnect(node.ID, tunnels)
+			}
 			slog.Info("Node disconnected", "nodeId", node.ID, "remote", remoteAddr)
 		}
 		session.Close()

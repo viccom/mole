@@ -29,6 +29,14 @@ export function formatUptime(seconds: number): string {
   return (days > 0 ? days + '天 ' : '') + hours + '时' + minutes + '分'
 }
 
+export function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const val = bytes / Math.pow(1024, i)
+  return val < 10 ? val.toFixed(1) + ' ' + units[i] : Math.round(val) + ' ' + units[i]
+}
+
 export function getGatewayBase(): string {
   const parts = window.location.hostname.split('.')
   return parts.length > 2 ? parts.slice(1).join('.') : window.location.hostname

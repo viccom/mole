@@ -38,7 +38,7 @@ export interface Node {
 
 export interface Tunnel {
   name: string
-  type: 'http' | 'tcp' | 'udp'
+  type: 'http' | 'https' | 'tcp' | 'udp'
   target: string
   domain?: string
   listen_port?: number
@@ -53,6 +53,29 @@ export interface TunnelStats {
   http_tunnels: number
   tcp_tunnels: number
   udp_tunnels: number
+  https_tunnels: number
+}
+
+export interface TunnelUsageItem {
+  name: string
+  type: 'http' | 'https' | 'tcp' | 'udp'
+  target: string
+  domain?: string
+  listen_port?: number
+  enabled: boolean
+  node_id: string
+  node_status: string
+  owner_user_id: string
+  bytes_in: number
+  bytes_out: number
+  total_connections: number
+  active_connections: number
+  last_activity?: string
+}
+
+export interface TunnelUsageResponse {
+  items: TunnelUsageItem[]
+  total: number
 }
 
 export interface AccessToken {
