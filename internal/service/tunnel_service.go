@@ -264,14 +264,23 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 	if s.gateway != nil {
 		s.gateway.RebuildIndex(ctx)
 
-		// 停止已删除的 TCP/UDP 监听器
-		newNames := make(map[string]bool, len(tunnels))
+		// 停止已删除/已禁用/已变更为非 TCP/UDP 的旧监听器，并清理其统计
+		newTunnels := make(map[string]core.Tunnel, len(tunnels))
 		for _, t := range tunnels {
-			newNames[t.Name] = true
+			newTunnels[t.Name] = t
 		}
-		for _, t := range oldTunnels {
-			if !newNames[t.Name] && (t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP) {
-				s.gateway.StopTunnel(t.Name)
+		for _, oldT := range oldTunnels {
+			if oldT.Type != core.TunnelTypeTCP && oldT.Type != core.TunnelTypeUDP {
+				continue
+			}
+
+			newT, exists := newTunnels[oldT.Name]
+			shouldStop := !exists || !newT.IsEnabled() || (newT.Type != core.TunnelTypeTCP && newT.Type != core.TunnelTypeUDP)
+			if shouldStop {
+				s.gateway.StopTunnel(oldT.Name)
+				if s.gateway.Stats() != nil {
+					s.gateway.Stats().Remove(nodeID + "/" + oldT.Name)
+				}
 			}
 		}
 
@@ -337,7 +346,7 @@ func (s *TunnelConfigService) ReleaseNodeResources(ctx context.Context, nodeID s
 			s.gateway.StopTunnel(t.Name)
 		}
 		if s.gateway.Stats() != nil {
-			s.gateway.Stats().Remove(t.Name)
+			s.gateway.Stats().Remove(nodeID + "/" + t.Name)
 		}
 	}
 	s.gateway.RebuildIndex(ctx)

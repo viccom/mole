@@ -44,10 +44,10 @@ export function getGatewayBase(): string {
 
 export function tunnelAccessUrl(tunnel: { type: string; domain?: string; name?: string; node_id?: string; listen_port?: number }): string {
   const base = getGatewayBase()
-  const proto = window.location.protocol === 'https:' ? 'https' : 'http'
-  if (tunnel.type === 'http') {
+  if (tunnel.type === 'http' || tunnel.type === 'https') {
+    const scheme = tunnel.type
     const host = tunnel.domain || `${tunnel.name}-${tunnel.node_id}.${base}`
-    return `${proto}://${host}`
+    return `${scheme}://${host}`
   }
   if (tunnel.listen_port) {
     return `${tunnel.type}://${window.location.hostname}:${tunnel.listen_port}`

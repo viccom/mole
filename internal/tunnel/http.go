@@ -214,8 +214,9 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
-	tg.stats.ConnOpened(tunnelName)
-	defer tg.stats.ConnClosed(tunnelName)
+	sKey := statsKey(node.ID, tunnelName)
+	tg.stats.ConnOpened(sKey)
+	defer tg.stats.ConnClosed(sKey)
 
 	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
 	if err != nil {
@@ -240,8 +241,8 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 	// 统计请求字节数（bytesIn: 外部→隧道）
 	trackedStream := &countingConn{
 		Conn:    stream,
-		onWrite: func(n int) { tg.stats.RecordBytesIn(tunnelName, int64(n)) },
-		onRead:  func(n int) { tg.stats.RecordBytesOut(tunnelName, int64(n)) },
+		onWrite: func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
+		onRead:  func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
 	}
 
 	if err := r.Write(trackedStream); err != nil {
@@ -269,8 +270,9 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 }
 
 func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
-	tg.stats.ConnOpened(tunnelName)
-	defer tg.stats.ConnClosed(tunnelName)
+	sKey := statsKey(node.ID, tunnelName)
+	tg.stats.ConnOpened(sKey)
+	defer tg.stats.ConnClosed(sKey)
 
 	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
 	if err != nil {
@@ -327,8 +329,8 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 
 	trackedConn := &countingConn{
 		Conn:    clientConn,
-		onRead:  func(n int) { tg.stats.RecordBytesIn(tunnelName, int64(n)) },
-		onWrite: func(n int) { tg.stats.RecordBytesOut(tunnelName, int64(n)) },
+		onRead:  func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
+		onWrite: func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
 	}
 	biCopy(stream, trackedConn)
 }

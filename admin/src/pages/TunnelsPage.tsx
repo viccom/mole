@@ -38,10 +38,10 @@ export function TunnelsPage() {
       setTunnels(tunnelsRes.items || [])
       setStats(statsRes)
       setNodes(nodesRes.items || [])
-      // Build usage lookup map by tunnel name
+      // Build usage lookup map by composite key (nodeID:name)
       const map: Record<string, TunnelUsageItem> = {}
       for (const item of usageRes.items || []) {
-        map[item.name] = item
+        map[`${item.node_id}:${item.name}`] = item
       }
       setUsageMap(map)
     } catch (err: unknown) {
@@ -155,7 +155,7 @@ export function TunnelsPage() {
               {tunnels.map(tunnel => {
                 const url = tunnelAccessUrl(tunnel)
                 const ownerNode = nodes.find(n => n.id === tunnel.node_id)
-                const usage = usageMap[tunnel.name]
+                const usage = usageMap[`${tunnel.node_id}:${tunnel.name}`]
                 return (
                   <tr key={`${tunnel.name}-${tunnel.node_id}`} className="hover:bg-gray-50/50">
                     <td className="px-6 py-3 text-sm font-medium">{tunnel.name}</td>
@@ -171,7 +171,7 @@ export function TunnelsPage() {
                     </td>
                     <td className="px-6 py-3 text-sm text-gray-600 font-mono">{tunnel.target}</td>
                     <td className="px-6 py-3 text-sm">
-                      {tunnel.type === 'http' && url !== '-' ? (
+                      {(tunnel.type === 'http' || tunnel.type === 'https') && url !== '-' ? (
                         <a
                           href={url}
                           target="_blank"

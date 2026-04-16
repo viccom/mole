@@ -374,6 +374,100 @@ func TestTunnelHandler_Stats_NonAdminOnlyOwnTunnels(t *testing.T) {
 	}
 }
 
+type mockTunnelStatsReader struct {
+	all map[string]*core.TunnelRuntimeStats
+}
+
+func (m *mockTunnelStatsReader) Get(name string) *core.TunnelRuntimeStats {
+	if m == nil {
+		return nil
+	}
+	return m.all[name]
+}
+
+func (m *mockTunnelStatsReader) GetAll() map[string]*core.TunnelRuntimeStats {
+	if m == nil {
+		return nil
+	}
+	return m.all
+}
+
+func (m *mockTunnelStatsReader) Remove(name string) {
+	delete(m.all, name)
+}
+
+func TestTunnelHandler_Usage_UsesCompositeStatsKey(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr}
+	stats := &mockTunnelStatsReader{
+		all: map[string]*core.TunnelRuntimeStats{
+			"NodeA1/shared": {BytesIn: 100, BytesOut: 200, TotalConns: 3, ActiveConns: 1, LastActivity: "2026-04-16T10:00:00Z"},
+			"NodeB1/shared": {BytesIn: 300, BytesOut: 400, TotalConns: 5, ActiveConns: 2, LastActivity: "2026-04-16T11:00:00Z"},
+		},
+	}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, stats)
+
+	nodeA := &core.Node{
+		ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA",
+		Tunnels: []core.Tunnel{
+			{Name: "shared", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22"},
+		},
+	}
+	nodeB := &core.Node{
+		ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB",
+		Tunnels: []core.Tunnel{
+			{Name: "shared", Type: core.TunnelTypeTCP, Target: "127.0.0.1:2222"},
+		},
+	}
+	for _, n := range []*core.Node{nodeA, nodeB} {
+		if err := nodeMgr.Add(ctx, n); err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tunnels/usage", nil)
+	w := httptest.NewRecorder()
+	handler.Usage(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	items, ok := data["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected 2 usage items, got %#v", data["items"])
+	}
+
+	gotByNode := make(map[string]map[string]any, 2)
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected item type: %T", item)
+		}
+		nodeID, _ := m["node_id"].(string)
+		gotByNode[nodeID] = m
+	}
+
+	if v, _ := gotByNode["NodeA1"]["bytes_in"].(float64); v != 100 {
+		t.Fatalf("expected NodeA1 bytes_in=100, got %v", v)
+	}
+	if v, _ := gotByNode["NodeB1"]["bytes_in"].(float64); v != 300 {
+		t.Fatalf("expected NodeB1 bytes_in=300, got %v", v)
+	}
+	if v, _ := gotByNode["NodeA1"]["active_connections"].(float64); v != 1 {
+		t.Fatalf("expected NodeA1 active_connections=1, got %v", v)
+	}
+	if v, _ := gotByNode["NodeB1"]["active_connections"].(float64); v != 2 {
+		t.Fatalf("expected NodeB1 active_connections=2, got %v", v)
+	}
+}
+
 // containsString checks if substr appears in s.
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

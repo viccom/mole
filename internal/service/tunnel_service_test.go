@@ -50,14 +50,28 @@ func (r *mockNodeRepo) Delete(id string) error {
 
 type mockGateway struct {
 	rebuilds int
+	stopped  []string
+	stats    *mockStatsReader
 }
 
-func (g *mockGateway) RebuildIndex(_ context.Context)            { g.rebuilds++ }
+type mockStatsReader struct {
+	removed []string
+}
+
+func (s *mockStatsReader) Get(_ string) *core.TunnelRuntimeStats { return nil }
+func (s *mockStatsReader) GetAll() map[string]*core.TunnelRuntimeStats {
+	return nil
+}
+func (s *mockStatsReader) Remove(name string) {
+	s.removed = append(s.removed, name)
+}
+
+func (g *mockGateway) RebuildIndex(_ context.Context)                  { g.rebuilds++ }
 func (g *mockGateway) StartTCP(_ context.Context, _ core.Tunnel) error { return nil }
 func (g *mockGateway) StartUDP(_ context.Context, _ core.Tunnel) error { return nil }
-func (g *mockGateway) StopTunnel(_ string)                       {}
-func (g *mockGateway) Registry() *tunnel.ListenerRegistry        { return nil }
-func (g *mockGateway) Stats() core.TunnelStatsReader             { return nil }
+func (g *mockGateway) StopTunnel(name string)                           { g.stopped = append(g.stopped, name) }
+func (g *mockGateway) Registry() *tunnel.ListenerRegistry               { return nil }
+func (g *mockGateway) Stats() core.TunnelStatsReader                    { return g.stats }
 
 type mockPusher struct {
 	err   error
@@ -257,5 +271,50 @@ func TestLoadPersisted_SuccessRecoversRuntimeAfterReconnect(t *testing.T) {
 	runtimeNode, _ := nodeMgr.Get(ctx, "Node0004")
 	if len(runtimeNode.Tunnels) != 1 || runtimeNode.Tunnels[0].Name != "persisted" {
 		t.Fatalf("runtime tunnels not recovered from persistence: %+v", runtimeNode.Tunnels)
+	}
+}
+
+func TestReplaceTunnels_DisabledTCPStopsListenerAndClearsStats(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	repo := newMockNodeRepo()
+	stats := &mockStatsReader{}
+	gateway := &mockGateway{stats: stats}
+	svc := NewTunnelConfigService(nodeMgr, repo, gateway, nil)
+
+	enabled := true
+	disabled := false
+	n := &core.Node{
+		ID:     "Node0005",
+		Name:   "Node0005",
+		Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{
+			{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", Enabled: &enabled},
+		},
+	}
+	if err := nodeMgr.Add(ctx, n); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	_, err := svc.ReplaceTunnels(ctx, n.ID, []core.Tunnel{
+		{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", Enabled: &disabled},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceTunnels failed: %v", err)
+	}
+
+	if len(gateway.stopped) != 1 || gateway.stopped[0] != "ssh" {
+		t.Fatalf("expected disabled tunnel listener to stop, got %+v", gateway.stopped)
+	}
+	if len(stats.removed) != 1 || stats.removed[0] != "Node0005/ssh" {
+		t.Fatalf("expected disabled tunnel stats to be removed, got %+v", stats.removed)
+	}
+
+	runtimeNode, ok := nodeMgr.Get(ctx, n.ID)
+	if !ok {
+		t.Fatal("runtime node missing")
+	}
+	if len(runtimeNode.Tunnels) != 1 || runtimeNode.Tunnels[0].IsEnabled() {
+		t.Fatalf("runtime tunnel should remain but be disabled: %+v", runtimeNode.Tunnels)
 	}
 }

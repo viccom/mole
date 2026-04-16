@@ -8,6 +8,11 @@ import (
 	"moleAgent_Serv/internal/core"
 )
 
+// statsKey 生成统计复合键，避免不同节点同名隧道串台
+func statsKey(nodeID, tunnelName string) string {
+	return nodeID + "/" + tunnelName
+}
+
 // statsEntry 内部统计条目（使用原子操作保证并发安全）
 type statsEntry struct {
 	BytesIn      int64

@@ -17,25 +17,31 @@ func (tg *TunnelGateway) StartTCP(ctx context.Context, tunnel core.Tunnel) error
 		return fmt.Errorf("tcp listen %s: %w", listenAddr, err)
 	}
 
+	// 隧道级 context：StopTunnel 时 cancel 让 Accept 循环退出
+	tunnelCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
 	tg.registry.Register(tunnel.Name, listener)
+	tg.registry.RegisterRuntime(tunnel.Name, &tunnelRuntime{cancel: cancel, done: done})
 	slog.Info("TCP tunnel listening", "tunnel", tunnel.Name, "port", tunnel.ListenPort)
 
 	go func() {
+		defer close(done)
 		defer tg.registry.Unregister(tunnel.Name)
+		defer cancel()
 
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				select {
-				case <-ctx.Done():
+				// 隧道级取消或全局取消或连接已关闭 → 优雅退出
+				if tunnelCtx.Err() != nil || ctx.Err() != nil || isClosedConnError(err) {
 					return
-				default:
-					slog.Error("TCP accept error", "tunnel", tunnel.Name, "error", err)
-					continue
 				}
+				slog.Error("TCP accept error", "tunnel", tunnel.Name, "error", err)
+				continue
 			}
 
-			go tg.handleTCPConn(ctx, conn, tunnel)
+			go tg.handleTCPConn(tunnelCtx, conn, tunnel)
 		}
 	}()
 
@@ -50,15 +56,17 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 	}
 	defer tg.sem.Release()
 
-	tg.stats.ConnOpened(tunnel.Name)
-	defer tg.stats.ConnClosed(tunnel.Name)
-
 	// 使用索引查找目标节点
 	node := tg.findNodeForTunnel(ctx, tunnel.Name)
 	if node == nil {
 		slog.Warn("No node found for TCP tunnel", "tunnel", tunnel.Name)
 		return
 	}
+
+	// 使用复合键避免同名隧道串台
+	sKey := statsKey(node.ID, tunnel.Name)
+	tg.stats.ConnOpened(sKey)
+	defer tg.stats.ConnClosed(sKey)
 
 	// 检查隧道是否仍启用（索引可能过时）
 	tunnelEnabled := false
@@ -103,8 +111,8 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 
 	trackedConn := &countingConn{
 		Conn:    conn,
-		onRead:  func(n int) { tg.stats.RecordBytesIn(tunnel.Name, int64(n)) },
-		onWrite: func(n int) { tg.stats.RecordBytesOut(tunnel.Name, int64(n)) },
+		onRead:  func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
+		onWrite: func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
 	}
 	biCopy(stream, trackedConn)
 }

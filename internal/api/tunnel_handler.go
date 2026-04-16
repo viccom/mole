@@ -328,7 +328,8 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 
 			// 关联运行时统计
 			if allStats != nil {
-				if s, ok := allStats[t.Name]; ok {
+				sKey := n.ID + "/" + t.Name
+				if s, ok := allStats[sKey]; ok {
 					item.BytesIn = s.BytesIn
 					item.BytesOut = s.BytesOut
 					item.TotalConns = s.TotalConns

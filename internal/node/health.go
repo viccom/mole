@@ -43,9 +43,10 @@ func cleanupDeadNodes(ctx context.Context, mgr *ShardedNodeManager, onDisconnect
 
 		shard.mu.RLock()
 		for id, node := range shard.clients {
-			if node.Status == core.NodeStatusOffline {
-				deadNodes = append(deadNodes, deadNodeInfo{id: id, tunnels: append([]core.Tunnel(nil), node.Tunnels...)})
-			} else if node.LastHeartbeat != nil && now.Sub(*node.LastHeartbeat) > heartbeatTimeout {
+			// 仅清理"在线但心跳超时"的节点，不误删预配置离线节点
+			if node.Status == core.NodeStatusOnline &&
+				node.LastHeartbeat != nil &&
+				now.Sub(*node.LastHeartbeat) > heartbeatTimeout {
 				deadNodes = append(deadNodes, deadNodeInfo{id: id, tunnels: append([]core.Tunnel(nil), node.Tunnels...)})
 			}
 		}

@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -14,15 +15,23 @@ import (
 // 确保 StatsTracker 实现 core.TunnelStatsReader 接口
 var _ core.TunnelStatsReader = (*StatsTracker)(nil)
 
-// ListenerRegistry 管理所有隧道的监听器
+// tunnelRuntime 隧道运行时生命周期句柄
+type tunnelRuntime struct {
+	cancel func()       // 取消隧道级 context
+	done   chan struct{} // 运行循环退出信号
+}
+
+// ListenerRegistry 管理所有隧道的监听器和运行时
 type ListenerRegistry struct {
 	mu        sync.RWMutex
-	listeners map[string]net.Listener // tunnelName -> listener
+	listeners map[string]net.Listener    // tunnelName -> listener
+	runtimes  map[string]*tunnelRuntime  // tunnelName -> runtime handle
 }
 
 func NewListenerRegistry() *ListenerRegistry {
 	return &ListenerRegistry{
 		listeners: make(map[string]net.Listener),
+		runtimes:  make(map[string]*tunnelRuntime),
 	}
 }
 
@@ -36,13 +45,49 @@ func (lr *ListenerRegistry) Register(name string, l net.Listener) {
 	lr.listeners[name] = l
 }
 
-// Unregister 注销并关闭监听器
+// RegisterRuntime 注册隧道运行时句柄
+func (lr *ListenerRegistry) RegisterRuntime(name string, rt *tunnelRuntime) {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+	// 如果已有旧 runtime，先取消
+	if old, ok := lr.runtimes[name]; ok {
+		old.cancel()
+	}
+	lr.runtimes[name] = rt
+}
+
+// Unregister 注销并关闭监听器和运行时
 func (lr *ListenerRegistry) Unregister(name string) {
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
 	if l, ok := lr.listeners[name]; ok {
 		l.Close()
 		delete(lr.listeners, name)
+	}
+	if rt, ok := lr.runtimes[name]; ok {
+		rt.cancel()
+		delete(lr.runtimes, name)
+	}
+}
+
+// StopTunnel 停止指定隧道：先 cancel runtime，再关闭 listener，最后等待退出
+func (lr *ListenerRegistry) StopTunnel(name string) {
+	lr.mu.Lock()
+	var done chan struct{}
+	if rt, ok := lr.runtimes[name]; ok {
+		rt.cancel()
+		done = rt.done
+		delete(lr.runtimes, name)
+	}
+	if l, ok := lr.listeners[name]; ok {
+		l.Close()
+		delete(lr.listeners, name)
+	}
+	lr.mu.Unlock()
+
+	// 在锁外等待运行循环退出（避免死锁）
+	if done != nil {
+		<-done
 	}
 }
 
@@ -65,7 +110,7 @@ func (lr *ListenerRegistry) List() []string {
 	return names
 }
 
-// StopAll 关闭所有监听器
+// StopAll 关闭所有监听器和运行时
 func (lr *ListenerRegistry) StopAll() {
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
@@ -73,7 +118,27 @@ func (lr *ListenerRegistry) StopAll() {
 		l.Close()
 		slog.Info("Listener stopped", "tunnel", name)
 	}
+	for name, rt := range lr.runtimes {
+		rt.cancel()
+		slog.Info("Runtime cancelled", "tunnel", name)
+	}
 	lr.listeners = make(map[string]net.Listener)
+	lr.runtimes = make(map[string]*tunnelRuntime)
+}
+
+// isClosedConnError 判断是否为连接已关闭类错误（用于优雅退出判断）
+func isClosedConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	// UDP/TCP Accept/ReadFrom 返回的 "use of closed network connection"
+	if opErr, ok := err.(*net.OpError); ok {
+		return opErr.Err.Error() == "use of closed network connection"
+	}
+	return false
 }
 
 // Semaphore 信号量实现
@@ -221,5 +286,5 @@ func (tg *TunnelGateway) Stop() {
 
 // StopTunnel 停止指定名称的隧道
 func (tg *TunnelGateway) StopTunnel(name string) {
-	tg.registry.Unregister(name)
+	tg.registry.StopTunnel(name)
 }
