@@ -37,7 +37,27 @@ func main() {
 	nameFlag := flag.String("name", "", "节点名称")
 	tlsFlag := flag.Bool("tls", false, "启用 TLS")
 	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:18080, off 关闭)")
+	tunnelsFlag := flag.Bool("tunnels", false, "隧道管理子命令 (见: moleagent-client -tunnels -h)")
+	flag.CommandLine.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: moleagent-client [options]
+
+Options:
+  -config <path>       配置文件路径 (JSON)
+  -server <addr>       服务端地址
+  -token <token>       节点认证令牌
+  -id <nodeid>         节点 ID (默认自动生成)
+  -name <name>         节点名称
+  -tls                 启用 TLS
+  -http <port>         内置 HTTP 端口 (默认 127.0.0.1:18080, off 关闭)
+  -tunnels             隧道管理子命令 (见: moleagent-client -tunnels -h)
+
+Examples:
+  moleagent-client -config client.json
+  moleagent-client -server localhost:9981 -token mytoken
+`)
+	}
 	flag.Parse()
+	_ = *tunnelsFlag // 仅用于帮助信息展示
 
 	// 加载配置
 	var cfg *moleAgent_client.Config
