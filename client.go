@@ -574,19 +574,32 @@ func readResponse(r io.Reader, timeout time.Duration) (*protocol.ControlResponse
 }
 
 type Stats struct {
-	NodeID      string `json:"node_id"`
-	Connected   bool   `json:"connected"`
-	ServerAddr  string `json:"server_addr"`
-	TCPBytesIn  uint64 `json:"tcp_bytes_in"`
-	TCPBytesOut uint64 `json:"tcp_bytes_out"`
+	NodeID       string               `json:"node_id"`
+	Connected    bool                 `json:"connected"`
+	ServerAddr  string               `json:"server_addr"`
+	TCPBytesIn  uint64               `json:"tcp_bytes_in"`
+	TCPBytesOut uint64               `json:"tcp_bytes_out"`
+	HTTPBytesIn uint64               `json:"http_bytes_in"`
+	HTTPBytesOut uint64              `json:"http_bytes_out"`
+	Tunnels     []proxy.TunnelTraffic `json:"tunnels"`
 }
 
 func (c *Client) Stats() Stats {
+	tunnelStats := proxy.TunnelTrafficStats()
+	tunnels := make([]proxy.TunnelTraffic, 0, len(c.tunnels))
+	for _, t := range c.Tunnels() {
+		if ts, ok := tunnelStats[t.Name]; ok {
+			tunnels = append(tunnels, ts)
+		}
+	}
 	return Stats{
-		NodeID:     c.cfg.NodeID,
-		Connected:  c.Connected(),
-		ServerAddr: c.cfg.ServerAddr,
+		NodeID:       c.cfg.NodeID,
+		Connected:    c.Connected(),
+		ServerAddr:  c.cfg.ServerAddr,
 		TCPBytesIn:  proxy.GetTCPBytesIn(),
 		TCPBytesOut: proxy.GetTCPBytesOut(),
+		HTTPBytesIn: proxy.GetHTTPBytesIn(),
+		HTTPBytesOut: proxy.GetHTTPBytesOut(),
+		Tunnels:     tunnels,
 	}
 }
