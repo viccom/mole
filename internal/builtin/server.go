@@ -26,10 +26,16 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 	mux := http.NewServeMux()
 
 	// 静态文件（单页面 dashboard）
-	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(staticFS))))
 	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/", http.StatusFound)
+		data, err := staticFS.ReadFile("static/index.html")
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
 	})
+	mux.Handle("/ui/", http.FileServer(http.FS(staticFS)))
 
 	// 默认首页
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
