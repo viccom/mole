@@ -38,7 +38,7 @@ func AddHTTPBytes(tunnelName string, in, out uint64) {
 	if tunnelName != "" {
 		tunnelMu.Lock()
 		if _, ok := tunnelStats[tunnelName]; !ok {
-			tunnelStats[tunnelName] = &tunnelTraffic{}
+			tunnelStats[tunnelName] = &tunnelTraffic{Name: tunnelName}
 		}
 		tunnelStats[tunnelName].HTTPBytesIn += in
 		tunnelStats[tunnelName].HTTPBytesOut += out
@@ -64,7 +64,7 @@ func RecordHTTPBytes(tunnelName string, bytesIn, bytesOut uint64) {
 	tunnelMu.Lock()
 	defer tunnelMu.Unlock()
 	if _, ok := tunnelStats[tunnelName]; !ok {
-		tunnelStats[tunnelName] = &tunnelTraffic{}
+		tunnelStats[tunnelName] = &tunnelTraffic{Name: tunnelName}
 	}
 	tunnelStats[tunnelName].HTTPBytesIn += bytesIn
 	tunnelStats[tunnelName].HTTPBytesOut += bytesOut
@@ -77,7 +77,7 @@ func RecordTCPBytes(tunnelName string, bytesIn, bytesOut uint64) {
 	tunnelMu.Lock()
 	defer tunnelMu.Unlock()
 	if _, ok := tunnelStats[tunnelName]; !ok {
-		tunnelStats[tunnelName] = &tunnelTraffic{}
+		tunnelStats[tunnelName] = &tunnelTraffic{Name: tunnelName}
 	}
 	tunnelStats[tunnelName].TCPBytesIn += bytesIn
 	tunnelStats[tunnelName].TCPBytesOut += bytesOut
