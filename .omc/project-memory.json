@@ -71,14 +71,14 @@
   "hotPaths": [
     {
       "path": "internal/proxy/http.go",
-      "accessCount": 39,
-      "lastAccessed": 1776402290822,
+      "accessCount": 47,
+      "lastAccessed": 1776403314180,
       "type": "file"
     },
     {
       "path": "client.go",
-      "accessCount": 14,
-      "lastAccessed": 1776402179134,
+      "accessCount": 21,
+      "lastAccessed": 1776403337748,
       "type": "file"
     },
     {
