@@ -104,6 +104,14 @@ func handleHTTP(stream io.Writer, req *http.Request, target, tunnelName string) 
 	}
 	copyHeaders(proxyReq.Header, req.Header)
 
+	// nginx 风格转发头
+	proxyReq.Header.Set("X-Forwarded-For", getClientIP(req))
+	proxyReq.Header.Set("X-Real-IP", getClientIP(req))
+	proxyReq.Header.Set("X-Forwarded-Host", req.Host)
+	proxyReq.Header.Set("X-Forwarded-Proto", scheme(req))
+	proxyReq.Header.Set("Host", targetURL.Host)
+	proxyReq.Header.Set("Connection", "close")
+
 	client := &http.Client{Timeout: httpClientTimeout}
 	resp, err := client.Do(proxyReq)
 	if err != nil {
@@ -154,6 +162,15 @@ func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target, tunne
 		return
 	}
 	defer backendConn.Close()
+
+	// nginx 风格转发头
+	req.Header.Set("X-Forwarded-For", getClientIP(req))
+	req.Header.Set("X-Real-IP", getClientIP(req))
+	req.Header.Set("X-Forwarded-Host", req.Host)
+	req.Header.Set("X-Forwarded-Proto", wsScheme)
+	req.Header.Set("Host", targetURL.Host)
+	req.Header.Set("Upgrade", req.Header.Get("Upgrade"))
+	req.Header.Set("Connection", req.Header.Get("Connection"))
 
 	req.URL.Scheme = wsScheme
 	req.URL.Host = targetURL.Host
@@ -268,3 +285,20 @@ func parseHost(rawURL string) (string, error) {
 	return u.Host, nil
 }
 
+func getClientIP(r *http.Request) string {
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		return strings.Split(ip, ",")[0]
+	}
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return ip
+}
+
+func scheme(r *http.Request) string {
+	if r.URL.Scheme == "https" || r.Header.Get("X-Forwarded-Proto") == "https" {
+		return "https"
+	}
+	return "http"
+}
