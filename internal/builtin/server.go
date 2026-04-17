@@ -12,9 +12,166 @@ import (
 	"moleAgent_client"
 )
 
+const uiHTML = `<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>moleAgent 监控</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f4f6f9;color:#333}
+header{background:#2c3e50;color:#fff;padding:16px 24px}
+header h1{font-size:18px;font-weight:600}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+.card{background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:20px;margin-bottom:16px}
+.card h2{font-size:14px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.stat{background:#f8f9fa;padding:14px 16px;border-radius:6px}
+.stat .label{font-size:12px;color:#888;margin-bottom:4px}
+.stat .value{font-size:22px;font-weight:600;color:#2c3e50}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.status-dot.green{background:#27ae60}
+.status-dot.red{background:#e74c3c}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #eee}
+th{background:#f8f9fa;font-weight:600;color:#555;font-size:12px}
+tr:hover{background:#fafafa}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500}
+.badge-http{background:#e8f5e9;color:#2e7d32}
+.badge-https{background:#e3f2fd;color:#1565c0}
+.badge-tcp{background:#fff3e0;color:#e65100}
+.badge-udp{background:#f3e5f5;color:#7b1fa2}
+.btn{display:inline-block;padding:6px 14px;background:#3498db;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:13px}
+.btn:hover{background:#2980b9}
+.btn-danger{background:#e74c3c}
+.btn-danger:hover{background:#c0392b}
+.form-group{margin-bottom:10px}
+.form-group label{display:block;font-size:12px;color:#666;margin-bottom:4px}
+.form-group input,select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px}
+.form-row{display:flex;gap:10px;align-items:flex-end}
+.form-row .form-group{flex:1}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100}
+.modal-content{background:#fff;border-radius:8px;padding:24px;width:400px;max-width:90%}
+.modal h3{margin-bottom:16px;font-size:16px}
+.modal .actions{margin-top:16px;display:flex;gap:8px;justify-content:flex-end}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header><h1>moleAgent 客户端监控</h1></header>
+<div class="container">
+  <div class="card"><h2>连接状态</h2>
+    <div class="grid" id="status-grid"></div>
+  </div>
+  <div class="card"><h2>隧道列表</h2>
+    <div style="margin-bottom:12px">
+      <button class="btn" onclick="openAddModal()">+ 新增隧道</button>
+    </div>
+    <table>
+      <thead><tr>
+        <th>名称</th><th>类型</th><th>目标</th>
+        <th>TCP进</th><th>TCP出</th>
+        <th>HTTP进</th><th>HTTP出</th>
+        <th>操作</th>
+      </tr></thead>
+      <tbody id="tunnels-tbody"></tbody>
+    </table>
+  </div>
+</div>
+<div class="modal hidden" id="edit-modal">
+  <div class="modal-content">
+    <h3 id="modal-title">新增隧道</h3>
+    <div class="form-group"><label>名称</label><input id="f-name" placeholder="如: fnlist"></div>
+    <div class="form-row">
+      <div class="form-group"><label>类型</label><select id="f-type"><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
+      <div class="form-group"><label>目标</label><input id="f-target" placeholder="如: 127.0.0.1:8080"></input></div>
+    </div>
+    <div class="form-group"><label>映射路径 (可选)</label><input id="f-mapping" placeholder="如: /fnlist"></input></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn" id="modal-submit" onclick="submitForm()">保存</button>
+    </div>
+  </div>
+</div>
+<script>
+var editingName = null;
+var tunnels = [];
+
+function $(id){return document.getElementById(id)}
+function formatBytes(b){if(b===0)return"0";const e=["B","KB","MB","GB"];let i=0;while(b>=1024&&i<e.length-1){b/=1024;i++}return b.toFixed(b>=100?0:b>=10?1:2)+" "+e[i]}
+function renderStatus(d){
+  const grid=$('status-grid');
+  const dot=d.connected?'<span class="status-dot green"></span>':'<span class="status-dot red"></span>';
+  grid.innerHTML='<div class="stat"><div class="label">状态</div><div class="value">'+dot+(d.connected?'已连接':'已断开')+'</div></div>'
+    +'<div class="stat"><div class="label">节点ID</div><div class="value" style="font-size:16px">'+(d.node_id||'-')+'</div></div>'
+    +'<div class="stat"><div class="label">服务器</div><div class="value" style="font-size:16px">'+(d.server_addr||'-')+'</div></div>'
+    +'<div class="stat"><div class="label">TCP 入</div><div class="value">'+formatBytes(d.tcp_bytes_in||0)+'</div></div>'
+    +'<div class="stat"><div class="label">TCP 出</div><div class="value">'+formatBytes(d.tcp_bytes_out||0)+'</div></div>'
+    +'<div class="stat"><div class="label">HTTP 入</div><div class="value">'+formatBytes(d.http_bytes_in||0)+'</div></div>'
+    +'<div class="stat"><div class="label">HTTP 出</div><div class="value">'+formatBytes(d.http_bytes_out||0)+'</div></div>'
+    +'<div class="stat"><div class="label">隧道数</div><div class="value">'+((d.tunnels&&d.tunnels.length)||0)+'</div></div>';
+}
+function renderTunnels(){
+  const tbody=$('tunnels-tbody');
+  if(!tunnels||!tunnels.length){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:#999">暂无隧道</td></tr>';return}
+  tbody.innerHTML=tunnels.map(function(t){return'<tr><td><strong>'+(t.name||'-')+'</strong></td>'
+    +'<td><span class="badge badge-'+(t.type||'').toLowerCase()+'">'+(t.type||'-').toUpperCase()+'</span></td>'
+    +'<td style="font-size:12px;color:#666">'+(t.target||'-')+'</td>'
+    +'<td>'+formatBytes(t.tcp_bytes_in||0)+'</td><td>'+formatBytes(t.tcp_bytes_out||0)+'</td>'
+    +'<td>'+formatBytes(t.http_bytes_in||0)+'</td><td>'+formatBytes(t.http_bytes_out||0)+'</td>'
+    +'<td><button class="btn btn-danger" onclick="deleteTunnel(\''+t.name+'\')">删除</button></td></tr>'}).join('');
+}
+async function loadData(){
+  try{
+    var s=await fetch('/api/status').then(function(r){return r.json()});
+    var r=await fetch('/api/tunnels').then(function(r){return r.json()});
+    renderStatus(s);tunnels=r;renderTunnels();
+  }catch(e){console.error(e);}
+}
+function openAddModal(){
+  editingName=null;$('modal-title').textContent='新增隧道';
+  $('f-name').value='';$('f-name').disabled=false;$('f-type').value='http';$('f-target').value='';$('f-mapping').value='';
+  $('edit-modal').classList.remove('hidden');
+}
+function openEditModal(name){
+  var t=tunnels.find(function(t){return t.name===name});if(!t)return;
+  editingName=name;$('modal-title').textContent='编辑隧道';
+  $('f-name').value=t.name;$('f-name').disabled=true;$('f-type').value=t.type||'http';$('f-target').value=t.target||'';$('f-mapping').value=t.mappingName||'';
+  $('edit-modal').classList.remove('hidden');
+}
+function closeModal(){$('edit-modal').classList.add('hidden');editingName=null}
+async function submitForm(){
+  var name=$('f-name').value.trim();var type=$('f-type').value;var target=$('f-target').value.trim();var mapping=$('f-mapping').value.trim();
+  if(!name||!target){alert('名称和目标不能为空');return}
+  var body=JSON.stringify({Name:name,Type:type,Target:target,MappingName:mapping});
+  try{
+    var r=await fetch('/api/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
+    if(!r.ok)throw await r.json();
+    closeModal();loadData();
+  }catch(e){alert('失败: '+(e.error||e.message||JSON.stringify(e)));}
+}
+async function deleteTunnel(name){
+  if(!confirm('确认删除隧道 '+name+'?'))return;
+  try{
+    var r=await fetch('/api/tunnels/'+name,{method:'DELETE'});
+    if(!r.ok)throw await r.json();
+    loadData();
+  }catch(e){alert('删除失败: '+(e.error||''));}
+}
+loadData();setInterval(loadData,5000);
+</script>
+</body>
+</html>`
+
 // StartHTTPServer 启动内置 HTTP 服务（含隧道管理 API）
 func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 	mux := http.NewServeMux()
+
+	// 单页面管理界面
+	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(uiHTML))
+	})
 
 	// 默认首页
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
