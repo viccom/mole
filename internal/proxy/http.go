@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -30,19 +31,28 @@ type TunnelLookup struct {
 // 2. 剥掉 mappingName 前缀后转发给本地后端
 func HandleHTTPStream(stream io.ReadWriteCloser, br *bufio.Reader, req *http.Request, lookup *TunnelLookup) {
 	target := ""
+	tunnelName := ""
 	// 尝试从路径第一段匹配隧道名
 	pathParts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
 	if len(pathParts) > 0 && pathParts[0] != "" {
 		if t, ok := lookup.Targets()[pathParts[0]]; ok {
 			target = t
+			tunnelName = pathParts[0]
 			// 剥掉 mappingName 前缀
 			req.URL.Path = "/" + strings.Join(pathParts[1:], "/")
-
 		}
 	}
 	// fallback: 通过 Host 头匹配
 	if target == "" {
 		target = matchHTTPTunnel(req.Host, lookup.NodeID, lookup.Targets())
+		if target != "" {
+			for name, t := range lookup.Targets() {
+				if t == target {
+					tunnelName = name
+					break
+				}
+			}
+		}
 	}
 	if target == "" {
 		writeHTTPError(stream, http.StatusBadGateway, "no tunnel matched")
@@ -50,11 +60,11 @@ func HandleHTTPStream(stream io.ReadWriteCloser, br *bufio.Reader, req *http.Req
 	}
 
 	if isWebSocketRequest(req) {
-		handleWebSocket(stream, req, target)
+		handleWebSocket(stream, req, target, tunnelName)
 		return
 	}
 
-	handleHTTP(stream, req, target)
+	handleHTTP(stream, req, target, tunnelName)
 }
 
 // ensureHTTPScheme 确保 HTTP 隧道 target 包含 scheme，缺失时默认补 http://
@@ -69,7 +79,7 @@ func ensureHTTPScheme(target string) string {
 	return "http://" + target
 }
 
-func handleHTTP(stream io.Writer, req *http.Request, target string) {
+func handleHTTP(stream io.Writer, req *http.Request, target, tunnelName string) {
 	target = ensureHTTPScheme(target)
 	targetURL, err := url.Parse(target)
 	if err != nil {
@@ -78,6 +88,14 @@ func handleHTTP(stream io.Writer, req *http.Request, target string) {
 	}
 	proxyURL := targetURL.ResolveReference(req.URL)
 	proxyURL.RawQuery = req.URL.RawQuery
+
+	// 读取请求体并计数
+	var reqBytes int64
+	if req.Body != nil {
+		body, _ := io.ReadAll(req.Body)
+		reqBytes = int64(len(body))
+		req.Body = io.NopCloser(bytes.NewReader(body))
+	}
 
 	proxyReq, err := http.NewRequest(req.Method, proxyURL.String(), req.Body)
 	if err != nil {
@@ -94,12 +112,21 @@ func handleHTTP(stream io.Writer, req *http.Request, target string) {
 	}
 	defer resp.Body.Close()
 
+	// 读取响应体并计数
+	respBody, _ := io.ReadAll(resp.Body)
+	respBytes := int64(len(respBody))
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
 	if err := resp.Write(stream); err != nil {
 		log.Printf("write HTTP response to stream: %v", err)
 	}
+
+	if tunnelName != "" {
+		AddHTTPBytes(uint64(reqBytes), uint64(respBytes))
+	}
 }
 
-func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target string) {
+func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target, tunnelName string) {
 	target = ensureHTTPScheme(target)
 	targetURL, err := url.Parse(target)
 	if err != nil {
@@ -107,7 +134,6 @@ func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target string
 		return
 	}
 
-	// 构建 WebSocket URL：将 http/https 转为 ws/wss
 	wsScheme := "ws"
 	if targetURL.Scheme == "https" {
 		wsScheme = "wss"
@@ -128,18 +154,15 @@ func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target string
 	}
 	defer backendConn.Close()
 
-	// 修改请求：使用后端地址，路径已由 HandleHTTPStream 剥掉了 mappingName 前缀
 	req.URL.Scheme = wsScheme
 	req.URL.Host = targetURL.Host
 	req.RequestURI = ""
 
-	// 转发升级请求
 	if err := req.Write(backendConn); err != nil {
 		log.Printf("WebSocket write upgrade request failed: %v", err)
 		return
 	}
 
-	// 读取后端响应
 	br := bufio.NewReader(backendConn)
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
@@ -153,20 +176,21 @@ func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target string
 		return
 	}
 
-	// 非 101 响应不进入双向转发
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		return
 	}
 
-	// 双向数据转发
+	buf := make([]byte, 32*1024)
 	done := make(chan struct{}, 2)
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(backendConn, stream)
+		n, _ := io.CopyBuffer(backendConn, stream, buf)
+		AddHTTPBytes(0, uint64(n))
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(stream, br)
+		n, _ := io.CopyBuffer(stream, br, buf)
+		AddHTTPBytes(uint64(n), 0)
 	}()
 	<-done
 	<-done
