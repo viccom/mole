@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, Activity, Globe, ArrowDown, ArrowUp, Users } from 'lucide-react'
+import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -80,6 +80,28 @@ export function TunnelsPage() {
       toast((err as Error).message || '删除失败', 'error')
     } finally {
       setDeleteTarget(null)
+    }
+  }
+
+  const handleToggle = async (tunnel: Tunnel) => {
+    if (!tunnel.node_id) {
+      toast('缺少节点信息，无法切换状态', 'error')
+      return
+    }
+    try {
+      await api.updateTunnel({
+        name: tunnel.name,
+        type: tunnel.type,
+        target: tunnel.target,
+        domain: tunnel.domain,
+        listen_port: tunnel.listen_port,
+        enabled: !tunnel.enabled,
+        node_id: tunnel.node_id,
+      })
+      toast(`隧道已${tunnel.enabled ? '禁用' : '启用'}`, 'success')
+      fetchData()
+    } catch (err: unknown) {
+      toast((err as Error).message || '切换状态失败', 'error')
     }
   }
 
@@ -237,6 +259,21 @@ export function TunnelsPage() {
                     </td>
                     <td className="px-6 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => handleToggle(tunnel)}
+                          title={tunnel.enabled ? '禁用' : '启用'}
+                          className={`p-1.5 rounded-md ${
+                            tunnel.enabled
+                              ? 'text-emerald-500 hover:text-emerald-700 hover:bg-emerald-50'
+                              : 'text-gray-400 hover:text-emerald-600 hover:bg-emerald-50'
+                          }`}
+                        >
+                          {tunnel.enabled ? (
+                            <Zap className="w-4 h-4" />
+                          ) : (
+                            <ZapOff className="w-4 h-4" />
+                          )}
+                        </button>
                         <button
                           onClick={() => setFormModal({ tunnel })}
                           title="编辑"
