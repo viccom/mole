@@ -106,11 +106,11 @@ function renderStatus(d){
   grid.innerHTML='<div class="stat"><div class="label">状态</div><div class="value">'+dot+(d.connected?'已连接':'已断开')+'</div></div>'
     +'<div class="stat"><div class="label">节点ID</div><div class="value" style="font-size:16px">'+(d.node_id||'-')+'</div></div>'
     +'<div class="stat"><div class="label">服务器</div><div class="value" style="font-size:16px">'+(d.server_addr||'-')+'</div></div>'
+    +'<div class="stat"><div class="label">隧道数</div><div class="value">'+((d.tunnels&&d.tunnels.length)||0)+'</div></div>'
     +'<div class="stat"><div class="label">TCP 入</div><div class="value">'+formatBytes(d.tcp_bytes_in||0)+'</div></div>'
     +'<div class="stat"><div class="label">TCP 出</div><div class="value">'+formatBytes(d.tcp_bytes_out||0)+'</div></div>'
     +'<div class="stat"><div class="label">HTTP 入</div><div class="value">'+formatBytes(d.http_bytes_in||0)+'</div></div>'
-    +'<div class="stat"><div class="label">HTTP 出</div><div class="value">'+formatBytes(d.http_bytes_out||0)+'</div></div>'
-    +'<div class="stat"><div class="label">隧道数</div><div class="value">'+((d.tunnels&&d.tunnels.length)||0)+'</div></div>';
+    +'<div class="stat"><div class="label">HTTP 出</div><div class="value">'+formatBytes(d.http_bytes_out||0)+'</div></div>';
 }
 function renderTunnels(){
   const tbody=$('tunnels-tbody');
