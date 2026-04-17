@@ -120,19 +120,45 @@ func handleHTTP(stream io.Writer, req *http.Request, target, tunnelName string) 
 	}
 	defer resp.Body.Close()
 
-	// 读取响应体并计数
-	respBody, _ := io.ReadAll(resp.Body)
-	respBytes := int64(len(respBody))
-	resp.Body = io.NopCloser(bytes.NewReader(respBody))
-
-	// 写完整 HTTP 响应（含状态行、headers）
-	if err := resp.Write(stream); err != nil {
-		log.Printf("write HTTP response to stream: %v", err)
+	// 流式传输响应（保持 206 等状态码，支持 Range 请求的视频播放）
+	if err := writeResponseStart(stream, resp); err != nil {
+		log.Printf("write HTTP response start failed: %v", err)
+		return
 	}
+
+	buf := make([]byte, 256*1024)
+	var respBytes int64
+	respBytes, _ = io.CopyBuffer(stream, resp.Body, buf)
 
 	if tunnelName != "" {
 		AddHTTPBytes(tunnelName, uint64(reqBytes), uint64(respBytes))
 	}
+}
+
+// writeResponseStart 写入 HTTP 响应行和 headers，为流式 body 传输做准备
+func writeResponseStart(w io.Writer, resp *http.Response) error {
+	// 写入状态行：HTTP/1.1 206 Partial Content 或其他状态码
+	status := fmt.Sprintf("HTTP/%d.%d %d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status)
+	if _, err := io.WriteString(w, status); err != nil {
+		return err
+	}
+
+	// 写入所有 headers
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			line := fmt.Sprintf("%s: %s\r\n", k, v)
+			if _, err := io.WriteString(w, line); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 写入 headers 结束分隔符
+	if _, err := io.WriteString(w, "\r\n"); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target, tunnelName string) {
