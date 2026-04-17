@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"# 1. 杀掉所有旧进程\\npkill -9 -f moleagent 2>/dev/null; sleep 2\\n# 确认没有进程\\npgrep -a moleagent || echo \\\"no moleagent process\\\"\\n# 2. 删除所有旧二进制\\nrm -f /root/gitme/_release/moleagent-client\\nrm -f /...",
+  "error": "Exit code 1",
+  "timestamp": "2026-04-17T04:22:47.990Z",
+  "retry_count": 1
+}
