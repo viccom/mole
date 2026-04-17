@@ -128,7 +128,7 @@ async function loadData(){
     var r=await fetch('/api/tunnels').then(function(r){return r.json()});
     // 合并隧道配置与流量数据
     tunnels=r.map(function(t){
-      var st=(s.tunnels||[]).find(function(st){return st.name===t.name});
+      var st=(s.tunnels||[]).find(function(st){return st.Name===t.name});
       return st?Object.assign({},t,st):t;
     });
     renderStatus(s);renderTunnels();
