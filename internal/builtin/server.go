@@ -47,6 +47,16 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 	// 隧道管理 API
 	registerTunnelAPI(mux, client)
 
+	// GET /api/status — 查看客户端状态
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		json.NewEncoder(w).Encode(client.Stats())
+	})
+
 	log.Printf("Built-in HTTP server listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
 }
