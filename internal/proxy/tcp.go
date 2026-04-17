@@ -28,6 +28,7 @@ func HandleRawStream(stream io.ReadWriteCloser, br *bufio.Reader, findTarget fun
 	bufA := make([]byte, 32*1024)
 	bufB := make([]byte, 32*1024)
 	done := make(chan struct{}, 2)
+	var tcpIn, tcpOut uint64
 	go func() {
 		defer func() { done <- struct{}{} }()
 		var n int64
@@ -36,13 +37,19 @@ func HandleRawStream(stream io.ReadWriteCloser, br *bufio.Reader, findTarget fun
 		} else {
 			n, _ = io.CopyBuffer(backendConn, stream, bufA)
 		}
-		atomic.AddUint64(&tcpBytesOut, uint64(n))
+		tcpOut = uint64(n)
+		atomic.AddUint64(&tcpBytesOut, tcpOut)
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
 		n, _ := io.CopyBuffer(stream, backendConn, bufB)
-		atomic.AddUint64(&tcpBytesIn, uint64(n))
+		tcpIn = uint64(n)
+		atomic.AddUint64(&tcpBytesIn, tcpIn)
 	}()
 	<-done
 	<-done
+
+	if tunnelName != "" {
+		RecordTCPBytes(tunnelName, tcpIn, tcpOut)
+	}
 }
