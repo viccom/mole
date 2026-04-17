@@ -126,7 +126,12 @@ async function loadData(){
   try{
     var s=await fetch('/api/status').then(function(r){return r.json()});
     var r=await fetch('/api/tunnels').then(function(r){return r.json()});
-    renderStatus(s);tunnels=r;renderTunnels();
+    // 合并隧道配置与流量数据
+    tunnels=r.map(function(t){
+      var st=(s.tunnels||[]).find(function(st){return st.name===t.name});
+      return st?Object.assign({},t,st):t;
+    });
+    renderStatus(s);renderTunnels();
   }catch(e){console.error(e);}
 }
 function openAddModal(){
