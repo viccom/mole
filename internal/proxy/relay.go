@@ -23,10 +23,27 @@ type tunnelTraffic struct {
 	HTTPBytesOut uint64
 }
 
+// TunnelTraffic is an exported alias for external access
+type TunnelTraffic = tunnelTraffic
+
 func GetTCPBytesIn()   uint64 { return atomic.LoadUint64(&tcpBytesIn) }
 func GetTCPBytesOut()  uint64 { return atomic.LoadUint64(&tcpBytesOut) }
 func GetHTTPBytesIn()  uint64 { return atomic.LoadUint64(&httpBytesIn) }
 func GetHTTPBytesOut() uint64 { return atomic.LoadUint64(&httpBytesOut) }
+
+func AddHTTPBytes(tunnelName string, in, out uint64) {
+	atomic.AddUint64(&httpBytesIn, in)
+	atomic.AddUint64(&httpBytesOut, out)
+	if tunnelName != "" {
+		tunnelMu.Lock()
+		if _, ok := tunnelStats[tunnelName]; !ok {
+			tunnelStats[tunnelName] = &tunnelTraffic{}
+		}
+		tunnelStats[tunnelName].HTTPBytesIn += in
+		tunnelStats[tunnelName].HTTPBytesOut += out
+		tunnelMu.Unlock()
+	}
+}
 
 // TunnelTrafficStats returns a snapshot of all tunnel traffic stats
 func TunnelTrafficStats() map[string]tunnelTraffic {

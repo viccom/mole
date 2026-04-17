@@ -122,7 +122,7 @@ func handleHTTP(stream io.Writer, req *http.Request, target, tunnelName string) 
 	}
 
 	if tunnelName != "" {
-		AddHTTPBytes(uint64(reqBytes), uint64(respBytes))
+		AddHTTPBytes(tunnelName, uint64(reqBytes), uint64(respBytes))
 	}
 }
 
@@ -185,12 +185,12 @@ func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target, tunne
 	go func() {
 		defer func() { done <- struct{}{} }()
 		n, _ := io.CopyBuffer(backendConn, stream, buf)
-		AddHTTPBytes(0, uint64(n))
+		AddHTTPBytes(tunnelName, 0, uint64(n))
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
 		n, _ := io.CopyBuffer(stream, br, buf)
-		AddHTTPBytes(uint64(n), 0)
+		AddHTTPBytes(tunnelName, uint64(n), 0)
 	}()
 	<-done
 	<-done

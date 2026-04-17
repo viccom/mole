@@ -70,6 +70,36 @@
   },
   "hotPaths": [
     {
+      "path": "internal/proxy/http.go",
+      "accessCount": 39,
+      "lastAccessed": 1776402290822,
+      "type": "file"
+    },
+    {
+      "path": "client.go",
+      "accessCount": 14,
+      "lastAccessed": 1776402179134,
+      "type": "file"
+    },
+    {
+      "path": "internal/proxy/relay.go",
+      "accessCount": 11,
+      "lastAccessed": 1776402239634,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 6,
+      "lastAccessed": 1776401242800,
+      "type": "directory"
+    },
+    {
+      "path": "internal/proxy/tcp.go",
+      "accessCount": 5,
+      "lastAccessed": 1776401540033,
+      "type": "file"
+    },
+    {
       "path": "CLAUDE.md",
       "accessCount": 3,
       "lastAccessed": 1776394569117,
@@ -85,18 +115,6 @@
       "path": ".worktrees/status-monitoring/client.go",
       "accessCount": 3,
       "lastAccessed": 1776396972123,
-      "type": "file"
-    },
-    {
-      "path": "client.go",
-      "accessCount": 2,
-      "lastAccessed": 1776394911174,
-      "type": "file"
-    },
-    {
-      "path": "internal/proxy/http.go",
-      "accessCount": 2,
-      "lastAccessed": 1776394938390,
       "type": "file"
     },
     {
