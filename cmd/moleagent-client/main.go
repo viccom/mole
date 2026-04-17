@@ -121,6 +121,27 @@ func handleTunnelsCmd(args []string) int {
 	domainFlag := tunFlag.String("domain", "", "HTTP 隧道域名 (配合 --add 使用)")
 	portFlag := tunFlag.Int("port", 0, "TCP/UDP 隧道监听端口 (配合 --add 使用)")
 	addrFlag := tunFlag.String("addr", "127.0.0.1:18080", "客户端 HTTP API 地址")
+	tunFlag.SetOutput(os.Stdout)
+	tunFlag.Usage = func() {
+		fmt.Fprintf(os.Stdout, `Usage: moleagent-client -tunnels [options]
+
+Manage tunnels via the client's built-in HTTP API.
+
+Options:
+  --list              列出所有隧道
+  --add name:type:target   添加隧道 (例: fnlist:http:127.0.0.1:8080)
+  --del <name>        删除隧道
+  --addr <host:port>  API 地址 (默认 127.0.0.1:18080)
+  --domain <domain>   HTTP 隧道域名 (配合 --add 使用)
+  --port <port>       TCP/UDP 隧道监听端口 (配合 --add 使用)
+
+Examples:
+  moleagent-client -tunnels --list
+  moleagent-client -tunnels --add fnlist:http:192.168.1.100:8080 --domain fnlist.example.com
+  moleagent-client -tunnels --add ssh:tcp:127.0.0.1:22 --port 2222
+  moleagent-client -tunnels --del fnlist
+`)
+	}
 	tunFlag.Parse(args)
 
 	baseURL := "http://" + *addrFlag
