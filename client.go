@@ -439,7 +439,7 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 					}
 				}
 				return ""
-			})
+			}, tunnelName)
 			return
 		}
 	}
@@ -489,7 +489,7 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 			}
 		}
 		return ""
-	})
+	}, "")
 }
 
 // handlePossiblePush 尝试处理 tunnel_push 控制推送
