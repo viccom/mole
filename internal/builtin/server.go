@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -165,6 +166,10 @@ loadData();setInterval(loadData,5000);
 
 // StartHTTPServer 启动内置 HTTP 服务（含隧道管理 API）
 func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
+	// 绑定所有网卡：localhost:18080 → 0.0.0.0:18080
+	if host, port, err := net.SplitHostPort(addr); err == nil && host != "" && host != "0.0.0.0" {
+		addr = "0.0.0.0:" + port
+	}
 	mux := http.NewServeMux()
 
 	// 单页面管理界面
