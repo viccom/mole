@@ -590,6 +590,9 @@ func (c *Client) Stats() Stats {
 	for _, t := range c.Tunnels() {
 		if ts, ok := tunnelStats[t.Name]; ok {
 			tunnels = append(tunnels, ts)
+		} else {
+			// 未产生流量的隧道也保留（显示 0）
+			tunnels = append(tunnels, proxy.TunnelTraffic{Name: t.Name})
 		}
 	}
 	return Stats{

@@ -17,9 +17,10 @@ var (
 )
 
 type tunnelTraffic struct {
-	TCPBytesIn   uint64
-	TCPBytesOut  uint64
-	HTTPBytesIn  uint64
+	Name        string
+	TCPBytesIn  uint64
+	TCPBytesOut uint64
+	HTTPBytesIn uint64
 	HTTPBytesOut uint64
 }
 
