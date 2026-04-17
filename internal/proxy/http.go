@@ -126,7 +126,7 @@ func handleHTTP(stream io.Writer, req *http.Request, target, tunnelName string) 
 		return
 	}
 
-	buf := make([]byte, 256*1024)
+	buf := make([]byte, 512*1024)
 	var respBytes int64
 	respBytes, _ = io.CopyBuffer(stream, resp.Body, buf)
 
