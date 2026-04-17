@@ -115,14 +115,15 @@ func handleHTTP(stream io.Writer, req *http.Request, target, tunnelName string) 
 	// 读取响应体并计数
 	respBody, _ := io.ReadAll(resp.Body)
 	respBytes := int64(len(respBody))
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+	// 写完整 HTTP 响应（含状态行、headers）
+	if err := resp.Write(stream); err != nil {
+		log.Printf("write HTTP response to stream: %v", err)
+	}
 
 	if tunnelName != "" {
 		AddHTTPBytes(tunnelName, uint64(reqBytes), uint64(respBytes))
-	}
-
-	// 直接将响应体写入 stream（避免 resp.Write 的 HTTP 协议层阻塞）
-	if _, err := stream.Write(respBody); err != nil {
-		log.Printf("write HTTP response to stream: %v", err)
 	}
 }
 
