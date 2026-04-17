@@ -572,3 +572,23 @@ func readResponse(r io.Reader, timeout time.Duration) (*protocol.ControlResponse
 	}
 	return &resp, nil
 }
+
+// Stats 客户端状态统计
+type Stats struct {
+	NodeID      string `json:"node_id"`
+	Connected   bool   `json:"connected"`
+	ServerAddr  string `json:"server_addr"`
+	TCPBytesIn  uint64 `json:"tcp_bytes_in"`
+	TCPBytesOut uint64 `json:"tcp_bytes_out"`
+}
+
+// Stats 返回客户端状态统计信息
+func (c *Client) Stats() Stats {
+	return Stats{
+		NodeID:     c.cfg.NodeID,
+		Connected:  c.Connected(),
+		ServerAddr: c.cfg.ServerAddr,
+		TCPBytesIn:  proxy.GetTCPBytesIn(),
+		TCPBytesOut: proxy.GetTCPBytesOut(),
+	}
+}
