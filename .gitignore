@@ -12,3 +12,4 @@ moleAgent_client
 # OS
 .DS_Store
 Thumbs.db
+.worktrees/
