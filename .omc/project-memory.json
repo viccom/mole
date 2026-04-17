@@ -1,0 +1,152 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1776393994709,
+  "projectRoot": "/root/gitme/moleAgent_client",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      },
+      {
+        "name": "C/C++",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Makefile"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "make build",
+    "testCommand": "make test",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "cmd": {
+      "path": "cmd",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1776393994700,
+      "keyFiles": []
+    },
+    "internal": {
+      "path": "internal",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1776393994703,
+      "keyFiles": []
+    },
+    "logs": {
+      "path": "logs",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1776393994705,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 3,
+      "lastAccessed": 1776394569117,
+      "type": "file"
+    },
+    {
+      "path": "tunnel.go",
+      "accessCount": 3,
+      "lastAccessed": 1776394922143,
+      "type": "file"
+    },
+    {
+      "path": ".worktrees/status-monitoring/client.go",
+      "accessCount": 3,
+      "lastAccessed": 1776396972123,
+      "type": "file"
+    },
+    {
+      "path": "client.go",
+      "accessCount": 2,
+      "lastAccessed": 1776394911174,
+      "type": "file"
+    },
+    {
+      "path": "internal/proxy/http.go",
+      "accessCount": 2,
+      "lastAccessed": 1776394938390,
+      "type": "file"
+    },
+    {
+      "path": "event.go",
+      "accessCount": 2,
+      "lastAccessed": 1776394951998,
+      "type": "file"
+    },
+    {
+      "path": "docs/plans/2026-04-17-status-monitoring.md",
+      "accessCount": 2,
+      "lastAccessed": 1776395363730,
+      "type": "file"
+    },
+    {
+      "path": ".worktrees/status-monitoring/internal/proxy/relay.go",
+      "accessCount": 2,
+      "lastAccessed": 1776396929404,
+      "type": "file"
+    },
+    {
+      "path": "Makefile",
+      "accessCount": 1,
+      "lastAccessed": 1776394060461,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 1,
+      "lastAccessed": 1776394075644,
+      "type": "file"
+    },
+    {
+      "path": "internal/builtin/server.go",
+      "accessCount": 1,
+      "lastAccessed": 1776394911137,
+      "type": "file"
+    },
+    {
+      "path": "internal/transport/dialer.go",
+      "accessCount": 1,
+      "lastAccessed": 1776394938329,
+      "type": "file"
+    },
+    {
+      "path": ".worktrees/status-monitoring/internal/builtin/server.go",
+      "accessCount": 1,
+      "lastAccessed": 1776396943001,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

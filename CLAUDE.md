@@ -75,7 +75,7 @@ go vet ./...                  # 静态检查
 ## 注意事项
 
 - **不要修改 `internal/protocol/types.go`** 的字段名和 JSON tag，必须与服务端 wire 格式保持一致
-- TCP/UDP 隧道当前只能匹配第一个，这是协议层限制（服务端未在流中标识隧道名）
+- TCP/UDP 隧道通过协议头 `\x00<tunnel-name>\n` 精确匹配；旧服务端 fallback 到匹配第一个
 - smux 配置（KeepAlive、MaxFrameSize 等）必须与服务端一致
 - `Client.Run()` 是阻塞调用，库集成时应 `go client.Run(ctx)`
 - 事件处理器是同步调用的，耗时操作应在 handler 中启动新 goroutine
