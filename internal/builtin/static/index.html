@@ -27,6 +27,8 @@ tr:hover{background:#fafafa}
 .badge-https{background:#e3f2fd;color:#1565c0}
 .badge-tcp{background:#fff3e0;color:#e65100}
 .badge-udp{background:#f3e5f5;color:#7b1fa2}
+.badge-ser2mq{background:#e0f2f1;color:#00695c}
+.badge-vpn-manager{background:#fce4ec;color:#c2185b}
 .btn{display:inline-block;padding:6px 14px;background:#3498db;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:13px}
 .btn:hover{background:#2980b9}
 .btn-danger{background:#e74c3c}
@@ -69,9 +71,10 @@ tr:hover{background:#fafafa}
     <h3 id="modal-title">新增隧道</h3>
     <div class="form-group"><label>名称</label><input id="f-name" placeholder="如: fnlist"></div>
     <div class="form-row">
-      <div class="form-group"><label>类型</label><select id="f-type"><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
+      <div class="form-group"><label>类型</label><select id="f-type"><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="ser2mq">Ser2MQ</option><option value="vpn-manager">VPN Manager</option></select></div>
       <div class="form-group"><label>目标</label><input id="f-target" placeholder="如: 127.0.0.1:8080"></div>
     </div>
+    <div id="para-fields"></div>
     <div class="form-group"><label>映射路径 (可选)</label><input id="f-mapping" placeholder="如: /fnlist"></div>
     <div class="actions">
       <button class="btn" id="btn-cancel">取消</button>
@@ -130,6 +133,7 @@ function openAddModal(){
   $('f-type').value = 'http';
   $('f-target').value = '';
   $('f-mapping').value = '';
+  renderParaFields('http');
   $('edit-modal').classList.remove('hidden');
 }
 
@@ -137,17 +141,90 @@ function closeModal(){
   $('edit-modal').classList.add('hidden');
 }
 
+function renderParaFields(type){
+  var el = $('para-fields');
+  if(type === 'ser2mq'){
+    el.innerHTML = '<div class="form-group"><label>MQTT Broker</label><input id="f-broker" placeholder="mqtt://user:pass@broker:1883"></div>'
+      +'<div class="form-group"><label>串口端口</label><input id="f-serial-port" placeholder="/dev/ttyS0"></div>'
+      +'<div class="form-row"><div class="form-group"><label>波特率</label><select id="f-baudrate"><option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option><option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option><option value="57600">57600</option><option value="115200">115200</option></select></div>'
+      +'<div class="form-group"><label>数据位</label><select id="f-databits"><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8" selected>8</option></select></div></div>'
+      +'<div class="form-group"><label>校验位</label><select id="f-parity"><option value="N" selected>无校验 (N)</option><option value="E">偶校验 (E)</option><option value="O">奇校验 (O)</option></select></div>'
+      +'<div class="form-group"><label>加密密钥 (64字符 hex)</label><input id="f-secret" placeholder="32字节hex密钥，如0123456789..."></div>';
+  } else if(type === 'vpn-manager'){
+    el.innerHTML = '<div class="form-group"><label>程序名称</label><input id="f-binary-name" placeholder="easytier-core"></div>'
+      +'<div class="form-group"><label>程序路径（可选）</label><input id="f-binary-path" placeholder="留空则自动查找"></div>'
+      +'<div class="form-group"><label>启动参数</label><input id="f-args" placeholder="用空格分隔，如: -w udp://server:520/ -p 12345"></div>'
+      +'<div class="form-row"><div class="form-group"><label>最大重启次数</label><input type="number" id="f-max-restarts" value="3" min="0" max="10"></div>'
+      +'<div class="form-group"><label>重启延迟(秒)</label><input type="number" id="f-restart-delay" value="5" min="1" max="60"></div></div>'
+      +'<div class="form-group"><label><input type="checkbox" id="f-autostart"> 启动时自动运行</label></div>'
+      +'<div class="form-group"><label><input type="checkbox" id="f-restart" checked> 崩溃后自动重启</label></div>';
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+// 监听类型变化
+$('f-type').addEventListener('change', function(){
+  renderParaFields(this.value);
+});
+
 function submitForm(){
   var name = $('f-name').value.trim();
   var type = $('f-type').value;
   var target = $('f-target').value.trim();
   var mapping = $('f-mapping').value.trim();
-  if(!name || !target){alert('名称和目标不能为空');return}
-  var body = JSON.stringify({Name:name, Type:type, Target:target, MappingName:mapping});
+
+  if(!name){alert('名称不能为空');return}
+
+  var payload = {name:name, type:type, enabled:true};
+
+  if(type === 'http' || type === 'https'){
+    if(!target){alert('目标不能为空');return}
+    payload.target = target;
+    if(mapping) payload.domain = mapping;
+  } else if(type === 'tcp' || type === 'udp'){
+    payload.target = target || '127.0.0.1:0';
+    payload.listen_port = parseInt(target.split(':')[1]) || 0;
+  } else if(type === 'ser2mq'){
+    var broker = $('f-broker').value.trim();
+    var secret = $('f-secret').value.trim();
+    if(!broker){alert('MQTT Broker不能为空');return}
+    if(!secret){alert('加密密钥不能为空');return}
+    if(secret.length !== 64){alert('加密密钥必须为64字符');return}
+    payload.target = $('f-serial-port').value.trim() || '/dev/ttyS0';
+    payload.para = {
+      broker: broker,
+      serial: {
+        port: $('f-serial-port').value.trim() || '/dev/ttyS0',
+        baudrate: parseInt($('f-baudrate').value),
+        databits: parseInt($('f-databits').value),
+        parity: $('f-parity').value
+      },
+      secret: secret
+    };
+  } else if(type === 'vpn-manager'){
+    var binName = $('f-binary-name').value.trim();
+    if(!binName){alert('程序名称不能为空');return}
+    payload.target = binName;
+    var binPath = $('f-binary-path').value.trim();
+    payload.para = {
+      binary: {name: binName, path: binPath || undefined},
+      args: ($('f-args').value.trim() || '').split(' ').filter(function(s){return s.trim();}),
+      lifecycle: {
+        autostart: $('f-autostart').checked,
+        restart_on_crash: $('f-restart').checked,
+        max_restarts: parseInt($('f-max-restarts').value) || 3,
+        restart_delay: parseInt($('f-restart-delay').value) || 5
+      },
+      watchdog: {enabled:true, interval:10, quit_grace:10},
+      log: {capture:true, max_size:65536}
+    };
+  }
+
   fetch('/api/tunnels',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:body
+    body: JSON.stringify(payload)
   }).then(function(r){return r.json()}).then(function(data){
     if(data.error){alert('失败: '+data.error);return}
     closeModal();loadData();

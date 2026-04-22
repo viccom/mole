@@ -16,6 +16,8 @@ import (
 
 	"moleAgent_client/internal/protocol"
 	"moleAgent_client/internal/proxy"
+	"moleAgent_client/internal/proxy/ser2mq"
+	"moleAgent_client/internal/proxy/vpn"
 	"moleAgent_client/internal/transport"
 )
 
@@ -34,6 +36,12 @@ type Client struct {
 	ctrlMu  sync.Mutex        // 控制命令发送锁
 	tunReqs chan tunnelReq    // 隧道更新请求队列
 	cancel  context.CancelFunc
+
+	// ser2mq 隧道管理器
+	ser2mqMgr *ser2mq.Manager
+
+	// vpn-manager 进程管理器
+	vpnMgr *vpn.Manager
 }
 
 type tunnelReq struct {
@@ -51,12 +59,18 @@ func New(cfg *Config) (*Client, error) {
 	tlsCfg := &transport.TLSConfig{Enabled: cfg.UseTLS}
 	dial := transport.DefaultDialer(tlsCfg)
 
+	// 创建管理器（使用背景 context，生命周期由 Client 统一管理）
+	ser2mqMgr := ser2mq.NewManager(context.Background())
+	vpnMgr := vpn.NewManager(context.Background())
+
 	return &Client{
-		cfg:       cfg,
-		transport: transport.NewSessionManager(dial),
-		events:    newEventBus(),
-		tunnels:   append([]Tunnel{}, cfg.Tunnels...),
-		tunReqs:   make(chan tunnelReq, 16),
+		cfg:        cfg,
+		transport:  transport.NewSessionManager(dial),
+		events:     newEventBus(),
+		tunnels:    append([]Tunnel{}, cfg.Tunnels...),
+		tunReqs:    make(chan tunnelReq, 16),
+		ser2mqMgr:  ser2mqMgr,
+		vpnMgr:     vpnMgr,
 	}, nil
 }
 
@@ -122,6 +136,14 @@ func (c *Client) Close() {
 		c.cancel()
 	}
 	c.close()
+
+	// 关闭管理器
+	if c.ser2mqMgr != nil {
+		c.ser2mqMgr.Close()
+	}
+	if c.vpnMgr != nil {
+		c.vpnMgr.Close()
+	}
 }
 
 // OnEvent 注册事件处理器
@@ -515,7 +537,41 @@ func (c *Client) handlePossiblePush(stream *smux.Stream, br *bufio.Reader) bool 
 	c.mu.Lock()
 	c.tunnels = make([]Tunnel, len(tunnels))
 	copy(c.tunnels, tunnels)
+
+	// 提取 ser2mq 和 vpn-manager 配置，通知管理器
+	ser2mqConfigs := make(map[string]ser2mq.Ser2MQConfig)
+	vpnConfigs := make(map[string]vpn.Config)
+	for _, t := range tunnels {
+		if !t.IsEnabled() {
+			continue
+		}
+		if t.Type == TunnelTypeSer2MQ && t.Para != nil {
+			var cfg ser2mq.Ser2MQConfig
+			if json.Unmarshal(t.Para, &cfg) == nil {
+				ser2mqConfigs[t.Name] = cfg
+			}
+		}
+		if t.Type == TunnelTypeVPNMgr && t.Para != nil {
+			var cfg vpn.Config
+			if json.Unmarshal(t.Para, &cfg) == nil {
+				vpnConfigs[t.Name] = cfg
+			}
+		}
+	}
 	c.mu.Unlock()
+
+	// 通知各管理器处理隧道更新
+	if c.ser2mqMgr != nil {
+		c.ser2mqMgr.OnTunnelUpdate(ser2mqConfigs)
+	}
+	if c.vpnMgr != nil {
+		// 构造 vpn-manager 配置映射
+		vpnTypes := make([]string, 0, len(vpnConfigs))
+		for name := range vpnConfigs {
+			vpnTypes = append(vpnTypes, name)
+		}
+		c.vpnMgr.OnTunnelUpdate(vpnTypes, vpnConfigs)
+	}
 
 	log.Printf("Received tunnel_push from server: %d tunnel(s)", len(tunnels))
 	c.events.Emit(Event{Type: EventTunnelUpdated, Data: map[string]any{"tunnels": len(tunnels)}})
@@ -605,4 +661,44 @@ func (c *Client) Stats() Stats {
 		HTTPBytesOut: proxy.GetHTTPBytesOut(),
 		Tunnels:     tunnels,
 	}
+}
+
+// ===== VPN Manager API =====
+
+func (c *Client) VPNManager() *vpn.Manager {
+	return c.vpnMgr
+}
+
+func (c *Client) VPNList() []vpn.Status {
+	return c.vpnMgr.List()
+}
+
+func (c *Client) VPNStatus(name string) (vpn.Status, error) {
+	return c.vpnMgr.Status(name)
+}
+
+func (c *Client) VPNStart(name string) error {
+	return c.vpnMgr.Start(name)
+}
+
+func (c *Client) VPNStop(name string) error {
+	return c.vpnMgr.Stop(name)
+}
+
+func (c *Client) VPNCrashLogs(name string) ([]vpn.CrashLog, error) {
+	return c.vpnMgr.CrashLogs(name)
+}
+
+// ===== Ser2MQ Manager API =====
+
+func (c *Client) Ser2MQManager() *ser2mq.Manager {
+	return c.ser2mqMgr
+}
+
+func (c *Client) Ser2MQList() []ser2mq.Ser2MQStats {
+	return c.ser2mqMgr.List()
+}
+
+func (c *Client) Ser2MQStatus(name string) (ser2mq.Ser2MQStats, error) {
+	return c.ser2mqMgr.Status(name)
 }

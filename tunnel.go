@@ -1,6 +1,7 @@
 package moleAgent_client
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"moleAgent_client/internal/protocol"
@@ -10,20 +11,23 @@ import (
 type TunnelType string
 
 const (
-	TunnelTypeHTTP  TunnelType = "http"
-	TunnelTypeHTTPS TunnelType = "https"
-	TunnelTypeTCP   TunnelType = "tcp"
-	TunnelTypeUDP   TunnelType = "udp"
+	TunnelTypeHTTP    TunnelType = "http"
+	TunnelTypeHTTPS   TunnelType = "https"
+	TunnelTypeTCP     TunnelType = "tcp"
+	TunnelTypeUDP     TunnelType = "udp"
+	TunnelTypeSer2MQ  TunnelType = "ser2mq"      // 串口转 MQTT
+	TunnelTypeVPNMgr  TunnelType = "vpn-manager"  // VPN 程序管理
 )
 
 // Tunnel 隧道配置（统一类型，替代原 tunnelConfig 和 protocol.Tunnel 两套定义）
 type Tunnel struct {
-	Name       string     `json:"name"`
-	Type       TunnelType `json:"type"`
-	Target     string     `json:"target"`
-	Domain     string     `json:"domain,omitempty"`
-	ListenPort int        `json:"listen_port,omitempty"`
-	Enabled    *bool      `json:"enabled,omitempty"` // 启用开关，nil/true=启用，false=禁用
+	Name       string          `json:"name"`
+	Type       TunnelType     `json:"type"`
+	Target     string          `json:"target"`
+	Domain     string          `json:"domain,omitempty"`
+	ListenPort int            `json:"listen_port,omitempty"`
+	Enabled    *bool           `json:"enabled,omitempty"` // 启用开关，nil/true=启用，false=禁用
+	Para       json.RawMessage `json:"para,omitempty"`    // 扩展配置（ser2mq/vpn-manager 等）
 }
 
 // IsEnabled 返回隧道是否启用。零值（nil）视为启用，兼容旧数据。
@@ -42,7 +46,7 @@ func (t Tunnel) Validate() error {
 		return fmt.Errorf("tunnel name is required")
 	}
 	switch t.Type {
-	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP:
+	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeVPNMgr:
 	default:
 		return fmt.Errorf("invalid tunnel type: %s", t.Type)
 	}
@@ -61,6 +65,7 @@ func (t Tunnel) toProtocol() protocol.Tunnel {
 		Domain:     t.Domain,
 		ListenPort: t.ListenPort,
 		Enabled:    t.Enabled,
+		Para:       t.Para,
 	}
 }
 
@@ -82,6 +87,7 @@ func fromProtocol(t protocol.Tunnel) Tunnel {
 		Domain:     t.Domain,
 		ListenPort: t.ListenPort,
 		Enabled:    t.Enabled,
+		Para:       t.Para,
 	}
 }
 
