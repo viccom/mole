@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -42,12 +43,13 @@ const (
 
 // Tunnel 隧道配置
 type Tunnel struct {
-	Name       string     `json:"name"`
-	Type       TunnelType `json:"type"`
-	Target     string     `json:"target"`                // 后端地址，host:port 格式（如 127.0.0.1:8080）
-	Domain     string     `json:"domain,omitempty"`      // HTTP 隧道的域名
-	ListenPort int        `json:"listen_port,omitempty"` // TCP/UDP 隧道的监听端口
-	Enabled    *bool      `json:"enabled,omitempty"`     // 启用开关，nil/true=启用，false=禁用
+	Name       string          `json:"name"`
+	Type       TunnelType     `json:"type"`
+	Target     string          `json:"target"`                // 后端地址，host:port 格式（如 127.0.0.1:8080）
+	Domain     string          `json:"domain,omitempty"`      // HTTP 隧道的域名
+	ListenPort int            `json:"listen_port,omitempty"` // TCP/UDP 隧道的监听端口
+	Enabled    *bool           `json:"enabled,omitempty"`     // 启用开关，nil/true=启用，false=禁用
+	Para       json.RawMessage `json:"para,omitempty"`        // 扩展配置（ser2mq/vpn-manager 等）
 }
 
 // IsEnabled 返回隧道是否启用。零值（nil）视为启用，兼容旧数据。

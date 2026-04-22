@@ -38,12 +38,59 @@ export interface Node {
 
 export interface Tunnel {
   name: string
-  type: 'http' | 'https' | 'tcp' | 'udp'
+  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager'
   target: string
   domain?: string
   listen_port?: number
   enabled: boolean
   node_id?: string
+  para?: TunnelPara
+}
+
+export interface TunnelPara {
+  // ser2mq 配置
+  broker?: string
+  serial?: SerialConfig
+  secret?: string
+  // vpn-manager 配置
+  binary?: BinaryConfig
+  args?: string[]
+  lifecycle?: LifecycleConfig
+  watchdog?: WatchdogConfig
+  log?: LogConfig
+}
+
+export interface SerialConfig {
+  port?: string
+  baudrate?: number
+  databits?: number
+  stopbits?: number
+  parity?: string
+  timeout?: number
+}
+
+export interface BinaryConfig {
+  name?: string
+  path?: string
+}
+
+export interface LifecycleConfig {
+  autostart?: boolean
+  restart_on_crash?: boolean
+  max_restarts?: number
+  restart_delay?: number
+}
+
+export interface WatchdogConfig {
+  enabled?: boolean
+  interval?: number
+  quit_grace?: number
+}
+
+export interface LogConfig {
+  capture?: boolean
+  max_size?: number
+  output_path?: string
 }
 
 export interface TunnelStats {

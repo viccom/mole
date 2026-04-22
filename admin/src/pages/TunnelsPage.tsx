@@ -97,6 +97,7 @@ export function TunnelsPage() {
         listen_port: tunnel.listen_port,
         enabled: !tunnel.enabled,
         node_id: tunnel.node_id,
+        para: tunnel.para,
       })
       toast(`隧道已${tunnel.enabled ? '禁用' : '启用'}`, 'success')
       fetchData()
@@ -105,10 +106,19 @@ export function TunnelsPage() {
     }
   }
 
-  const typeBadgeVariant = (type: string): 'info' | 'purple' | 'warning' => {
+  const typeBadgeVariant = (type: string): 'info' | 'purple' | 'warning' | 'cyan' | 'pink' => {
     if (type === 'http' || type === 'https') return 'info'
     if (type === 'tcp') return 'purple'
+    if (type === 'udp') return 'warning'
+    if (type === 'ser2mq') return 'cyan'
+    if (type === 'vpn-manager') return 'pink'
     return 'warning'
+  }
+
+  const typeLabel = (type: string): string => {
+    if (type === 'ser2mq') return 'Ser2MQ'
+    if (type === 'vpn-manager') return 'VPN'
+    return type.toUpperCase()
   }
 
   return (
@@ -205,10 +215,14 @@ export function TunnelsPage() {
                     </td>
                     <td className="px-6 py-3">
                       <Badge variant={typeBadgeVariant(tunnel.type)}>
-                        {tunnel.type.toUpperCase()}
+                        {typeLabel(tunnel.type)}
                       </Badge>
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-600 font-mono">{tunnel.target}</td>
+                    <td className="px-6 py-3 text-sm text-gray-600 font-mono">
+                      {tunnel.type === 'ser2mq' || tunnel.type === 'vpn-manager'
+                        ? tunnel.para?.broker || tunnel.para?.binary?.name || tunnel.target
+                        : tunnel.target}
+                    </td>
                     <td className="px-6 py-3 text-sm">
                       {(tunnel.type === 'http' || tunnel.type === 'https') && url !== '-' ? (
                         <a

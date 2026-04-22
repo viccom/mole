@@ -65,14 +65,25 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return rawBody as T
 }
 
-type TunnelPayload = {
+// TunnelPayload 支持所有隧道类型
+interface TunnelPayload {
   name: string
   type: string
-  target: string
+  target?: string
   domain?: string
   listen_port?: number
   enabled?: boolean
   node_id: string
+  para?: {
+    broker?: string
+    serial?: { port?: string; baudrate?: number; databits?: number; parity?: string; timeout?: number }
+    secret?: string
+    binary?: { name?: string; path?: string }
+    args?: string[]
+    lifecycle?: { autostart?: boolean; restart_on_crash?: boolean; max_restarts?: number; restart_delay?: number }
+    watchdog?: { enabled?: boolean; interval?: number; quit_grace?: number }
+    log?: { capture?: boolean; max_size?: number; output_path?: string }
+  }
 }
 
 export const api = {
