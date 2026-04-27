@@ -11,6 +11,7 @@ import (
 type Manager struct {
 	mu      sync.RWMutex
 	tunnels map[string]*Ser2MQHandler
+	nodeID  string
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
@@ -23,6 +24,11 @@ func NewManager(ctx context.Context) *Manager {
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+}
+
+// SetNodeID 设置节点 ID（在 Run() 时调用）
+func (m *Manager) SetNodeID(nodeID string) {
+	m.nodeID = nodeID
 }
 
 // Close 关闭管理器
@@ -112,20 +118,33 @@ func (m *Manager) List() []Ser2MQStats {
 // OnTunnelUpdate 处理隧道更新（从 tunnel_push 触发）
 func (m *Manager) OnTunnelUpdate(tunnelConfigs map[string]Ser2MQConfig) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// 获取需要管理的隧道名称
-	needMgr := make(map[string]bool)
-	for name := range tunnelConfigs {
-		needMgr[name] = true
-	}
 
 	// 停止不再需要的隧道
 	for name, h := range m.tunnels {
-		if !needMgr[name] {
+		if _, ok := tunnelConfigs[name]; !ok {
 			log.Printf("ser2mq: stopping removed tunnel %s", name)
 			h.Stop()
 			delete(m.tunnels, name)
+		}
+	}
+
+	// 收集需要创建的隧道（还需要 nodeID）
+	type pending struct {
+		name string
+		cfg  Ser2MQConfig
+	}
+	var pendings []pending
+	for name, cfg := range tunnelConfigs {
+		if _, ok := m.tunnels[name]; !ok {
+			pendings = append(pendings, pending{name, cfg})
+		}
+	}
+	m.mu.Unlock()
+
+	// 在锁外逐个创建（Create 内部会重入锁做同名检查）
+	for _, p := range pendings {
+		if err := m.Create(p.name, m.nodeID, p.cfg); err != nil {
+			log.Printf("ser2mq: failed to create tunnel %s: %v", p.name, err)
 		}
 	}
 }

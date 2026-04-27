@@ -13,3 +13,4 @@ moleAgent_client
 .DS_Store
 Thumbs.db
 .worktrees/
+.omc/

@@ -204,7 +204,6 @@ func DecryptPayload(data []byte, crypto *Crypto) (*MQTTMessage, error) {
 type poolEntry struct {
 	client *MQTTClient
 	refcnt int
-	mu     sync.Mutex
 }
 
 // MQTTPool MQTT 连接池
@@ -231,18 +230,25 @@ func (p *MQTTPool) Get(ctx context.Context, cfg MQTTConfig, nodeID, tunnel, port
 	entry, ok := p.pools[brokerKey]
 	if ok {
 		entry.refcnt++
+		client := entry.client
 		p.mu.Unlock()
-		return entry.client, nil
+		// 等待连接初始化完成（另一个 goroutine 正在创建）
+		for client == nil {
+			time.Sleep(50 * time.Millisecond)
+			p.mu.Lock()
+			client = entry.client
+			p.mu.Unlock()
+		}
+		return client, nil
 	}
 
-	// 创建新连接
+	// 创建新连接（在锁外执行 I/O）
 	entry = &poolEntry{
 		refcnt: 1,
 	}
 	p.pools[brokerKey] = entry
 	p.mu.Unlock()
 
-	// 尝试复用其他连接的 client ID
 	client, err := NewMQTTClient(cfg, nodeID, tunnel)
 	if err != nil {
 		p.mu.Lock()
@@ -251,13 +257,16 @@ func (p *MQTTPool) Get(ctx context.Context, cfg MQTTConfig, nodeID, tunnel, port
 		return nil, err
 	}
 
-	entry.client = client
 	if err := client.Connect(ctx); err != nil {
 		p.mu.Lock()
 		delete(p.pools, brokerKey)
 		p.mu.Unlock()
 		return nil, err
 	}
+
+	p.mu.Lock()
+	entry.client = client
+	p.mu.Unlock()
 
 	log.Printf("MQTT client connected to %s (tunnel: %s)", brokerKey, tunnel)
 	return client, nil
@@ -291,18 +300,3 @@ func (p *MQTTPool) Close() {
 	}
 }
 
-// TopicExists 检查 MQTT 主题是否已订阅（防止同一串口重复创建隧道）
-// 这个检查需要在 ser2mq handler 中实现，这里只是标记意图
-func TopicExists(topic string) bool {
-	// 实际检查由 handler 层通过 tunnel 列表实现
-	return false
-}
-
-// SanitizeBrokerKey 提取 broker 地址作为 pool key
-func SanitizeBrokerKey(broker string) string {
-	u, err := url.Parse(broker)
-	if err != nil {
-		return broker
-	}
-	return u.Scheme + "://" + u.Host
-}

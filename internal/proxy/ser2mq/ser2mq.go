@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,18 +26,17 @@ type Ser2MQHandler struct {
 	crypto    *Crypto
 	serial    SerialConn
 	mqtt      *MQTTClient
-	pool      *MQTTPool
 
 	mu        sync.RWMutex
 	running   bool
 	ctx       context.Context
 	cancel    context.CancelFunc
 
-	// 统计
-	bytesIn   uint64
-	bytesOut  uint64
+	// 统计（原子操作）
+	bytesIn   atomic.Uint64
+	bytesOut  atomic.Uint64
 
-	// 防重放
+	// 防重放（仅在 MQTT 回调 goroutine 中访问）
 	lastTimestamp int64
 }
 
@@ -108,10 +108,9 @@ func (h *Ser2MQHandler) Stop() {
 	}
 	h.mu.Unlock()
 
-	// 关闭串口
+	// 关闭串口（串口实现内部有 nil 保护，不置 nil 防止并发回调 nil 解引用）
 	if h.serial != nil {
 		h.serial.Close()
-		h.serial = nil
 	}
 
 	// 归还 MQTT 连接
@@ -137,8 +136,8 @@ func (h *Ser2MQHandler) Stats() Ser2MQStats {
 	return Ser2MQStats{
 		Name:       h.name,
 		Running:    h.running,
-		BytesIn:    h.bytesIn,
-		BytesOut:   h.bytesOut,
+		BytesIn:    h.bytesIn.Load(),
+		BytesOut:   h.bytesOut.Load(),
 		Broker:     h.cfg.Broker,
 		SerialPort: h.cfg.Serial.Port,
 	}
@@ -164,6 +163,7 @@ func (h *Ser2MQHandler) runSerialToMQTT() {
 
 	buf := make([]byte, 4096)
 	topic := h.mqtt.PublishTopic()
+	errBackoff := 100 * time.Millisecond
 
 	for {
 		select {
@@ -174,6 +174,13 @@ func (h *Ser2MQHandler) runSerialToMQTT() {
 
 		n, err := h.serial.Read(buf)
 		if err != nil {
+			// 串口读错误（非超时）时退避，避免 CPU 空转
+			log.Printf("ser2mq %s serial read error: %v", h.name, err)
+			select {
+			case <-h.ctx.Done():
+				return
+			case <-time.After(errBackoff):
+			}
 			continue
 		}
 		if n == 0 {
@@ -194,9 +201,7 @@ func (h *Ser2MQHandler) runSerialToMQTT() {
 			continue
 		}
 
-		h.mu.Lock()
-		h.bytesOut += uint64(n)
-		h.mu.Unlock()
+		h.bytesOut.Add(uint64(n))
 	}
 }
 
@@ -253,7 +258,5 @@ func (h *Ser2MQHandler) handleMQTTMessage(payload []byte) {
 		return
 	}
 
-	h.mu.Lock()
-	h.bytesIn += uint64(len(data))
-	h.mu.Unlock()
+	h.bytesIn.Add(uint64(len(data)))
 }

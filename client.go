@@ -79,6 +79,11 @@ func (c *Client) Run(ctx context.Context) error {
 	ctx, c.cancel = context.WithCancel(ctx)
 	defer c.cancel()
 
+	// 通知各管理器当前节点 ID（在隧道更新前就绪）
+	if c.ser2mqMgr != nil {
+		c.ser2mqMgr.SetNodeID(c.cfg.NodeID)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

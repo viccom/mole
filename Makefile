@@ -16,10 +16,11 @@ LDFLAGS  := -s -w \
             -X main.build=$(BUILD) \
             -X main.buildDate=$(DATE)
 
-# 交叉编译目标
+# 交叉编译目标（armv7 → GOARCH=arm, GOARM=7）
 TARGETS := \
 	linux/amd64 \
 	linux/arm64 \
+	linux/armv7 \
 	darwin/amd64 \
 	darwin/arm64 \
 	windows/amd64 \
@@ -38,11 +39,14 @@ release:
 	@for target in $(TARGETS); do \
 		GOOS=$${target%/*}; \
 		GOARCH=$${target##*/}; \
+		GOARM=""; \
 		EXT=""; \
+		if [ "$$GOARCH" = "armv7" ]; then GOARCH="arm"; GOARM="7"; fi; \
 		if [ "$$GOOS" = "windows" ]; then EXT=".exe"; fi; \
-		OUT=$(RELEASE_DIR)/$(BINARY_NAME)-$$GOOS-$$GOARCH$$EXT; \
+		ARCH_TAG=$${target##*/}; \
+		OUT=$(RELEASE_DIR)/$(BINARY_NAME)-$$GOOS-$$ARCH_TAG$$EXT; \
 		echo ">> Building $$OUT ..."; \
-		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH go build -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH); \
+		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM go build -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH); \
 	done
 	@echo ">> All platforms built in $(RELEASE_DIR)/"
 

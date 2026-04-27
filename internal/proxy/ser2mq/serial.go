@@ -2,6 +2,7 @@ package ser2mq
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -91,24 +92,9 @@ func (s *SerialConfig) toStopBits() serial.StopBits {
 
 // SerialConn 串口连接接口（带读写锁）
 type SerialConn interface {
-	ioReader
-	ioWriter
-	ioCloser
-}
-
-// ioReader 串口读取接口
-type ioReader interface {
-	Read(p []byte) (n int, err error)
-}
-
-// ioWriter 串口写入接口
-type ioWriter interface {
-	Write(p []byte) (n int, err error)
-}
-
-// ioCloser 关闭接口
-type ioCloser interface {
-	Close() error
+	io.Reader
+	io.Writer
+	io.Closer
 }
 
 // serialConn 串口连接实现
