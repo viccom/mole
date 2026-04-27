@@ -264,7 +264,7 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		w.Header()[key] = values
 	}
 	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	if _, err := io.CopyBuffer(w, resp.Body, make([]byte, biCopyBufferSize)); err != nil {
 		slog.Debug("HTTP proxy body copy error", "tunnel", tunnelName, "error", err)
 	}
 }
@@ -306,7 +306,7 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 			w.Header()[key] = values
 		}
 		w.WriteHeader(resp.StatusCode)
-		if _, err := io.Copy(w, resp.Body); err != nil {
+		if _, err := io.CopyBuffer(w, resp.Body, make([]byte, biCopyBufferSize)); err != nil {
 			slog.Debug("WS fallback body copy error", "tunnel", tunnelName, "error", err)
 		}
 		return
