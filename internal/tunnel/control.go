@@ -260,7 +260,7 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 		KeepAliveDisabled: false,
 		KeepAliveInterval: 30 * time.Second,
 		KeepAliveTimeout:  90 * time.Second,
-		MaxFrameSize:      65536,
+		MaxFrameSize:      65535,
 		MaxReceiveBuffer:  32 * 1024 * 1024,
 		MaxStreamBuffer:   4 * 1024 * 1024,
 	})
