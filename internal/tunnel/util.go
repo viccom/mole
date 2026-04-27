@@ -6,16 +6,25 @@ import (
 	"strings"
 )
 
+// biCopyBufferSize defines the buffer size for bidirectional data forwarding.
+// A large buffer reduces the frequency of token return cycles in the underlying
+// smux session, preventing the recvLoop token bucket from draining to zero when
+// the external peer (e.g. RDP client) consumes data slower than the tunnel backend
+// produces it.
+const biCopyBufferSize = 1024 * 1024 // 1MB
+
 // biCopy 双向转发数据，任一方向完成后等待另一方向完成
 func biCopy(a, b io.ReadWriter) {
+	bufA := make([]byte, biCopyBufferSize)
+	bufB := make([]byte, biCopyBufferSize)
 	done := make(chan struct{}, 2)
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(a, b)
+		io.CopyBuffer(a, b, bufA)
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(b, a)
+		io.CopyBuffer(b, a, bufB)
 	}()
 	<-done
 	<-done

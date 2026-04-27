@@ -260,9 +260,9 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 		KeepAliveDisabled: false,
 		KeepAliveInterval: 30 * time.Second,
 		KeepAliveTimeout:  90 * time.Second,
-		MaxFrameSize:      32768,
-		MaxReceiveBuffer:  4194304,
-		MaxStreamBuffer:   256 * 1024,
+		MaxFrameSize:      65536,
+		MaxReceiveBuffer:  32 * 1024 * 1024,
+		MaxStreamBuffer:   4 * 1024 * 1024,
 	})
 	if err != nil {
 		slog.Error("Failed to create smux session", "remote", remoteAddr, "error", err)
