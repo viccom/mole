@@ -40,12 +40,23 @@ type DialFunc func(ctx context.Context, addr string) (net.Conn, error)
 func DefaultDialer(tlsCfg *TLSConfig) DialFunc {
 	return func(ctx context.Context, addr string) (net.Conn, error) {
 		dialer := &net.Dialer{Timeout: DefaultConnectTimeout}
+		var conn net.Conn
+		var err error
 		if tlsCfg != nil && tlsCfg.Enabled {
-			return tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+			conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
 				InsecureSkipVerify: tlsCfg.InsecureSkipVerify,
 			})
+		} else {
+			conn, err = dialer.DialContext(ctx, "tcp", addr)
 		}
-		return dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		// Disable Nagle's algorithm for low-latency RDP and interactive traffic
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			tcpConn.SetNoDelay(true)
+		}
+		return conn, nil
 	}
 }
 
