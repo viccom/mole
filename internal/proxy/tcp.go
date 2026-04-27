@@ -25,8 +25,8 @@ func HandleRawStream(stream io.ReadWriteCloser, br *bufio.Reader, findTarget fun
 	}
 	defer backendConn.Close()
 
-	bufA := make([]byte, 32*1024)
-	bufB := make([]byte, 32*1024)
+	bufA := make([]byte, 1024*1024) // 1MB
+	bufB := make([]byte, 1024*1024)
 	done := make(chan struct{}, 2)
 	var tcpIn, tcpOut uint64
 	go func() {
