@@ -85,8 +85,8 @@ func RecordTCPBytes(tunnelName string, bytesIn, bytesOut uint64) {
 
 // Relay 双向数据转发，直到一侧连接关闭
 func Relay(a, b io.ReadWriteCloser) {
-	bufA := make([]byte, 32*1024)
-	bufB := make([]byte, 32*1024)
+	bufA := make([]byte, 1024*1024)
+	bufB := make([]byte, 1024*1024)
 	done := make(chan struct{}, 2)
 	go func() {
 		defer func() { done <- struct{}{} }()

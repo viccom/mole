@@ -224,7 +224,7 @@ func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target, tunne
 		return
 	}
 
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, 1024*1024)
 	done := make(chan struct{}, 2)
 	go func() {
 		defer func() { done <- struct{}{} }()
