@@ -51,6 +51,12 @@ func (tg *TunnelGateway) StartTCP(ctx context.Context, tunnel core.Tunnel) error
 func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunnel core.Tunnel) {
 	defer conn.Close()
 
+	// Disable Nagle's algorithm — critical for RDP and other interactive protocols
+	// that mix small control packets with large data packets
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
+
 	if err := tg.sem.Acquire(ctx); err != nil {
 		return
 	}

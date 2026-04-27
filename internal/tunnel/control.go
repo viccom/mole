@@ -191,6 +191,11 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
 	defer conn.Close()
 
+	// Disable Nagle's algorithm for low-latency tunnel traffic (RDP, SSH, etc.)
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
+
 	// 1. Challenge-Response 认证
 	challenge := make([]byte, 32)
 	if _, err := rand.Read(challenge); err != nil {
