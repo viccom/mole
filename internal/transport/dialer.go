@@ -22,7 +22,7 @@ const (
 
 	SmuxKeepAliveInterval = 30 * time.Second
 	SmuxKeepAliveTimeout  = 90 * time.Second
-	SmuxMaxFrameSize      = 65536        // 64KB frames reduce per-frame overhead
+	SmuxMaxFrameSize      = 65535        // max uint16, reduces per-frame overhead
 	SmuxMaxReceiveBuffer  = 32 * 1024 * 1024 // 32MB total session buffer
 	SmuxMaxStreamBuffer   = 4 * 1024 * 1024  // 4MB per-stream window for smooth RDP
 )
