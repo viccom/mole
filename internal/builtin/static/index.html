@@ -7,85 +7,187 @@
 <link rel="stylesheet" href="/ui/style.css">
 </head>
 <body>
-<header>
-  <div class="header-left">
-    <h1>moleAgent</h1>
-    <span id="conn-badge" class="conn-badge offline">已断开</span>
-  </div>
-  <div class="header-right">
-    <div id="header-info"></div>
-    <div id="refresh-info" class="refresh-info">等待首次刷新</div>
-  </div>
-</header>
-
-<main class="container">
-  <!-- 全局统计 -->
-  <section class="card stats-grid" id="stats-bar"></section>
-
-  <!-- 隧道列表 -->
-  <section class="card">
-    <div class="section-header">
-      <h2>隧道列表</h2>
-      <button class="btn btn-primary" id="btn-add">+ 新增隧道</button>
+<div id="app">
+  <header class="header">
+    <h1 class="logo">moleAgent</h1>
+    <nav class="tabs">
+      <button class="tab active" data-tab="dashboard">仪表盘</button>
+      <button class="tab" data-tab="tunnels">隧道</button>
+      <button class="tab" data-tab="serial">串口</button>
+      <button class="tab" data-tab="vpn">VPN</button>
+    </nav>
+    <div class="header-right">
+      <span id="conn-badge" class="conn-badge offline">已断开</span>
     </div>
-    <div class="table-wrap">
-      <table>
+  </header>
+
+  <!-- 仪表盘 -->
+  <section id="panel-dashboard" class="panel active">
+    <div class="card">
+      <div class="card-header">
+        <h2>连接状态</h2>
+        <span id="refresh-info" class="refresh-info">等待首次刷新</span>
+      </div>
+      <div class="info-grid">
+        <div class="info-item"><span class="info-label">节点</span><span id="info-node" class="info-value">-</span></div>
+        <div class="info-item"><span class="info-label">服务器</span><span id="info-server" class="info-value">-</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h2>流量统计</h2></div>
+      <div class="stats-grid" id="stats-bar"></div>
+    </div>
+  </section>
+
+  <!-- 隧道 (HTTP/HTTPS/TCP/UDP) -->
+  <section id="panel-tunnels" class="panel">
+    <div class="card">
+      <div class="card-header">
+        <h2>隧道列表</h2>
+        <div class="actions">
+          <button id="btn-refresh-tunnels" class="btn">刷新</button>
+          <button id="btn-add-tunnel" class="btn btn-primary">新增隧道</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr>
+            <th>名称</th><th>类型</th><th>目标</th><th>状态</th><th>流入</th><th>流出</th><th>操作</th>
+          </tr></thead>
+          <tbody id="tunnels-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 串口 (Ser2MQ) -->
+  <section id="panel-serial" class="panel">
+    <div class="card">
+      <div class="card-header">
+        <h2>Ser2MQ 隧道</h2>
+        <div class="actions">
+          <button id="btn-refresh-ser2mq" class="btn">刷新</button>
+          <button id="btn-add-ser2mq" class="btn btn-primary">新增隧道</button>
+        </div>
+      </div>
+      <table class="table">
         <thead><tr>
-          <th>名称</th><th>类型</th><th>目标</th>
-          <th>状态</th><th>流入</th><th>流出</th><th>操作</th>
+          <th>名称</th><th>Broker</th><th>串口</th><th>启用</th><th>状态</th><th>流入/流出</th><th>操作</th>
         </tr></thead>
-        <tbody id="tunnels-tbody"></tbody>
+        <tbody id="ser2mq-tbody"></tbody>
       </table>
     </div>
-  </section>
 
-  <!-- 隧道详情面板 -->
-  <section class="card hidden" id="detail-panel">
-    <div class="section-header">
-      <h2 id="detail-title">隧道详情</h2>
-      <button class="btn btn-ghost" id="btn-close-detail">关闭</button>
+    <div id="ser2mq-form" class="card" style="display:none">
+      <h2 id="ser2mq-form-title">新增 Ser2MQ 隧道</h2>
+      <div class="form-section-title">基本信息</div>
+      <div class="form-row">
+        <label>名称</label>
+        <input id="sf-name" type="text" placeholder="如: plc-serial" style="max-width:200px">
+      </div>
+      <div class="form-section-title">MQTT 连接</div>
+      <div class="form-grid">
+        <div class="form-row"><label>Broker URL</label><input id="sf-broker" type="text" placeholder="mqtt://user:pass@host:1883"></div>
+        <div class="form-row">
+          <label>加密密钥</label>
+          <input id="sf-secret" type="text" placeholder="64字符hex密钥">
+          <button id="btn-gen-key" class="btn btn-sm">生成</button>
+        </div>
+        <div class="form-row">
+          <label>QoS</label>
+          <select id="sf-qos">
+            <option value="0">0 - 最多一次</option>
+            <option value="1" selected>1 - 至少一次</option>
+            <option value="2">2 - 恰好一次</option>
+          </select>
+        </div>
+      </div>
+      <div id="topic-preview" class="topic-preview" style="display:none">
+        <div>订阅: <code id="tp-sub"></code></div>
+        <div>发布: <code id="tp-pub"></code></div>
+      </div>
+      <div class="form-section-title">串口配置</div>
+      <div class="form-grid">
+        <div class="form-row"><label>串口端口</label><input id="sf-port" type="text" placeholder="/dev/ttyUSB0"></div>
+        <div class="form-row">
+          <label>波特率</label>
+          <select id="sf-baudrate">
+            <option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option>
+            <option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option>
+            <option value="57600">57600</option><option value="115200">115200</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>数据位</label>
+          <select id="sf-databits"><option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option></select>
+        </div>
+        <div class="form-row">
+          <label>停止位</label>
+          <select id="sf-stopbits"><option value="1" selected>1</option><option value="1.5">1.5</option><option value="2">2</option></select>
+        </div>
+        <div class="form-row">
+          <label>校验位</label>
+          <select id="sf-parity"><option value="N" selected>无</option><option value="E">偶</option><option value="O">奇</option></select>
+        </div>
+      </div>
+      <div class="form-check"><input type="checkbox" id="sf-enable" checked> 启用</div>
+      <div class="form-actions">
+        <button id="btn-save-ser2mq" class="btn btn-primary">保存</button>
+        <button id="btn-cancel-ser2mq" class="btn">取消</button>
+      </div>
     </div>
-    <div id="detail-content"></div>
-  </section>
-</main>
 
-<!-- 新增/编辑 Modal -->
-<div class="modal hidden" id="edit-modal">
-  <div class="modal-overlay"></div>
+    <div id="ser2mq-dataflow" class="card">
+      <div class="card-header">
+        <h2>实时数据流</h2>
+        <div class="actions">
+          <select id="df-filter-dir" class="filter-select">
+            <option value="all">全部</option><option value="serial">串口</option><option value="mqtt">MQTT</option>
+          </select>
+          <input id="df-filter-search" type="text" placeholder="搜索 hex..." class="filter-input">
+          <button id="btn-pause-flow" class="btn">暂停</button>
+          <button id="btn-clear-flow" class="btn">清空</button>
+        </div>
+      </div>
+      <div id="dataflow-list" class="dataflow-list">
+        <div class="dataflow-empty">选中隧道查看数据流</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VPN -->
+  <section id="panel-vpn" class="panel">
+    <div class="card">
+      <div class="card-header"><h2>VPN 管理器</h2></div>
+      <p style="color:#888;padding:24px;text-align:center">功能开发中...</p>
+    </div>
+  </section>
+</div>
+
+<!-- 隧道新增 Modal -->
+<div id="tunnel-modal" class="modal" style="display:none">
+  <div class="modal-backdrop"></div>
   <div class="modal-content">
-    <h3 id="modal-title">新增隧道</h3>
-    <div class="form-group">
-      <label>名称</label>
-      <input id="f-name" placeholder="如: web-proxy" autocomplete="off">
+    <div class="modal-header">
+      <h3>新增隧道</h3>
+      <button class="btn-close" id="btn-close-tunnel-modal">&times;</button>
     </div>
-    <div class="form-row">
-      <div class="form-group">
+    <div class="modal-body">
+      <div class="form-row"><label>名称</label><input id="tf-name" type="text" placeholder="如: web-proxy"></div>
+      <div class="form-row">
         <label>类型</label>
-        <select id="f-type">
-          <option value="http">HTTP</option>
-          <option value="https">HTTPS</option>
-          <option value="tcp">TCP</option>
-          <option value="udp">UDP</option>
-          <option value="ser2mq">Ser2MQ</option>
-          <option value="vpn-manager">VPN Manager</option>
-        </select>
+        <select id="tf-type"><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option><option value="udp">UDP</option></select>
       </div>
-      <div class="form-group">
-        <label>目标</label>
-        <input id="f-target" placeholder="如: 127.0.0.1:8080" autocomplete="off">
-      </div>
+      <div class="form-row"><label>目标</label><input id="tf-target" type="text" placeholder="如: 127.0.0.1:8080"></div>
     </div>
-    <div id="para-fields"></div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="btn-cancel">取消</button>
-      <button class="btn btn-primary" id="btn-submit">保存</button>
+    <div class="modal-footer">
+      <button id="btn-cancel-tunnel" class="btn">取消</button>
+      <button id="btn-submit-tunnel" class="btn btn-primary">保存</button>
     </div>
   </div>
 </div>
 
-<!-- Toast -->
 <div id="toast-container"></div>
-
-<script type="module" src="/ui/app.js"></script>
+<script type="module" src="/ui/main.js"></script>
 </body>
 </html>
