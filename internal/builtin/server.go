@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -220,7 +221,7 @@ func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 	// 解析 tail 参数
 	tail := 20
 	if t := r.URL.Query().Get("tail"); t != "" {
-		if v, e := fmt.Sscanf(t, "%d", &tail); e != nil || v != 1 || tail < 0 {
+		if v, e := strconv.Atoi(t); e != nil || v < 0 {
 			tail = 20
 		}
 	}

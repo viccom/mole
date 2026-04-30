@@ -221,6 +221,7 @@ func (h *Ser2MQHandler) runSerialToMQTT() {
 		}
 
 		data := buf[:n]
+		h.emitPacket("serial_out", data)
 
 		msgBytes, err := BuildMQTTMessage(h.nodeID, h.portName, data)
 		if err != nil {
@@ -241,7 +242,6 @@ func (h *Ser2MQHandler) runSerialToMQTT() {
 
 		h.emitPacket("mqtt_pub", data)
 		h.bytesOut.Add(uint64(n))
-		h.emitPacket("serial_out", data)
 	}
 }
 
@@ -303,7 +303,7 @@ func (h *Ser2MQHandler) handleMQTTMessage(crypto *Crypto, serial SerialConn, pay
 	} else {
 		data = plaintext
 	}
-		h.emitPacket("mqtt_sub", data)
+	h.emitPacket("mqtt_sub", data)
 
 	if _, err := serial.Write(data); err != nil {
 		log.Printf("ser2mq %s serial write error: %v", h.name, err)
@@ -311,5 +311,5 @@ func (h *Ser2MQHandler) handleMQTTMessage(crypto *Crypto, serial SerialConn, pay
 	}
 
 	h.bytesIn.Add(uint64(len(data)))
-		h.emitPacket("serial_in", data)
+	h.emitPacket("serial_in", data)
 }
