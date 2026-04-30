@@ -15,6 +15,8 @@ type Manager struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 
+	streamHub *StreamHub
+
 	newHandler   func(name, nodeID string, cfg Ser2MQConfig) (*Ser2MQHandler, error)
 	startHandler func(handler *Ser2MQHandler, ctx context.Context) error
 	stopHandler  func(handler *Ser2MQHandler)
@@ -23,13 +25,15 @@ type Manager struct {
 // NewManager 创建管理器
 func NewManager(ctx context.Context, nodeID string) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
+	hub := NewStreamHub(200)
 	return &Manager{
-		tunnels: make(map[string]*Ser2MQHandler),
-		nodeID:  nodeID,
-		ctx:     ctx,
-		cancel:  cancel,
+		tunnels:   make(map[string]*Ser2MQHandler),
+		nodeID:    nodeID,
+		ctx:       ctx,
+		cancel:    cancel,
+		streamHub: hub,
 		newHandler: func(name, nodeID string, cfg Ser2MQConfig) (*Ser2MQHandler, error) {
-			return NewHandler(name, nodeID, cfg)
+			return NewHandler(name, nodeID, cfg, hub)
 		},
 		startHandler: func(handler *Ser2MQHandler, ctx context.Context) error {
 			return handler.Start(ctx)
@@ -38,6 +42,11 @@ func NewManager(ctx context.Context, nodeID string) *Manager {
 			handler.Stop()
 		},
 	}
+}
+
+// StreamHub 返回事件 hub
+func (m *Manager) StreamHub() *StreamHub {
+	return m.streamHub
 }
 
 // SetNodeID 设置节点 ID（在 Run() 时调用，确保 nodeID 就绪）

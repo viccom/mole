@@ -29,6 +29,7 @@ type Ser2MQHandler struct {
 	serial     SerialConn
 	mqtt       *MQTTClient
 	portName   string // SanitizePortName 缓存
+	sink       PacketSink
 
 	mu      sync.RWMutex
 	running bool
@@ -41,7 +42,7 @@ type Ser2MQHandler struct {
 }
 
 // NewHandler 创建 ser2mq 处理器
-func NewHandler(name, nodeID string, cfg Ser2MQConfig) (*Ser2MQHandler, error) {
+func NewHandler(name, nodeID string, cfg Ser2MQConfig, sink PacketSink) (*Ser2MQHandler, error) {
 	crypto, err := NewCrypto(cfg.Secret)
 	if err != nil {
 		return nil, fmt.Errorf("invalid crypto config: %w", err)
@@ -53,6 +54,7 @@ func NewHandler(name, nodeID string, cfg Ser2MQConfig) (*Ser2MQHandler, error) {
 		cfg:      cfg,
 		crypto:   crypto,
 		portName: SanitizePortName(cfg.Serial.Port),
+		sink:     sink,
 	}, nil
 }
 
@@ -95,6 +97,8 @@ func (h *Ser2MQHandler) Start(ctx context.Context) error {
 	go h.runSerialToMQTT()
 	go h.runMQTTToSerial()
 
+	h.emitStatus("started")
+
 	log.Printf("ser2mq tunnel %s started (broker: %s, serial: %s, pub: %s, sub: %s)",
 		h.name, h.cfg.Broker, h.cfg.Serial.Port,
 		h.mqtt.OutTopic(), h.mqtt.InTopic())
@@ -132,6 +136,22 @@ func (h *Ser2MQHandler) Stop() {
 	h.mu.Unlock()
 
 	log.Printf("ser2mq tunnel %s stopped", h.name)
+}
+
+// emitPacket 发送报文事件（nil-safe）
+func (h *Ser2MQHandler) emitPacket(dir string, data []byte) {
+	if h.sink == nil {
+		return
+	}
+	h.sink.Publish(buildPacketEvent(h.name, dir, data))
+}
+
+// emitStatus 发送状态事件（nil-safe）
+func (h *Ser2MQHandler) emitStatus(message string) {
+	if h.sink == nil {
+		return
+	}
+	h.sink.Publish(buildStatusEvent(h.name, message))
 }
 
 // IsRunning 检查是否运行中
@@ -219,7 +239,9 @@ func (h *Ser2MQHandler) runSerialToMQTT() {
 			continue
 		}
 
+		h.emitPacket("mqtt_pub", data)
 		h.bytesOut.Add(uint64(n))
+		h.emitPacket("serial_out", data)
 	}
 }
 
@@ -281,6 +303,7 @@ func (h *Ser2MQHandler) handleMQTTMessage(crypto *Crypto, serial SerialConn, pay
 	} else {
 		data = plaintext
 	}
+		h.emitPacket("mqtt_sub", data)
 
 	if _, err := serial.Write(data); err != nil {
 		log.Printf("ser2mq %s serial write error: %v", h.name, err)
@@ -288,4 +311,5 @@ func (h *Ser2MQHandler) handleMQTTMessage(crypto *Crypto, serial SerialConn, pay
 	}
 
 	h.bytesIn.Add(uint64(len(data)))
+		h.emitPacket("serial_in", data)
 }
