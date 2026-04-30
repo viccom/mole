@@ -192,7 +192,71 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			return
 		}
 		json.NewEncoder(w).Encode(logs)
+	case "stream":
+		handleTunnelStream(w, r, c, name)
 	default:
 		http.Error(w, fmt.Sprintf(`{"error":"unknown action: %s"}`, action), http.StatusBadRequest)
+	}
+}
+
+// handleTunnelStream SSE 实时事件流（仅 ser2mq）
+func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_client.Client, name string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 校验隧道存在且类型为 ser2mq
+	status, err := c.TunnelStatusByName(name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+		return
+	}
+	if status.Type != moleAgent_client.TunnelTypeSer2MQ {
+		http.Error(w, `{"error":"stream only supported for ser2mq tunnels"}`, http.StatusBadRequest)
+		return
+	}
+
+	// 解析 tail 参数
+	tail := 20
+	if t := r.URL.Query().Get("tail"); t != "" {
+		if v, e := fmt.Sscanf(t, "%d", &tail); e != nil || v != 1 || tail < 0 {
+			tail = 20
+		}
+	}
+	if tail > 200 {
+		tail = 200
+	}
+
+	// 设置 SSE 响应头
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	hub := c.Ser2MQStreamHub()
+	ch, unsub := hub.Subscribe(name, tail)
+	defer unsub()
+
+	flusher, canFlush := w.(http.Flusher)
+
+	encode := func(evt any) {
+		data, err := json.Marshal(evt)
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(w, "event: packet\ndata: %s\n\n", data)
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case evt := <-ch:
+			encode(evt)
+		}
 	}
 }
