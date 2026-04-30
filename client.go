@@ -833,3 +833,7 @@ func (c *Client) Ser2MQList() []ser2mq.Ser2MQStats {
 func (c *Client) Ser2MQStatus(name string) (ser2mq.Ser2MQStats, error) {
 	return c.ser2mqMgr.Status(name)
 }
+
+func (c *Client) Ser2MQStreamHub() *ser2mq.StreamHub {
+	return c.ser2mqMgr.StreamHub()
+}
