@@ -710,16 +710,17 @@ func (c *Client) Stats() Stats {
 
 // TunnelStatus 统一隧道状态（合并配置 + 运行时）
 type TunnelStatus struct {
-	Name       string     `json:"name"`
-	Type       TunnelType `json:"type"`
-	Target     string     `json:"target"`
-	Domain     string     `json:"domain,omitempty"`
-	ListenPort int        `json:"listen_port,omitempty"`
-	Enabled    bool       `json:"enabled"`
-	Connected  bool       `json:"connected"`
-	BytesIn    uint64     `json:"bytes_in"`
-	BytesOut   uint64     `json:"bytes_out"`
-	Status     any        `json:"status,omitempty"` // 类型特定状态（Ser2MQStats / vpn.Status）
+	Name       string          `json:"name"`
+	Type       TunnelType     `json:"type"`
+	Target     string          `json:"target"`
+	Domain     string          `json:"domain,omitempty"`
+	ListenPort int            `json:"listen_port,omitempty"`
+	Enabled    bool           `json:"enabled"`
+	Connected  bool           `json:"connected"`
+	BytesIn    uint64         `json:"bytes_in"`
+	BytesOut   uint64         `json:"bytes_out"`
+	Status     any            `json:"status,omitempty"` // 类型特定状态（Ser2MQStats / vpn.Status）
+	Para       json.RawMessage `json:"para,omitempty"`  // 扩展配置（前端编辑表单需要）
 }
 
 // buildTunnelStatus 构建单个隧道的统一状态
@@ -731,6 +732,7 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 		Domain:     t.Domain,
 		ListenPort: t.ListenPort,
 		Enabled:    t.IsEnabled(),
+		Para:       t.Para,
 	}
 
 	switch t.Type {
@@ -751,6 +753,15 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 		if status, err := c.vpnMgr.Status(t.Name); err == nil {
 			ts.Connected = status.Running
 			ts.Status = status
+			// 填充 vnt-cli REST API 实时数据
+			if status.Running {
+				if info, peers, routes, buildInfo, _ := c.vpnMgr.VNTData(t.Name); info != nil {
+					status.VNTInfo = info
+					status.VNTPeers = peers
+					status.VNTRoutes = routes
+					status.VNTStatus = buildInfo
+				}
+			}
 		}
 	}
 
@@ -818,6 +829,10 @@ func (c *Client) VPNStop(name string) error {
 
 func (c *Client) VPNCrashLogs(name string) ([]vpn.CrashLog, error) {
 	return c.vpnMgr.CrashLogs(name)
+}
+
+func (c *Client) VPNVNTData(name string) (*vpn.VNTInfo, []vpn.VNTDeviceItem, []vpn.VNTRouteItem, *vpn.VNTBuildInfo, error) {
+	return c.vpnMgr.VNTData(name)
 }
 
 // ===== Ser2MQ Manager API =====

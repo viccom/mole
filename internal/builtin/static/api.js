@@ -76,6 +76,20 @@ export const api = {
   },
   getTunnelLogs(name) {
     return request('GET', '/api/tunnels/' + encodeURIComponent(name) + '/logs');
+  },
+
+  // VPN 特定操作
+  startVPNTunnel(name) {
+    return request('POST', '/api/tunnels/' + encodeURIComponent(name) + '/start');
+  },
+  stopVPNTunnel(name) {
+    return request('POST', '/api/tunnels/' + encodeURIComponent(name) + '/stop');
+  },
+  getVPNPeers(name) {
+    return request('GET', '/api/tunnels/' + encodeURIComponent(name) + '/peers');
+  },
+  getVNTRoutes(name) {
+    return request('GET', '/api/tunnels/' + encodeURIComponent(name) + '/routes');
   }
 };
 

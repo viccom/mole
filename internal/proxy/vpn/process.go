@@ -28,6 +28,14 @@ type ProcessMgr struct {
 	crashCount  int
 	crashLogs   []CrashLog
 
+	// 启动失败诊断
+	lastError      string
+	lastErrorPhase string
+	lastErrorTime  int64
+
+	// vnt-cli REST API
+	vntClient *VNTClient
+
 	// 日志
 	logBuf    *circularBuffer
 	logWriter io.WriteCloser
@@ -98,11 +106,13 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 	}
 	pm.ctx, pm.cancel = context.WithCancel(ctx)
 	pm.running = true
+	pm.clearError()
 	pm.mu.Unlock()
 
 	// 查找程序路径
 	binPath, err := pm.findBinary()
 	if err != nil {
+		pm.setError("binary", err.Error())
 		pm.Stop()
 		return err
 	}
@@ -122,6 +132,7 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 
 	// 启动进程
 	if err := pm.cmd.Start(); err != nil {
+		pm.setError("startup", err.Error())
 		pm.Stop()
 		return fmt.Errorf("start process: %w", err)
 	}
@@ -130,6 +141,18 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 	pm.process = pm.cmd.Process
 	pm.startTime = time.Now()
 	pm.mu.Unlock()
+
+	// 初始化 vnt-cli REST 客户端
+	if pm.cfg.VNT != nil && pm.cfg.VNT.Enabled {
+		port := pm.cfg.VNT.RestPort
+		if port <= 0 {
+			port = DefaultRestPort
+		}
+		pm.mu.Lock()
+		pm.vntClient = NewVNTClient(port)
+		pm.mu.Unlock()
+		go pm.healthProbe()
+	}
 
 	// 如果需要捕获输出
 	if pm.cfg.Log.Capture {
@@ -212,10 +235,13 @@ func (pm *ProcessMgr) Status() Status {
 	defer pm.mu.RUnlock()
 
 	status := Status{
-		Name:       pm.name,
-		Running:    pm.running,
-		CrashCount: pm.crashCount,
-		CrashLogs:  make([]CrashLog, len(pm.crashLogs)),
+		Name:        pm.name,
+		Running:     pm.running,
+		CrashCount:  pm.crashCount,
+		CrashLogs:   make([]CrashLog, len(pm.crashLogs)),
+		Error:       pm.lastError,
+		ErrorPhase:  pm.lastErrorPhase,
+		ErrorTime:   pm.lastErrorTime,
 	}
 	copy(status.CrashLogs, pm.crashLogs)
 
@@ -225,6 +251,15 @@ func (pm *ProcessMgr) Status() Status {
 	if !pm.startTime.IsZero() {
 		status.StartTime = pm.startTime.UnixMilli()
 	}
+
+	if pm.vntClient != nil {
+		restPort := DefaultRestPort
+		if pm.cfg.VNT != nil && pm.cfg.VNT.RestPort > 0 {
+			restPort = pm.cfg.VNT.RestPort
+		}
+		status.RestPort = restPort
+	}
+
 	return status
 }
 
@@ -277,6 +312,80 @@ func (pm *ProcessMgr) findBinary() (string, error) {
 	return "", fmt.Errorf("binary %q not found in ./vnet/ or $PATH", binName)
 }
 
+// setError 设置启动失败诊断信息
+func (pm *ProcessMgr) setError(phase, msg string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.lastError = msg
+	pm.lastErrorPhase = phase
+	pm.lastErrorTime = time.Now().UnixMilli()
+}
+
+// clearError 清除错误信息
+func (pm *ProcessMgr) clearError() {
+	pm.lastError = ""
+	pm.lastErrorPhase = ""
+	pm.lastErrorTime = 0
+}
+
+// healthProbe 后台探针：检查 vnt-cli REST API 是否可达
+func (pm *ProcessMgr) healthProbe() {
+	consecutiveOK := 0
+	for {
+		select {
+		case <-pm.ctx.Done():
+			return
+		default:
+		}
+
+		pm.mu.RLock()
+		client := pm.vntClient
+		pm.mu.RUnlock()
+
+		if client == nil {
+			return
+		}
+
+		_, err := client.Status()
+		if err == nil {
+			consecutiveOK++
+			if consecutiveOK == 1 {
+				pm.mu.Lock()
+				pm.clearError()
+				pm.mu.Unlock()
+			}
+		} else {
+			if consecutiveOK == 0 {
+				pm.mu.Lock()
+				pm.lastError = "REST API 不可达: " + err.Error()
+				pm.lastErrorPhase = "api"
+				pm.lastErrorTime = time.Now().UnixMilli()
+				pm.mu.Unlock()
+			}
+			consecutiveOK = 0
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// VNTData 查询 vnt-cli REST API 获取实时数据
+func (pm *ProcessMgr) VNTData() (*VNTInfo, []VNTDeviceItem, []VNTRouteItem, *VNTBuildInfo) {
+	pm.mu.RLock()
+	client := pm.vntClient
+	pm.mu.RUnlock()
+
+	if client == nil {
+		return nil, nil, nil, nil
+	}
+
+	info, _ := client.Info()
+	peers, _ := client.List()
+	routes, _ := client.Route()
+	status, _ := client.Status()
+	return info, peers, routes, status
+}
+
 // handleExit 处理进程退出
 func (pm *ProcessMgr) handleExit(err error) {
 	pm.mu.Lock()
@@ -312,6 +421,14 @@ func (pm *ProcessMgr) handleExit(err error) {
 	crash.ID = fmt.Sprintf("crash-%d", crash.Timestamp)
 	pm.crashLogs = append(pm.crashLogs, crash)
 	pm.crashCount++
+
+	// 设置崩溃错误信息
+	pm.lastError = fmt.Sprintf("exit code %d", exitCode)
+	if sig >= 0 {
+		pm.lastError = fmt.Sprintf("signal %v", sig)
+	}
+	pm.lastErrorPhase = "crash"
+	pm.lastErrorTime = time.Now().UnixMilli()
 
 	log.Printf("vpn-manager %s crashed (exit: %d, signal: %v, crash #%d)",
 		pm.name, exitCode, sig, pm.crashCount)

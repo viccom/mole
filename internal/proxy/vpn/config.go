@@ -8,6 +8,19 @@ type Config struct {
 	Lifecycle LifecycleConfig `json:"lifecycle"`
 	Watchdog  WatchdogConfig  `json:"watchdog"`
 	Log       LogConfig       `json:"log"`
+
+	VNT *VNTConfig `json:"vnt,omitempty"`
+}
+
+// VNTConfig vnt-cli 专用配置
+type VNTConfig struct {
+	Enabled  bool   `json:"enabled"`    // 是否为 vnt-cli 程序（启用后激活 REST API 集成）
+	Token    string `json:"token"`      // -k 连接令牌
+	Server   string `json:"server"`     // -s VPN 服务器地址
+	DeviceID string `json:"device_id"`  // -d 设备标识
+	Name     string `json:"name"`       // -n 设备名称
+	Password string `json:"password"`   // -w 密码
+	RestPort int    `json:"rest_port"`  // REST API 端口，默认 59871
 }
 
 // BinaryConfig 程序配置
@@ -49,12 +62,24 @@ type CrashLog struct {
 
 // Status 状态
 type Status struct {
-	Name        string     `json:"name"`
-	Running     bool       `json:"running"`
-	CrashCount  int        `json:"crash_count"`
-	PID         int        `json:"pid,omitempty"`
-	StartTime   int64      `json:"start_time,omitempty"`
-	CrashLogs   []CrashLog `json:"crash_logs"`
+	Name       string     `json:"name"`
+	Running    bool       `json:"running"`
+	CrashCount int        `json:"crash_count"`
+	PID        int        `json:"pid,omitempty"`
+	StartTime  int64      `json:"start_time,omitempty"`
+	CrashLogs  []CrashLog `json:"crash_logs"`
+
+	// 启动失败诊断
+	Error      string `json:"error,omitempty"`
+	ErrorPhase string `json:"error_phase,omitempty"` // binary / startup / crash / api
+	ErrorTime  int64  `json:"error_time,omitempty"`
+
+	// vnt-cli REST API 数据
+	RestPort  int            `json:"rest_port,omitempty"`
+	VNTInfo   *VNTInfo       `json:"vnt_info,omitempty"`
+	VNTPeers  []VNTDeviceItem `json:"vnt_peers,omitempty"`
+	VNTRoutes []VNTRouteItem  `json:"vnt_routes,omitempty"`
+	VNTStatus *VNTBuildInfo  `json:"vnt_status,omitempty"`
 }
 
 // DefaultConfig 返回默认配置
@@ -77,3 +102,5 @@ func DefaultConfig() Config {
 		},
 	}
 }
+
+const DefaultRestPort = 59871

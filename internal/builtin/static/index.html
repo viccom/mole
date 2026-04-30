@@ -162,8 +162,59 @@
   <!-- VPN -->
   <section id="panel-vpn" class="panel">
     <div class="card">
-      <div class="card-header"><h2>VPN 管理器</h2></div>
-      <p style="color:#888;padding:24px;text-align:center">功能开发中...</p>
+      <div class="card-header">
+        <h2>VPN 隧道</h2>
+        <div class="actions">
+          <button id="btn-refresh-vpn" class="btn">刷新</button>
+          <button id="btn-add-vpn" class="btn btn-primary">新增 VPN</button>
+        </div>
+      </div>
+      <table class="table">
+        <thead><tr>
+          <th>名称</th><th>启用</th><th>状态</th><th>PID</th><th>运行时长</th><th>错误</th><th>操作</th>
+        </tr></thead>
+        <tbody id="vpn-tbody"></tbody>
+      </table>
+    </div>
+
+    <div id="vpn-form" class="card" style="display:none">
+      <h2 id="vpn-form-title">新增 VPN 隧道</h2>
+      <div class="form-hint-box">管理 VPN 程序（如 vnt-cli）的启停和监视。程序从 <code>./vnt/</code> 目录或 <code>$PATH</code> 中查找。</div>
+      <div class="form-section-title">基本信息</div>
+      <div class="form-row">
+        <label>名称</label>
+        <input id="vf-name" type="text" placeholder="如: office-vpn" style="max-width:200px">
+      </div>
+      <div class="form-row">
+        <label>程序名</label>
+        <input id="vf-binary" type="text" placeholder="vnt-cli" style="max-width:200px">
+      </div>
+      <div class="form-section-title">连接参数</div>
+      <div class="form-grid">
+        <div class="form-row"><label>Token</label><input id="vf-token" type="text" placeholder="连接令牌"></div>
+        <div class="form-row"><label>服务器</label><input id="vf-server" type="text" placeholder="vpn.example.com"></div>
+        <div class="form-row"><label>设备ID</label><input id="vf-device-id" type="text" placeholder="device-001"></div>
+        <div class="form-row"><label>设备名称</label><input id="vf-device-name" type="text" placeholder="My Device"></div>
+        <div class="form-row"><label>密码</label><input id="vf-password" type="password" placeholder="可选"></div>
+        <div class="form-row">
+          <label>REST 端口</label>
+          <input id="vf-rest-port" type="number" value="59871" style="max-width:100px">
+        </div>
+      </div>
+      <div class="form-check"><input type="checkbox" id="vf-autostart"> 自动启动</div>
+      <div class="form-check"><input type="checkbox" id="vf-enable" checked> 启用</div>
+      <div class="form-actions">
+        <button id="btn-save-vpn" class="btn btn-primary">保存</button>
+        <button id="btn-cancel-vpn" class="btn">取消</button>
+      </div>
+    </div>
+
+    <div id="vpn-detail" class="card" style="display:none">
+      <div class="card-header">
+        <h2 id="vpn-detail-title">VPN 详情</h2>
+        <button id="btn-close-vpn-detail" class="btn btn-sm">关闭</button>
+      </div>
+      <div id="vpn-detail-content"></div>
     </div>
   </section>
 </div>

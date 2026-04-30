@@ -127,6 +127,19 @@ func (m *Manager) CrashLogs(name string) ([]CrashLog, error) {
 	return pm.CrashLogs(), nil
 }
 
+// VNTData 查询指定隧道的 vnt-cli REST API 数据
+func (m *Manager) VNTData(name string) (*VNTInfo, []VNTDeviceItem, []VNTRouteItem, *VNTBuildInfo, error) {
+	m.mu.RLock()
+	pm, ok := m.procs[name]
+	m.mu.RUnlock()
+
+	if !ok {
+		return nil, nil, nil, nil, fmt.Errorf("vpn manager %q not found", name)
+	}
+	info, peers, routes, status := pm.VNTData()
+	return info, peers, routes, status, nil
+}
+
 // OnTunnelUpdate 处理隧道更新（从 tunnel_push 触发）
 func (m *Manager) OnTunnelUpdate(tunnelTypes []string, tunnelConfigs map[string]Config) {
 	m.mu.Lock()

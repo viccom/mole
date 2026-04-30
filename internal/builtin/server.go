@@ -193,6 +193,28 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			return
 		}
 		json.NewEncoder(w).Encode(logs)
+	case "peers":
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		_, peers, _, _, err := c.VPNVNTData(name)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(peers)
+	case "routes":
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		_, _, routes, _, err := c.VPNVNTData(name)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(routes)
 	case "stream":
 		handleTunnelStream(w, r, c, name)
 	default:
