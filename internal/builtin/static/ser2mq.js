@@ -52,6 +52,11 @@ export function initSer2MQ() {
   document.getElementById('sf-port').addEventListener('input', updateTopicPreview);
 
   // 数据流控件
+  document.getElementById('df-select-tunnel').addEventListener('change', (e) => {
+    const name = e.target.value;
+    if (name) openStream(name);
+    else closeSer2MQStream();
+  });
   document.getElementById('df-filter-dir').addEventListener('change', scheduleFlowRender);
   document.getElementById('df-filter-search').addEventListener('input', () => {
     if (searchDebounceId) clearTimeout(searchDebounceId);
@@ -102,9 +107,16 @@ function render() {
       <td class="actions">${actions}</td>
     </tr>`;
   }).join('');
+  updateFlowTunnelOptions();
 }
 
-// ===== 表单 =====
+function updateFlowTunnelOptions() {
+  const sel = document.getElementById('df-select-tunnel');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">选择隧道</option>' +
+    tunnels.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${t.connected ? ' (运行中)' : ''}</option>`).join('');
+  if (current && tunnels.some(t => t.name === current)) sel.value = current;
+}
 function showAddForm() {
   editingName = null;
   document.getElementById('ser2mq-form-title').textContent = '新增 Ser2MQ 隧道';
@@ -215,6 +227,7 @@ function openStream(name) {
   flowTunnel = name;
   flowPaused = false;
   updatePauseBtn();
+  document.getElementById('df-select-tunnel').value = name;
 
   closeSer2MQStream();
   openSer2MQStream(name, {

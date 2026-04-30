@@ -80,6 +80,7 @@
 
     <div id="ser2mq-form" class="card" style="display:none">
       <h2 id="ser2mq-form-title">新增 Ser2MQ 隧道</h2>
+      <div class="form-hint-box">模式: <strong>Acceptor</strong> — 将本地串口通过 MQTT 桥接暴露，等待远端 mole-cgui 连接。Topic: <code>/mole/{nodeID}/serial/{port}/out</code> (串口→MQTT) 和 <code>/mole/{nodeID}/serial/{port}/in</code> (MQTT→串口)。</div>
       <div class="form-section-title">基本信息</div>
       <div class="form-row">
         <label>名称</label>
@@ -141,6 +142,9 @@
       <div class="card-header">
         <h2>实时数据流</h2>
         <div class="actions">
+          <select id="df-select-tunnel" class="filter-select">
+            <option value="">选择隧道</option>
+          </select>
           <select id="df-filter-dir" class="filter-select">
             <option value="all">全部</option><option value="serial">串口</option><option value="mqtt">MQTT</option>
           </select>
