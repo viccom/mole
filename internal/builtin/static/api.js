@@ -78,3 +78,8 @@ export const api = {
     return request('GET', '/api/tunnels/' + encodeURIComponent(name) + '/logs');
   }
 };
+
+export function buildTunnelStreamURL(name, options = {}) {
+  const tail = options.tail ?? 20;
+  return '/api/tunnels/' + encodeURIComponent(name) + '/stream?tail=' + tail;
+}
