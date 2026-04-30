@@ -101,4 +101,17 @@ tr.selected td{background:#eef3ff}
 
 .hidden{display:none!important}
 
+/* Stream list */
+.stream-list{max-height:300px;overflow-y:auto;font-size:12px;font-family:"SF Mono",Monaco,"Cascadia Code","Consolas",monospace;background:#1a1a2e;color:#ddd;padding:8px;border-radius:5px;margin-top:4px}
+.stream-item{display:flex;gap:8px;padding:3px 4px;border-bottom:1px solid #333;align-items:baseline}
+.stream-item:last-child{border:none}
+.stream-dir{font-weight:600;min-width:70px;font-size:11px}
+.stream-out .stream-dir{color:#60a5fa}
+.stream-in .stream-dir{color:#34d399}
+.stream-time{color:#888;min-width:90px}
+.stream-len{color:#fbbf24;min-width:40px}
+.stream-msg{color:#a78bfa}
+.stream-hex{color:#94a3b8;word-break:break-all}
+.stream-empty{color:#666;text-align:center;padding:16px}
+
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}

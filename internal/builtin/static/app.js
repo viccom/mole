@@ -1,6 +1,7 @@
 // app.js — 主应用逻辑
 import { api } from './api.js';
 import { syncTunnelTable } from './render.js';
+import { openSer2MQStream, closeSer2MQStream } from './ser2mq-stream.js';
 
 // ===== 工具函数 =====
 
@@ -45,6 +46,8 @@ let refreshTimer = null;
 let lastStatsKey = '';
 let lastTunnelListKey = '';
 let lastDetailKey = '';
+let streamPackets = [];
+let streamRenderPending = false;
 
 function setRefreshInfo(text, isError = false) {
   const el = $('#refresh-info');
@@ -143,8 +146,28 @@ function renderDetail(tunnel) {
   // 日志区域
   html += '<div id="detail-log-area"></div>';
 
+  // ser2mq 实时流区域
+  if (tunnel.type === 'ser2mq') {
+    html += '<div id="detail-live-area">';
+    html += '<h4 style="font-size:12px;color:#888;margin:10px 0 6px;text-transform:uppercase;letter-spacing:.3px">实时数据流</h4>';
+    html += '<div id="stream-list" class="stream-list"><div class="stream-empty">等待数据...</div></div>';
+    html += '</div>';
+  }
+
   content.innerHTML = html;
   panel.classList.remove('hidden');
+
+  // 打开 ser2mq 实时流
+  if (tunnel.type === 'ser2mq') {
+    streamPackets = [];
+    streamRenderPending = false;
+    openSer2MQStream(tunnel.name, {
+      onPacket: (evt) => appendStreamPacket(evt),
+      onError: (err) => console.warn('stream error:', err.message)
+    }, { tail: 20 });
+  } else {
+    closeSer2MQStream();
+  }
 
   // 绑定详情按钮
   const startBtn = content.querySelector('#detail-start');
@@ -199,6 +222,45 @@ async function loadVPNLogs(name) {
 }
 
 // ===== 表单: 新增隧道 =====
+
+function appendStreamPacket(evt) {
+  streamPackets.push(evt);
+  if (streamPackets.length > 500) {
+    streamPackets = streamPackets.slice(-500);
+  }
+  if (!streamRenderPending) {
+    streamRenderPending = true;
+    requestAnimationFrame(renderStreamList);
+  }
+}
+
+function renderStreamList() {
+  streamRenderPending = false;
+  const list = document.getElementById('stream-list');
+  if (!list) return;
+
+  if (!streamPackets.length) {
+    list.innerHTML = '<div class="stream-empty">等待数据...</div>';
+    return;
+  }
+
+  list.innerHTML = streamPackets.slice(-100).map(p => {
+    const dir = p.dir || '?';
+    const dirClass = dir === 'serial_out' || dir === 'mqtt_pub' ? 'out' : 'in';
+    const time = new Date(p.time).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    const len = p.length != null ? p.length + 'B' : '';
+    const hex = p.hex_preview || '';
+    const msg = p.message || '';
+    return `<div class="stream-item stream-${dirClass}">
+      <span class="stream-dir">${esc(dir)}</span>
+      <span class="stream-time">${time}</span>
+      ${len ? `<span class="stream-len">${len}</span>` : ''}
+      ${msg ? `<span class="stream-msg">${esc(msg)}</span>` : ''}
+      ${hex ? `<span class="stream-hex">${esc(hex)}</span>` : ''}
+    </div>`;
+  }).join('');
+  list.scrollTop = list.scrollHeight;
+}
 
 function openModal() {
   $('#modal-title').textContent = '新增隧道';
@@ -381,6 +443,7 @@ $('#btn-submit').addEventListener('click', submitForm);
 $('#f-type').addEventListener('change', function () { renderParaFields(this.value); });
 $('#btn-close-detail').addEventListener('click', () => {
   selectedName = null;
+  closeSer2MQStream();
   $('#detail-panel').classList.add('hidden');
   renderTunnels();
 });
