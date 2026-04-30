@@ -669,6 +669,94 @@ func (c *Client) Stats() Stats {
 	}
 }
 
+// ===== 统一隧道状态 =====
+
+// TunnelStatus 统一隧道状态（合并配置 + 运行时）
+type TunnelStatus struct {
+	Name       string     `json:"name"`
+	Type       TunnelType `json:"type"`
+	Target     string     `json:"target"`
+	Domain     string     `json:"domain,omitempty"`
+	ListenPort int        `json:"listen_port,omitempty"`
+	Enabled    bool       `json:"enabled"`
+	Connected  bool       `json:"connected"`
+	BytesIn    uint64     `json:"bytes_in"`
+	BytesOut   uint64     `json:"bytes_out"`
+	Status     any        `json:"status,omitempty"` // 类型特定状态（Ser2MQStats / vpn.Status）
+}
+
+// buildTunnelStatus 构建单个隧道的统一状态
+func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[string]proxy.TunnelTraffic) TunnelStatus {
+	ts := TunnelStatus{
+		Name:       t.Name,
+		Type:       t.Type,
+		Target:     t.Target,
+		Domain:     t.Domain,
+		ListenPort: t.ListenPort,
+		Enabled:    t.IsEnabled(),
+	}
+
+	switch t.Type {
+	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP:
+		ts.Connected = connected && t.IsEnabled()
+		if traffic, ok := trafficStats[t.Name]; ok {
+			ts.BytesIn = traffic.TCPBytesIn + traffic.HTTPBytesIn
+			ts.BytesOut = traffic.TCPBytesOut + traffic.HTTPBytesOut
+		}
+	case TunnelTypeSer2MQ:
+		if stats, err := c.ser2mqMgr.Status(t.Name); err == nil {
+			ts.Connected = stats.Running
+			ts.BytesIn = stats.BytesIn
+			ts.BytesOut = stats.BytesOut
+			ts.Status = stats
+		}
+	case TunnelTypeVPNMgr:
+		if status, err := c.vpnMgr.Status(t.Name); err == nil {
+			ts.Connected = status.Running
+			ts.Status = status
+		}
+	}
+
+	return ts
+}
+
+// AllTunnelStatus 返回所有隧道的统一状态
+func (c *Client) AllTunnelStatus() []TunnelStatus {
+	c.mu.RLock()
+	tunnels := make([]Tunnel, len(c.tunnels))
+	copy(tunnels, c.tunnels)
+	c.mu.RUnlock()
+
+	trafficStats := proxy.TunnelTrafficStats()
+	connected := c.Connected()
+
+	result := make([]TunnelStatus, 0, len(tunnels))
+	for _, t := range tunnels {
+		result = append(result, c.buildTunnelStatus(t, connected, trafficStats))
+	}
+	return result
+}
+
+// TunnelStatusByName 返回单个隧道的统一状态
+func (c *Client) TunnelStatusByName(name string) (TunnelStatus, error) {
+	c.mu.RLock()
+	var found *Tunnel
+	for i := range c.tunnels {
+		if c.tunnels[i].Name == name {
+			found = &c.tunnels[i]
+			break
+		}
+	}
+	if found == nil {
+		c.mu.RUnlock()
+		return TunnelStatus{}, fmt.Errorf("tunnel %q not found", name)
+	}
+	t := *found
+	c.mu.RUnlock()
+
+	return c.buildTunnelStatus(t, c.Connected(), proxy.TunnelTrafficStats()), nil
+}
+
 // ===== VPN Manager API =====
 
 func (c *Client) VPNManager() *vpn.Manager {

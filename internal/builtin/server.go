@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -12,8 +13,6 @@ import (
 	"time"
 
 	"moleAgent_client"
-	"moleAgent_client/internal/proxy/ser2mq"
-	"moleAgent_client/internal/proxy/vpn"
 )
 
 //go:embed static
@@ -27,9 +26,10 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 	}
 	mux := http.NewServeMux()
 
-	// 静态文件（单页面 dashboard）
+	// 静态文件（模块化前端）
+	subFS, _ := fs.Sub(staticFS, "static")
 	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
-		data, err := staticFS.ReadFile("static/index.html")
+		data, err := fs.ReadFile(subFS, "index.html")
 		if err != nil {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -37,7 +37,7 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(data)
 	})
-	mux.Handle("/ui/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(subFS))))
 
 	// 默认首页
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -67,10 +67,8 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 		fmt.Fprint(w, "ok")
 	})
 
-	// 隧道管理 API
+	// API
 	registerTunnelAPI(mux, client)
-	registerVPNAPI(mux, client)
-	registerSer2MQAPI(mux, client)
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -86,13 +84,13 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 }
 
 func registerTunnelAPI(mux *http.ServeMux, c *moleAgent_client.Client) {
-	// GET /api/tunnels — 查看当前隧道列表
+	// GET /api/tunnels — 所有隧道（含运行时状态）
 	// POST /api/tunnels — 添加/更新隧道
 	mux.HandleFunc("/api/tunnels", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case http.MethodGet:
-			json.NewEncoder(w).Encode(c.Tunnels())
+			json.NewEncoder(w).Encode(c.AllTunnelStatus())
 		case http.MethodPost:
 			var t moleAgent_client.Tunnel
 			if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
@@ -109,135 +107,88 @@ func registerTunnelAPI(mux *http.ServeMux, c *moleAgent_client.Client) {
 		}
 	})
 
-	// DELETE /api/tunnels/{name} — 移除指定隧道
+	// /api/tunnels/{name} — 单隧道查询/删除
+	// /api/tunnels/{name}/{action} — 类型特定操作（start/stop/logs）
 	mux.HandleFunc("/api/tunnels/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			return
-		}
-		name := strings.TrimPrefix(r.URL.Path, "/api/tunnels/")
-		if name == "" {
-			http.Error(w, `{"error":"tunnel name required"}`, http.StatusBadRequest)
-			return
-		}
-		if err := c.RemoveTunnel(name); err != nil {
-			status := http.StatusInternalServerError
-			if strings.Contains(err.Error(), "not found") {
-				status = http.StatusNotFound
+		w.Header().Set("Content-Type", "application/json")
+		path := strings.TrimPrefix(r.URL.Path, "/api/tunnels/")
+		if path == "" {
+			if r.Method == http.MethodGet {
+				json.NewEncoder(w).Encode(c.AllTunnelStatus())
+				return
 			}
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
-	})
-}
-
-// registerVPNAPI 注册 VPN 管理 API
-func registerVPNAPI(mux *http.ServeMux, client *moleAgent_client.Client) {
-	// GET /api/vpn — 列出所有 VPN 实例
-	mux.HandleFunc("/api/vpn", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		json.NewEncoder(w).Encode(client.VPNList())
-	})
 
-	// GET /api/vpn/:name/status — 查询状态
-	mux.HandleFunc("/api/vpn/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		name := strings.TrimPrefix(r.URL.Path, "/api/vpn/")
+		// 检查子操作: /api/tunnels/:name/:action
+		if idx := strings.Index(path, "/"); idx >= 0 {
+			name := path[:idx]
+			action := path[idx+1:]
+			handleTunnelAction(w, r, c, name, action)
+			return
+		}
 
-		// /api/vpn/:name/logs
-		if strings.HasSuffix(name, "/logs") {
-			tunnelName := strings.TrimSuffix(name, "/logs")
-			logs, err := client.VPNCrashLogs(tunnelName)
+		// 单隧道: GET 查询 / DELETE 删除
+		switch r.Method {
+		case http.MethodGet:
+			status, err := c.TunnelStatusByName(path)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 				return
 			}
-			json.NewEncoder(w).Encode(logs)
-			return
-		}
-
-		// /api/vpn/:name/start
-		if strings.HasSuffix(name, "/start") {
-			tunnelName := strings.TrimSuffix(name, "/start")
-			if err := client.VPNStart(tunnelName); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(status)
+		case http.MethodDelete:
+			if err := c.RemoveTunnel(path); err != nil {
+				code := http.StatusInternalServerError
+				if strings.Contains(err.Error(), "not found") {
+					code = http.StatusNotFound
+				}
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), code)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
-			return
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		}
-
-		// /api/vpn/:name/stop
-		if strings.HasSuffix(name, "/stop") {
-			tunnelName := strings.TrimSuffix(name, "/stop")
-			if err := client.VPNStop(tunnelName); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
-			return
-		}
-
-		// /api/vpn/:name/status
-		status, err := client.VPNStatus(name)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
-			return
-		}
-		json.NewEncoder(w).Encode(status)
 	})
 }
 
-// registerSer2MQAPI 注册 ser2mq API
-func registerSer2MQAPI(mux *http.ServeMux, client *moleAgent_client.Client) {
-	// GET /api/ser2mq — 列出所有 ser2mq 实例
-	mux.HandleFunc("/api/ser2mq", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+// handleTunnelAction 处理隧道类型特定操作
+func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_client.Client, name, action string) {
+	switch action {
+	case "start":
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if err := c.VPNStart(name); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	case "stop":
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if err := c.VPNStop(name); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	case "logs":
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		json.NewEncoder(w).Encode(client.Ser2MQList())
-	})
-
-	// GET /api/ser2mq/:name/status — 查询状态
-	mux.HandleFunc("/api/ser2mq/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			return
-		}
-		name := strings.TrimPrefix(r.URL.Path, "/api/ser2mq/")
-		status, err := client.Ser2MQStatus(name)
+		logs, err := c.VPNCrashLogs(name)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode(status)
-	})
-}
-
-// RegisterVPNAPI 注册 VPN API 到 server
-func RegisterVPNAPI(mux *http.ServeMux, client *moleAgent_client.Client) {
-	registerVPNAPI(mux, client)
-}
-
-// RegisterSer2MQAPI 注册 ser2mq API 到 server
-func RegisterSer2MQAPI(mux *http.ServeMux, client *moleAgent_client.Client) {
-	registerSer2MQAPI(mux, client)
-}
-
-// GetVPNManager 获取 VPN 管理器
-func GetVPNManager(client *moleAgent_client.Client) *vpn.Manager {
-	return client.VPNManager()
-}
-
-// GetSer2MQManager 获取 ser2mq 管理器
-func GetSer2MQManager(client *moleAgent_client.Client) *ser2mq.Manager {
-	return client.Ser2MQManager()
+		json.NewEncoder(w).Encode(logs)
+	default:
+		http.Error(w, fmt.Sprintf(`{"error":"unknown action: %s"}`, action), http.StatusBadRequest)
+	}
 }

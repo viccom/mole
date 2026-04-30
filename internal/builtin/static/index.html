@@ -2,283 +2,87 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>moleAgent 监控</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f4f6f9;color:#333}
-header{background:#2c3e50;color:#fff;padding:16px 24px}
-header h1{font-size:18px;font-weight:600}
-.container{max-width:1100px;margin:0 auto;padding:20px}
-.card{background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:20px;margin-bottom:16px}
-.card h2{font-size:14px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
-.stat{background:#f8f9fa;padding:14px 16px;border-radius:6px}
-.stat .label{font-size:12px;color:#888;margin-bottom:4px}
-.stat .value{font-size:22px;font-weight:600;color:#2c3e50}
-.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
-.status-dot.green{background:#27ae60}
-.status-dot.red{background:#e74c3c}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #eee}
-th{background:#f8f9fa;font-weight:600;color:#555;font-size:12px}
-tr:hover{background:#fafafa}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500}
-.badge-http{background:#e8f5e9;color:#2e7d32}
-.badge-https{background:#e3f2fd;color:#1565c0}
-.badge-tcp{background:#fff3e0;color:#e65100}
-.badge-udp{background:#f3e5f5;color:#7b1fa2}
-.badge-ser2mq{background:#e0f2f1;color:#00695c}
-.badge-vpn-manager{background:#fce4ec;color:#c2185b}
-.btn{display:inline-block;padding:6px 14px;background:#3498db;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:13px}
-.btn:hover{background:#2980b9}
-.btn-danger{background:#e74c3c}
-.btn-danger:hover{background:#c0392b}
-.form-group{margin-bottom:10px}
-.form-group label{display:block;font-size:12px;color:#666;margin-bottom:4px}
-.form-group input,select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px}
-.form-row{display:flex;gap:10px;align-items:flex-end}
-.form-row .form-group{flex:1}
-.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100}
-.modal-content{background:#fff;border-radius:8px;padding:24px;width:400px;max-width:90%}
-.modal h3{margin-bottom:16px;font-size:16px}
-.modal .actions{margin-top:16px;display:flex;gap:8px;justify-content:flex-end}
-.hidden{display:none}
-</style>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>moleAgent</title>
+<link rel="stylesheet" href="/ui/style.css">
 </head>
 <body>
-<header><h1>moleAgent 客户端监控</h1></header>
-<div class="container">
-  <div class="card"><h2>连接状态</h2>
-    <div class="grid" id="status-grid"></div>
+<header>
+  <div class="header-left">
+    <h1>moleAgent</h1>
+    <span id="conn-badge" class="conn-badge offline">已断开</span>
   </div>
-  <div class="card"><h2>隧道列表</h2>
-    <div style="margin-bottom:12px">
-      <button class="btn" id="btn-add">+ 新增隧道</button>
+  <div class="header-right" id="header-info"></div>
+</header>
+
+<main class="container">
+  <!-- 全局统计 -->
+  <section class="card stats-grid" id="stats-bar"></section>
+
+  <!-- 隧道列表 -->
+  <section class="card">
+    <div class="section-header">
+      <h2>隧道列表</h2>
+      <button class="btn btn-primary" id="btn-add">+ 新增隧道</button>
     </div>
-    <table>
-      <thead><tr>
-        <th>名称</th><th>类型</th><th>目标</th>
-        <th>TCP进</th><th>TCP出</th>
-        <th>HTTP进</th><th>HTTP出</th>
-        <th>操作</th>
-      </tr></thead>
-      <tbody id="tunnels-tbody"></tbody>
-    </table>
-  </div>
-</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>名称</th><th>类型</th><th>目标</th>
+          <th>状态</th><th>流入</th><th>流出</th><th>操作</th>
+        </tr></thead>
+        <tbody id="tunnels-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 隧道详情面板 -->
+  <section class="card hidden" id="detail-panel">
+    <div class="section-header">
+      <h2 id="detail-title">隧道详情</h2>
+      <button class="btn btn-ghost" id="btn-close-detail">关闭</button>
+    </div>
+    <div id="detail-content"></div>
+  </section>
+</main>
+
+<!-- 新增/编辑 Modal -->
 <div class="modal hidden" id="edit-modal">
+  <div class="modal-overlay"></div>
   <div class="modal-content">
     <h3 id="modal-title">新增隧道</h3>
-    <div class="form-group"><label>名称</label><input id="f-name" placeholder="如: fnlist"></div>
+    <div class="form-group">
+      <label>名称</label>
+      <input id="f-name" placeholder="如: web-proxy" autocomplete="off">
+    </div>
     <div class="form-row">
-      <div class="form-group"><label>类型</label><select id="f-type"><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="ser2mq">Ser2MQ</option><option value="vpn-manager">VPN Manager</option></select></div>
-      <div class="form-group"><label>目标</label><input id="f-target" placeholder="如: 127.0.0.1:8080"></div>
+      <div class="form-group">
+        <label>类型</label>
+        <select id="f-type">
+          <option value="http">HTTP</option>
+          <option value="https">HTTPS</option>
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+          <option value="ser2mq">Ser2MQ</option>
+          <option value="vpn-manager">VPN Manager</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>目标</label>
+        <input id="f-target" placeholder="如: 127.0.0.1:8080" autocomplete="off">
+      </div>
     </div>
     <div id="para-fields"></div>
-    <div class="form-group"><label>映射路径 (可选)</label><input id="f-mapping" placeholder="如: /fnlist"></div>
-    <div class="actions">
-      <button class="btn" id="btn-cancel">取消</button>
-      <button class="btn" id="btn-submit">保存</button>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="btn-cancel">取消</button>
+      <button class="btn btn-primary" id="btn-submit">保存</button>
     </div>
   </div>
 </div>
-<script>
-var tunnels = [];
 
-function $(id){return document.getElementById(id)}
-function formatBytes(b){if(b===0)return"0";const e=["B","KB","MB","GB"];let i=0;while(b>=1024&&i<e.length-1){b/=1024;i++}return b.toFixed(b>=100?0:b>=10?1:2)+" "+e[i]}
+<!-- Toast -->
+<div id="toast-container"></div>
 
-function renderStatus(d){
-  var dot = d.connected ? '<span class="status-dot green"></span>' : '<span class="status-dot red"></span>';
-  var html = '<div class="stat"><div class="label">状态</div><div class="value">'+dot+(d.connected?'已连接':'已断开')+'</div></div>'
-    +'<div class="stat"><div class="label">节点ID</div><div class="value" style="font-size:16px">'+(d.node_id||'-')+'</div></div>'
-    +'<div class="stat"><div class="label">服务器</div><div class="value" style="font-size:16px">'+(d.server_addr||'-')+'</div></div>'
-    +'<div class="stat"><div class="label">隧道数</div><div class="value">'+((d.tunnels&&d.tunnels.length)||0)+'</div></div>'
-    +'<div class="stat"><div class="label">TCP 入</div><div class="value">'+formatBytes(d.tcp_bytes_in||0)+'</div></div>'
-    +'<div class="stat"><div class="label">TCP 出</div><div class="value">'+formatBytes(d.tcp_bytes_out||0)+'</div></div>'
-    +'<div class="stat"><div class="label">HTTP 入</div><div class="value">'+formatBytes(d.http_bytes_in||0)+'</div></div>'
-    +'<div class="stat"><div class="label">HTTP 出</div><div class="value">'+formatBytes(d.http_bytes_out||0)+'</div></div>';
-  $('status-grid').innerHTML = html;
-}
-
-function renderTunnels(){
-  var tbody = $('tunnels-tbody');
-  if(!tunnels || tunnels.length === 0){
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999">暂无隧道</td></tr>';
-    return;
-  }
-  var html = '';
-  for(var i=0;i<tunnels.length;i++){
-    var t = tunnels[i];
-    var typeLabel = (t.type||'-').toUpperCase();
-    var typeClass = (t.type||'http').toLowerCase();
-    html += '<tr>'
-      +'<td><strong>'+(t.name||'-')+'</strong></td>'
-      +'<td><span class="badge badge-'+typeClass+'">'+typeLabel+'</span></td>'
-      +'<td style="font-size:12px;color:#666">'+(t.target||'-')+'</td>'
-      +'<td>'+formatBytes(t.TCPBytesIn||0)+'</td>'
-      +'<td>'+formatBytes(t.TCPBytesOut||0)+'</td>'
-      +'<td>'+formatBytes(t.HTTPBytesIn||0)+'</td>'
-      +'<td>'+formatBytes(t.HTTPBytesOut||0)+'</td>'
-      +'<td><button class="btn btn-danger" onclick="deleteTunnel(\''+t.name+'\')">删除</button></td>'
-      +'</tr>';
-  }
-  tbody.innerHTML = html;
-}
-
-function openAddModal(){
-  $('modal-title').textContent = '新增隧道';
-  $('f-name').value = '';
-  $('f-name').disabled = false;
-  $('f-type').value = 'http';
-  $('f-target').value = '';
-  $('f-mapping').value = '';
-  renderParaFields('http');
-  $('edit-modal').classList.remove('hidden');
-}
-
-function closeModal(){
-  $('edit-modal').classList.add('hidden');
-}
-
-function renderParaFields(type){
-  var el = $('para-fields');
-  if(type === 'ser2mq'){
-    el.innerHTML = '<div class="form-group"><label>MQTT Broker</label><input id="f-broker" placeholder="mqtt://user:pass@broker:1883"></div>'
-      +'<div class="form-group"><label>串口端口</label><input id="f-serial-port" placeholder="/dev/ttyS0"></div>'
-      +'<div class="form-row"><div class="form-group"><label>波特率</label><select id="f-baudrate"><option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option><option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option><option value="57600">57600</option><option value="115200">115200</option></select></div>'
-      +'<div class="form-group"><label>数据位</label><select id="f-databits"><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8" selected>8</option></select></div></div>'
-      +'<div class="form-group"><label>校验位</label><select id="f-parity"><option value="N" selected>无校验 (N)</option><option value="E">偶校验 (E)</option><option value="O">奇校验 (O)</option></select></div>'
-      +'<div class="form-group"><label>加密密钥 (64字符 hex)</label><input id="f-secret" placeholder="32字节hex密钥，如0123456789..."></div>';
-  } else if(type === 'vpn-manager'){
-    el.innerHTML = '<div class="form-group"><label>程序名称</label><input id="f-binary-name" placeholder="easytier-core"></div>'
-      +'<div class="form-group"><label>程序路径（可选）</label><input id="f-binary-path" placeholder="留空则自动查找"></div>'
-      +'<div class="form-group"><label>启动参数</label><input id="f-args" placeholder="用空格分隔，如: -w udp://server:520/ -p 12345"></div>'
-      +'<div class="form-row"><div class="form-group"><label>最大重启次数</label><input type="number" id="f-max-restarts" value="3" min="0" max="10"></div>'
-      +'<div class="form-group"><label>重启延迟(秒)</label><input type="number" id="f-restart-delay" value="5" min="1" max="60"></div></div>'
-      +'<div class="form-group"><label><input type="checkbox" id="f-autostart"> 启动时自动运行</label></div>'
-      +'<div class="form-group"><label><input type="checkbox" id="f-restart" checked> 崩溃后自动重启</label></div>';
-  } else {
-    el.innerHTML = '';
-  }
-}
-
-// 监听类型变化
-$('f-type').addEventListener('change', function(){
-  renderParaFields(this.value);
-});
-
-function submitForm(){
-  var name = $('f-name').value.trim();
-  var type = $('f-type').value;
-  var target = $('f-target').value.trim();
-  var mapping = $('f-mapping').value.trim();
-
-  if(!name){alert('名称不能为空');return}
-
-  var payload = {name:name, type:type, enabled:true};
-
-  if(type === 'http' || type === 'https'){
-    if(!target){alert('目标不能为空');return}
-    payload.target = target;
-    if(mapping) payload.domain = mapping;
-  } else if(type === 'tcp' || type === 'udp'){
-    payload.target = target || '127.0.0.1:0';
-    payload.listen_port = parseInt(target.split(':')[1]) || 0;
-  } else if(type === 'ser2mq'){
-    var broker = $('f-broker').value.trim();
-    var secret = $('f-secret').value.trim();
-    if(!broker){alert('MQTT Broker不能为空');return}
-    if(!secret){alert('加密密钥不能为空');return}
-    if(secret.length !== 64){alert('加密密钥必须为64字符');return}
-    payload.target = $('f-serial-port').value.trim() || '/dev/ttyS0';
-    payload.para = {
-      broker: broker,
-      serial: {
-        port: $('f-serial-port').value.trim() || '/dev/ttyS0',
-        baudrate: parseInt($('f-baudrate').value),
-        databits: parseInt($('f-databits').value),
-        parity: $('f-parity').value
-      },
-      secret: secret
-    };
-  } else if(type === 'vpn-manager'){
-    var binName = $('f-binary-name').value.trim();
-    if(!binName){alert('程序名称不能为空');return}
-    payload.target = binName;
-    var binPath = $('f-binary-path').value.trim();
-    payload.para = {
-      binary: {name: binName, path: binPath || undefined},
-      args: ($('f-args').value.trim() || '').split(' ').filter(function(s){return s.trim();}),
-      lifecycle: {
-        autostart: $('f-autostart').checked,
-        restart_on_crash: $('f-restart').checked,
-        max_restarts: parseInt($('f-max-restarts').value) || 3,
-        restart_delay: parseInt($('f-restart-delay').value) || 5
-      },
-      watchdog: {enabled:true, interval:10, quit_grace:10},
-      log: {capture:true, max_size:65536}
-    };
-  }
-
-  fetch('/api/tunnels',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(payload)
-  }).then(function(r){return r.json()}).then(function(data){
-    if(data.error){alert('失败: '+data.error);return}
-    closeModal();loadData();
-  }).catch(function(e){alert('失败: '+e);});
-}
-
-function deleteTunnel(name){
-  if(!confirm('确认删除隧道 '+name+'?'))return;
-  fetch('/api/tunnels/'+name,{method:'DELETE'})
-    .then(function(r){return r.json()}).then(function(data){
-      if(data.error){alert('删除失败: '+data.error);return}
-      loadData();
-    }).catch(function(e){alert('删除失败: '+e);});
-}
-
-function loadData(){
-  Promise.all([
-    fetch('/api/status').then(function(r){return r.json()}),
-    fetch('/api/tunnels').then(function(r){return r.json()})
-  ]).then(function(results){
-    var s = results[0];
-    var tunnelList = results[1];
-    renderStatus(s);
-    // merge tunnel config with traffic stats
-    tunnels = tunnelList.map(function(t){
-      var match = null;
-      if(s.tunnels){
-        for(var i=0;i<s.tunnels.length;i++){
-          if(s.tunnels[i].Name === t.name){match = s.tunnels[i];break;}
-        }
-      }
-      if(match){
-        return {
-          name: t.name,
-          type: t.type,
-          target: t.target,
-          TCPBytesIn: match.TCPBytesIn||0,
-          TCPBytesOut: match.TCPBytesOut||0,
-          HTTPBytesIn: match.HTTPBytesIn||0,
-          HTTPBytesOut: match.HTTPBytesOut||0
-        };
-      }
-      return {name:t.name, type:t.type, target:t.target, TCPBytesIn:0, TCPBytesOut:0, HTTPBytesIn:0, HTTPBytesOut:0};
-    });
-    renderTunnels();
-  }).catch(function(e){console.error(e);});
-}
-
-$('btn-add').onclick = openAddModal;
-$('btn-cancel').onclick = closeModal;
-$('btn-submit').onclick = submitForm;
-
-loadData();
-setInterval(loadData,5000);
-</script>
+<script type="module" src="/ui/app.js"></script>
 </body>
 </html>
