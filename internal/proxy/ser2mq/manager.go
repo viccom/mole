@@ -27,6 +27,13 @@ func NewManager(ctx context.Context, nodeID string) *Manager {
 	}
 }
 
+// SetNodeID 设置节点 ID（在 Run() 时调用，确保 nodeID 就绪）
+func (m *Manager) SetNodeID(nodeID string) {
+	m.mu.Lock()
+	m.nodeID = nodeID
+	m.mu.Unlock()
+}
+
 // Close 关闭管理器
 func (m *Manager) Close() {
 	if m.cancel != nil {
