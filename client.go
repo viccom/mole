@@ -60,7 +60,8 @@ func New(cfg *Config) (*Client, error) {
 	dial := transport.DefaultDialer(tlsCfg)
 
 	// 创建管理器（使用背景 context，生命周期由 Client 统一管理）
-	ser2mqMgr := ser2mq.NewManager(context.Background())
+	// nodeID 在 ApplyDefaults 中已生成
+	ser2mqMgr := ser2mq.NewManager(context.Background(), cfg.NodeID)
 	vpnMgr := vpn.NewManager(context.Background())
 
 	return &Client{

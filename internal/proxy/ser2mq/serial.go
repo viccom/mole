@@ -2,7 +2,7 @@ package ser2mq
 
 import (
 	"fmt"
-	"strings"
+	"io"
 	"sync"
 	"time"
 
@@ -11,12 +11,12 @@ import (
 
 // SerialConfig 串口配置
 type SerialConfig struct {
-	Port     string
-	BaudRate int
-	DataBits int
-	StopBits float64
-	Parity   string // N/E/O
-	Timeout  int    // 读超时毫秒
+	Port     string  `json:"port"`
+	BaudRate int     `json:"baudrate"`
+	DataBits int     `json:"databits"`
+	StopBits float64 `json:"stopbits"`
+	Parity   string  `json:"parity"` // N/E/O/M/S
+	Timeout  int     `json:"timeout"` // 读超时毫秒
 }
 
 // DefaultSerialConfig 返回默认串口配置
@@ -77,11 +77,8 @@ func (s *SerialConfig) toParity() serial.Parity {
 // toStopBits 转换为 serial.StopBits
 func (s *SerialConfig) toStopBits() serial.StopBits {
 	switch s.StopBits {
-	case 1.0:
-		return serial.OneStopBit
 	case 1.5:
-		// iota 1
-		return serial.StopBits(1)
+		return serial.OnePointFiveStopBits
 	case 2:
 		return serial.TwoStopBits
 	default:
@@ -89,33 +86,18 @@ func (s *SerialConfig) toStopBits() serial.StopBits {
 	}
 }
 
-// SerialConn 串口连接接口（带读写锁）
+// SerialConn 串口连接接口
 type SerialConn interface {
-	ioReader
-	ioWriter
-	ioCloser
-}
-
-// ioReader 串口读取接口
-type ioReader interface {
-	Read(p []byte) (n int, err error)
-}
-
-// ioWriter 串口写入接口
-type ioWriter interface {
-	Write(p []byte) (n int, err error)
-}
-
-// ioCloser 关闭接口
-type ioCloser interface {
-	Close() error
+	io.Reader
+	io.Writer
+	io.Closer
 }
 
 // serialConn 串口连接实现
 type serialConn struct {
-	mu      sync.RWMutex
-	port    serial.Port
-	cfg     SerialConfig
+	mu   sync.Mutex
+	port serial.Port
+	cfg  SerialConfig
 }
 
 // OpenSerial 打开串口
@@ -130,29 +112,25 @@ func OpenSerial(cfg SerialConfig) (SerialConn, error) {
 		return nil, fmt.Errorf("open serial %s: %w", cfg.Port, err)
 	}
 
-	// 设置读写超时
-	readTimeout := time.Duration(cfg.Timeout) * time.Millisecond
-	if err := port.SetReadTimeout(readTimeout); err != nil {
-		port.Close()
-		return nil, fmt.Errorf("set read timeout: %w", err)
+	if cfg.Timeout > 0 {
+		port.SetReadTimeout(time.Duration(cfg.Timeout) * time.Millisecond)
 	}
 
 	return &serialConn{port: port, cfg: cfg}, nil
 }
 
-// Read 读取数据（带读写锁，超时 3 秒无数据不处理）
+// Read 读取数据（copy-and-release 模式，不持有锁）
 func (s *serialConn) Read(p []byte) (n int, err error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	port := s.port
+	s.mu.Unlock()
 
-	// 检查端口是否有效
-	if s.port == nil {
+	if port == nil {
 		return 0, fmt.Errorf("serial port closed")
 	}
 
-	n, err = s.port.Read(p)
+	n, err = port.Read(p)
 	if err != nil {
-		// 超时视为正常情况，无数据
 		if isTimeout(err) {
 			return 0, nil
 		}
@@ -161,16 +139,17 @@ func (s *serialConn) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
-// Write 写入数据（带读写锁）
+// Write 写入数据（copy-and-release 模式）
 func (s *serialConn) Write(p []byte) (n int, err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	port := s.port
+	s.mu.Unlock()
 
-	if s.port == nil {
+	if port == nil {
 		return 0, fmt.Errorf("serial port closed")
 	}
 
-	n, err = s.port.Write(p)
+	n, err = port.Write(p)
 	if err != nil {
 		return n, fmt.Errorf("write serial: %w", err)
 	}
@@ -195,14 +174,22 @@ func isTimeout(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "i/o timeout")
+	type timeoutInterface interface{ Timeout() bool }
+	if te, ok := err.(timeoutInterface); ok && te.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	return msg == "serial: timeout" || msg == "timed out"
 }
 
 // SanitizePortName 清理串口名称用于 MQTT 主题
 func SanitizePortName(port string) string {
-	// 移除路径前缀
-	name := strings.TrimPrefix(port, "/dev/")
+	name := port
+	if len(name) > 5 && name[:5] == "/dev/" {
+		name = name[5:]
+	}
+	if len(name) > 4 && name[:4] == `\\.\` {
+		name = name[4:]
+	}
 	return name
 }
