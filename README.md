@@ -57,20 +57,29 @@ MQTT 主题：`/mole/<nodeid>/serial/<port>/out|in`
 
 内置 HTTP 服务（默认 `127.0.0.1:18080`）：
 
-```
-GET  /api/tunnels           隧道列表
-POST /api/tunnels           添加隧道
-DELETE /api/tunnels/:name   删除隧道
-GET  /api/vpn               VPN 列表
-POST /api/vpn/:name/start   启动 VPN
-POST /api/vpn/:name/stop    停止 VPN
-GET  /api/vpn/:name/logs    崩溃日志
-GET  /api/ser2mq            ser2mq 列表
-GET  /api/ser2mq/:name/status  状态
+```text
+GET    /api/status
+GET    /api/tunnels
+POST   /api/tunnels
+GET    /api/tunnels/{name}
+DELETE /api/tunnels/{name}
+POST   /api/tunnels/{name}/start
+POST   /api/tunnels/{name}/stop
+GET    /api/tunnels/{name}/logs
 ```
 
 ## 构建
 
+POSIX shell 环境（Linux/macOS/Git Bash）：
+
 ```bash
 make build
+make release
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\build.ps1
+.\scripts\release.ps1
 ```

@@ -139,6 +139,10 @@ func registerTunnelAPI(mux *http.ServeMux, c *moleAgent_client.Client) {
 			}
 			json.NewEncoder(w).Encode(status)
 		case http.MethodDelete:
+			if _, err := c.TunnelStatusByName(path); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+				return
+			}
 			if err := c.RemoveTunnel(path); err != nil {
 				code := http.StatusInternalServerError
 				if strings.Contains(err.Error(), "not found") {

@@ -1,4 +1,7 @@
-.PHONY: build clean
+.PHONY: build release clean
+
+# This Makefile assumes a POSIX shell environment such as Git Bash/MSYS on Windows.
+# For native PowerShell builds, use scripts/build.ps1 and scripts/release.ps1.
 
 # 构建变量
 BINARY_NAME    := moleagent-client

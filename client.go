@@ -44,9 +44,24 @@ type Client struct {
 	vpnMgr *vpn.Manager
 }
 
+type tunnelMutationKind int
+
+const (
+	tunnelMutationAdd tunnelMutationKind = iota + 1
+	tunnelMutationRemove
+	tunnelMutationReplaceAll
+)
+
+type tunnelMutation struct {
+	kind    tunnelMutationKind
+	tunnel   Tunnel
+	name     string
+	tunnels  []Tunnel
+}
+
 type tunnelReq struct {
-	tunnels []Tunnel
-	resp    chan error
+	mutation tunnelMutation
+	resp     chan error
 }
 
 // New 创建客户端实例
@@ -187,23 +202,10 @@ func (c *Client) AddTunnel(t Tunnel) error {
 		return err
 	}
 
-	c.mu.Lock()
-	updated := make([]Tunnel, 0, len(c.tunnels)+1)
-	replaced := false
-	for _, existing := range c.tunnels {
-		if existing.Name == t.Name {
-			updated = append(updated, t)
-			replaced = true
-		} else {
-			updated = append(updated, existing)
-		}
-	}
-	if !replaced {
-		updated = append(updated, t)
-	}
-	c.mu.Unlock()
-
-	return c.requestTunnelUpdate(updated)
+	return c.requestTunnelMutation(tunnelMutation{
+		kind:   tunnelMutationAdd,
+		tunnel: t,
+	})
 }
 
 // RemoveTunnel 移除隧道并同步到服务端（需要已连接服务端）
@@ -211,22 +213,10 @@ func (c *Client) RemoveTunnel(name string) error {
 	if !c.Connected() {
 		return fmt.Errorf("not connected to server, tunnel operations require active connection")
 	}
-	c.mu.Lock()
-	updated := make([]Tunnel, 0, len(c.tunnels))
-	found := false
-	for _, t := range c.tunnels {
-		if t.Name == name {
-			found = true
-			continue
-		}
-		updated = append(updated, t)
-	}
-	c.mu.Unlock()
-
-	if !found {
-		return fmt.Errorf("tunnel %q not found", name)
-	}
-	return c.requestTunnelUpdate(updated)
+	return c.requestTunnelMutation(tunnelMutation{
+		kind: tunnelMutationRemove,
+		name: name,
+	})
 }
 
 // UpdateTunnels 替换全部隧道并同步到服务端
@@ -236,16 +226,19 @@ func (c *Client) UpdateTunnels(tunnels []Tunnel) error {
 			return err
 		}
 	}
-	return c.requestTunnelUpdate(tunnels)
+	return c.requestTunnelMutation(tunnelMutation{
+		kind:    tunnelMutationReplaceAll,
+		tunnels: append([]Tunnel(nil), tunnels...),
+	})
 }
 
 // ===== 内部方法 =====
 
-// requestTunnelUpdate 通过通道请求更新隧道（线程安全）
-func (c *Client) requestTunnelUpdate(tunnels []Tunnel) error {
+// requestTunnelMutation 通过通道请求更新隧道（线程安全）
+func (c *Client) requestTunnelMutation(mutation tunnelMutation) error {
 	req := tunnelReq{
-		tunnels: tunnels,
-		resp:    make(chan error, 1),
+		mutation: mutation,
+		resp:     make(chan error, 1),
 	}
 	select {
 	case c.tunReqs <- req:
@@ -262,16 +255,60 @@ func (c *Client) processTunnelUpdates(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case req := <-c.tunReqs:
-			err := c.sendTunnelUpdate(req.tunnels)
+			c.mu.RLock()
+			current := append([]Tunnel(nil), c.tunnels...)
+			c.mu.RUnlock()
+
+			next, err := applyTunnelMutation(current, req.mutation)
+			if err == nil {
+				err = c.sendTunnelUpdate(next)
+			}
 			if err == nil {
 				c.mu.Lock()
-				c.tunnels = make([]Tunnel, len(req.tunnels))
-				copy(c.tunnels, req.tunnels)
+				c.tunnels = append([]Tunnel(nil), next...)
 				c.mu.Unlock()
-				c.events.Emit(Event{Type: EventTunnelSynced, Data: map[string]any{"count": len(req.tunnels)}})
+				c.events.Emit(Event{Type: EventTunnelSynced, Data: map[string]any{"count": len(next)}})
 			}
 			req.resp <- err
 		}
+	}
+}
+
+func applyTunnelMutation(current []Tunnel, mutation tunnelMutation) ([]Tunnel, error) {
+	switch mutation.kind {
+	case tunnelMutationAdd:
+		next := make([]Tunnel, 0, len(current)+1)
+		replaced := false
+		for _, existing := range current {
+			if existing.Name == mutation.tunnel.Name {
+				next = append(next, mutation.tunnel)
+				replaced = true
+				continue
+			}
+			next = append(next, existing)
+		}
+		if !replaced {
+			next = append(next, mutation.tunnel)
+		}
+		return next, nil
+	case tunnelMutationRemove:
+		next := make([]Tunnel, 0, len(current))
+		found := false
+		for _, existing := range current {
+			if existing.Name == mutation.name {
+				found = true
+				continue
+			}
+			next = append(next, existing)
+		}
+		if !found {
+			return nil, fmt.Errorf("tunnel %q not found", mutation.name)
+		}
+		return next, nil
+	case tunnelMutationReplaceAll:
+		return append([]Tunnel(nil), mutation.tunnels...), nil
+	default:
+		return nil, fmt.Errorf("unknown tunnel mutation kind: %d", mutation.kind)
 	}
 }
 

@@ -5,13 +5,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 header{background:#1a1a2e;color:#fff;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
 header h1{font-size:16px;font-weight:600;letter-spacing:.5px}
 .header-left{display:flex;align-items:center;gap:12px}
-.header-right{font-size:13px;color:#aaa;display:flex;gap:16px}
+.header-right{font-size:13px;color:#aaa;display:flex;gap:16px;align-items:center}
+.refresh-info{font-size:12px;color:#b8c0d0}
+.refresh-info.error{color:#fbbf24}
 .conn-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:500}
 .conn-badge::before{content:'';width:7px;height:7px;border-radius:50%}
 .conn-badge.online{background:rgba(39,174,96,.2);color:#2ecc71}
 .conn-badge.online::before{background:#2ecc71}
 .conn-badge.offline{background:rgba(231,76,60,.2);color:#e74c3c}
 .conn-badge.offline::before{background:#e74c3c}
+.conn-badge.stale{background:rgba(245,158,11,.2);color:#f59e0b}
+.conn-badge.stale::before{background:#f59e0b}
 
 /* Layout */
 .container{max-width:1100px;margin:0 auto;padding:16px}

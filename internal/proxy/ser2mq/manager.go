@@ -14,6 +14,10 @@ type Manager struct {
 	nodeID  string
 	ctx     context.Context
 	cancel  context.CancelFunc
+
+	newHandler   func(name, nodeID string, cfg Ser2MQConfig) (*Ser2MQHandler, error)
+	startHandler func(handler *Ser2MQHandler, ctx context.Context) error
+	stopHandler  func(handler *Ser2MQHandler)
 }
 
 // NewManager 创建管理器
@@ -24,6 +28,15 @@ func NewManager(ctx context.Context, nodeID string) *Manager {
 		nodeID:  nodeID,
 		ctx:     ctx,
 		cancel:  cancel,
+		newHandler: func(name, nodeID string, cfg Ser2MQConfig) (*Ser2MQHandler, error) {
+			return NewHandler(name, nodeID, cfg)
+		},
+		startHandler: func(handler *Ser2MQHandler, ctx context.Context) error {
+			return handler.Start(ctx)
+		},
+		stopHandler: func(handler *Ser2MQHandler) {
+			handler.Stop()
+		},
 	}
 }
 
@@ -44,7 +57,7 @@ func (m *Manager) Close() {
 	defer m.mu.Unlock()
 
 	for _, h := range m.tunnels {
-		h.Stop()
+		m.stopHandler(h)
 	}
 }
 
@@ -63,12 +76,12 @@ func (m *Manager) Create(name string, cfg Ser2MQConfig) error {
 		}
 	}
 
-	handler, err := NewHandler(name, m.nodeID, cfg)
+	handler, err := m.newHandler(name, m.nodeID, cfg)
 	if err != nil {
 		return err
 	}
 
-	if err := handler.Start(m.ctx); err != nil {
+	if err := m.startHandler(handler, m.ctx); err != nil {
 		return err
 	}
 
@@ -81,7 +94,7 @@ func (m *Manager) Stop(name string) error {
 	m.mu.Lock()
 	handler, ok := m.tunnels[name]
 	if ok {
-		handler.Stop()
+		m.stopHandler(handler)
 		delete(m.tunnels, name)
 	}
 	m.mu.Unlock()
@@ -124,30 +137,36 @@ func (m *Manager) OnTunnelUpdate(tunnelConfigs map[string]Ser2MQConfig) {
 
 	// 停止不再需要的隧道
 	for name, h := range m.tunnels {
-		if _, ok := tunnelConfigs[name]; !ok {
+		cfg, ok := tunnelConfigs[name]
+		if !ok || !cfg.Enable {
 			log.Printf("ser2mq: stopping removed tunnel %s", name)
-			h.Stop()
+			m.stopHandler(h)
 			delete(m.tunnels, name)
 		}
 	}
 
-	// 启动新增的隧道
+	// 启动新增隧道，并在配置变化时重建已有隧道
 	for name, cfg := range tunnelConfigs {
-		if _, ok := m.tunnels[name]; ok {
-			continue // 已存在，跳过
-		}
-
 		if !cfg.Enable {
 			continue // 未启用
 		}
 
-		handler, err := NewHandler(name, m.nodeID, cfg)
+		if existing, ok := m.tunnels[name]; ok {
+			if existing.cfg == cfg && existing.nodeID == m.nodeID && existing.IsRunning() {
+				continue
+			}
+			log.Printf("ser2mq: restarting tunnel %s to apply updated config", name)
+			m.stopHandler(existing)
+			delete(m.tunnels, name)
+		}
+
+		handler, err := m.newHandler(name, m.nodeID, cfg)
 		if err != nil {
 			log.Printf("ser2mq: create handler %s error: %v", name, err)
 			continue
 		}
 
-		if err := handler.Start(m.ctx); err != nil {
+		if err := m.startHandler(handler, m.ctx); err != nil {
 			log.Printf("ser2mq: start tunnel %s error: %v", name, err)
 			continue
 		}

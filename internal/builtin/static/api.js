@@ -1,18 +1,50 @@
 // api.js — 统一 API 客户端
 const BASE = '';
+const DEFAULT_TIMEOUT_MS = 5000;
 
-async function request(method, path, body) {
-  const opts = { method, headers: {} };
+export async function request(method, path, body, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const opts = { method, headers: {}, signal: controller.signal };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(BASE + path, opts);
-  const data = await res.json();
-  if (data.error) {
-    throw new Error(data.error);
+
+  const timeoutId = timeoutMs > 0
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : 0;
+
+  try {
+    const res = await fetch(BASE + path, opts);
+    const contentType = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+    const isJSON = contentType.includes('application/json');
+    const payload = isJSON
+      ? await res.json()
+      : await res.text();
+
+    if (!res.ok) {
+      const message = isJSON
+        ? payload.error || JSON.stringify(payload)
+        : payload || res.statusText || 'request failed';
+      throw new Error(`HTTP ${res.status}: ${message}`);
+    }
+
+    if (isJSON && payload && payload.error) {
+      throw new Error(payload.error);
+    }
+
+    return payload;
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
-  return data;
 }
 
 export const api = {

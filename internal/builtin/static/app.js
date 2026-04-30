@@ -1,10 +1,10 @@
 // app.js — 主应用逻辑
 import { api } from './api.js';
+import { syncTunnelTable } from './render.js';
 
 // ===== 工具函数 =====
 
 const $ = (s) => document.querySelector(s);
-const $$ = (s) => document.querySelectorAll(s);
 
 function fmtBytes(b) {
   if (!b || b === 0) return '0 B';
@@ -42,6 +42,22 @@ let tunnels = [];
 let selectedName = null;
 let refreshPending = false;
 let refreshTimer = null;
+let lastStatsKey = '';
+let lastTunnelListKey = '';
+let lastDetailKey = '';
+
+function setRefreshInfo(text, isError = false) {
+  const el = $('#refresh-info');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('error', isError);
+}
+
+function staleConnectionBadge() {
+  const badge = $('#conn-badge');
+  badge.textContent = '数据过期';
+  badge.className = 'conn-badge stale';
+}
 
 // ===== 渲染: 全局状态 =====
 
@@ -76,35 +92,7 @@ function statBox(label, value) {
 
 function renderTunnels() {
   const tbody = $('#tunnels-tbody');
-  if (!tunnels.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#aaa;padding:24px">暂无隧道</td></tr>';
-    return;
-  }
-
-  tbody.innerHTML = tunnels.map(t => {
-    const typeClass = t.type || 'http';
-    const sel = t.name === selectedName ? ' class="selected"' : '';
-    const statusHtml = t.connected
-      ? '<span class="status on">运行中</span>'
-      : '<span class="status off">离线</span>';
-    const bytesIn = fmtBytes(t.bytes_in);
-    const bytesOut = fmtBytes(t.bytes_out);
-
-    let actions = `<button class="btn btn-danger btn-sm" data-action="delete" data-name="${esc(t.name)}">删除</button>`;
-    if (t.type === 'ser2mq' || t.type === 'vpn-manager') {
-      actions = `<button class="btn btn-sm btn-primary" data-action="detail" data-name="${esc(t.name)}">详情</button> ` + actions;
-    }
-
-    return `<tr${sel}>
-      <td><strong>${esc(t.name)}</strong></td>
-      <td><span class="badge badge-${typeClass}">${esc(t.type).toUpperCase()}</span></td>
-      <td style="font-size:12px;color:#666">${esc(t.target)}</td>
-      <td>${statusHtml}</td>
-      <td>${bytesIn}</td>
-      <td>${bytesOut}</td>
-      <td class="actions-cell">${actions}</td>
-    </tr>`;
-  }).join('');
+  syncTunnelTable(tbody, tunnels, selectedName);
 }
 
 // ===== 渲染: 详情面板 =====
@@ -112,6 +100,11 @@ function renderTunnels() {
 function renderDetail(tunnel) {
   const panel = $('#detail-panel');
   const content = $('#detail-content');
+  const detailKey = JSON.stringify(tunnel);
+  if (!panel.classList.contains('hidden') && detailKey === lastDetailKey) {
+    return;
+  }
+  lastDetailKey = detailKey;
   $('#detail-title').textContent = tunnel.name + ' — ' + tunnel.type.toUpperCase();
 
   let html = '<div class="detail-grid">';
@@ -325,16 +318,28 @@ async function refreshData() {
     ]);
     globalStatus = status;
     tunnels = tunnelList;
-    renderHeader(status);
-    renderStatsBar(status);
-    renderTunnels();
+    const statsKey = JSON.stringify(status);
+    if (statsKey !== lastStatsKey) {
+      renderHeader(status);
+      renderStatsBar(status);
+      lastStatsKey = statsKey;
+    }
+
+    const tunnelListKey = JSON.stringify(tunnelList);
+    if (tunnelListKey !== lastTunnelListKey) {
+      renderTunnels();
+      lastTunnelListKey = tunnelListKey;
+    }
 
     // 更新详情面板
     if (selectedName) {
       const t = tunnels.find(t => t.name === selectedName);
       if (t) renderDetail(t);
     }
+    setRefreshInfo('最近刷新: ' + new Date().toLocaleTimeString('zh-CN'));
   } catch (e) {
+    staleConnectionBadge();
+    setRefreshInfo('刷新失败: ' + (e.message || e), true);
     console.error('refresh error:', e);
   } finally {
     refreshPending = false;
