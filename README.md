@@ -64,18 +64,6 @@ MQTT 主题：`/mole/<nodeid>/serial/<port>/out`（串口→MQTT）、`/mole/<no
 
 内置 HTTP 服务（默认 `127.0.0.1:18080`），所有隧道类型共享统一路由：
 
-<<<<<<< HEAD
-```text
-GET    /api/status
-GET    /api/tunnels
-POST   /api/tunnels
-GET    /api/tunnels/{name}
-DELETE /api/tunnels/{name}
-POST   /api/tunnels/{name}/start
-POST   /api/tunnels/{name}/stop
-GET    /api/tunnels/{name}/logs
-```
-=======
 ### 隧道管理
 
 | 方法 | 端点 | 说明 |
@@ -92,6 +80,16 @@ GET    /api/tunnels/{name}/logs
 | `POST` | `/api/tunnels/:name/start` | vpn-manager | 启动进程 |
 | `POST` | `/api/tunnels/:name/stop` | vpn-manager | 停止进程 |
 | `GET` | `/api/tunnels/:name/logs` | vpn-manager | 崩溃日志 |
+| `GET` | `/api/tunnels/:name/stream` | ser2mq | SSE 实时数据流 |
+
+### 实时数据流（SSE）
+
+`GET /api/tunnels/:name/stream` 仅适用于 ser2mq 隧道：
+
+- 返回 `text/event-stream`
+- 支持 `?tail=N` 参数（默认 20，最大 200），回放历史事件
+- 事件类型 `packet`，数据为 JSON PacketEvent
+- 关闭连接即取消订阅
 
 ### 全局状态
 
@@ -131,9 +129,8 @@ GET    /api/tunnels/{name}/logs
 
 - 实时连接状态与流量监控
 - 统一隧道列表，支持所有类型
-- ser2mq 隧道详情面板（串口/MQTT 状态）
+- ser2mq 隧道详情面板（串口/MQTT 状态 + 实时数据流）
 - VPN 管理面板（启停/崩溃日志）
->>>>>>> 63d88fa278852d36ae9491996a6242c09a8b0326
 
 ## 构建
 
