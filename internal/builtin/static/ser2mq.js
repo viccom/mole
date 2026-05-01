@@ -1,7 +1,7 @@
 // ser2mq.js — 串口转 MQTT 隧道管理（移植自 mole-cgui，适配 REST API + SSE）
 import { api } from './api.js';
 import { openSer2MQStream, closeSer2MQStream } from './ser2mq-stream.js';
-import { fmtBytes, esc, toast } from './main.js';
+import { fmtBytes, esc, toast, activateTopTab, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
 
 let tunnels = [];
 let nodeID = '';
@@ -38,6 +38,7 @@ export function initSer2MQ() {
 
   // 表单按钮
   document.getElementById('btn-add-ser2mq').addEventListener('click', showAddForm);
+  document.getElementById('btn-add-ser2mq-secondary').addEventListener('click', showAddForm);
   document.getElementById('btn-cancel-ser2mq').addEventListener('click', hideForm);
   document.getElementById('btn-save-ser2mq').addEventListener('click', saveForm);
   document.getElementById('btn-gen-key').addEventListener('click', generateKey);
@@ -55,7 +56,12 @@ export function initSer2MQ() {
   document.getElementById('df-select-tunnel').addEventListener('change', (e) => {
     const name = e.target.value;
     if (name) openStream(name);
-    else closeSer2MQStream();
+    else {
+      flowTunnel = null;
+      setText('serial-streaming', '未选择');
+      closeSer2MQStream();
+      renderFlow();
+    }
   });
   document.getElementById('df-filter-dir').addEventListener('change', scheduleFlowRender);
   document.getElementById('df-filter-search').addEventListener('input', () => {
@@ -81,8 +87,26 @@ export function initSer2MQ() {
 // ===== 渲染隧道表格 =====
 function render() {
   const tbody = document.getElementById('ser2mq-tbody');
+  const onlineCount = tunnels.filter(t => t.connected).length;
+  const enabledCount = tunnels.filter(t => t.enabled).length;
+  const firstBroker = tunnels.find(t => (t.status || {}).broker || t.target);
+  const firstPort = tunnels.find(t => (t.status || {}).serial_port);
+  setText('serial-total', String(tunnels.length));
+  setText('serial-online', String(onlineCount));
+  setText('serial-enabled', String(enabledCount));
+  setText('serial-streaming', flowTunnel || '未选择');
+  setText('serial-broker-summary', firstBroker ? ((firstBroker.status || {}).broker || firstBroker.target || '-') : '暂无 Broker');
+  setText('serial-port-summary', firstPort ? ((firstPort.status || {}).serial_port || '-') : '暂无端口');
+  setText('serial-health-note', tunnels.length ? `当前 ${onlineCount}/${tunnels.length} 条链路在线` : '创建串口桥接后可查看可用率');
+  renderVizBars('serial-state-chart', [
+    { label: '运行中', value: onlineCount, color: '#10b981' },
+    { label: '已启用', value: Math.max(enabledCount - onlineCount, 0), color: '#3b82f6' },
+    { label: '未启用', value: Math.max(tunnels.length - enabledCount, 0), color: '#94a3b8' }
+  ], '暂无运行分布', '新增 Ser2MQ 隧道后这里会显示运行状态。');
+  renderVizRing('serial-health-ring', onlineCount, tunnels.length, '#06b6d4');
+
   if (!tunnels.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#aaa;padding:20px">暂无 Ser2MQ 隧道</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty-cell">${emptyStateMarkup('暂无 Ser2MQ 隧道', '建议先创建串口桥接，配置好 Broker、密钥和串口参数后，再进入实时数据查看收发内容。', 'S')}</td></tr>`;
     return;
   }
   tbody.innerHTML = tunnels.map(t => {
@@ -118,6 +142,7 @@ function updateFlowTunnelOptions() {
   if (current && tunnels.some(t => t.name === current)) sel.value = current;
 }
 function showAddForm() {
+  activateSubpanel('serial', 'serial-form-view');
   editingName = null;
   document.getElementById('ser2mq-form-title').textContent = '新增 Ser2MQ 隧道';
   document.getElementById('sf-name').value = '';
@@ -136,6 +161,7 @@ function showAddForm() {
 }
 
 function showEditForm(t) {
+  activateSubpanel('serial', 'serial-form-view');
   editingName = t.name;
   document.getElementById('ser2mq-form-title').textContent = '编辑 Ser2MQ 隧道';
   document.getElementById('sf-name').value = t.name;
@@ -156,6 +182,7 @@ function showEditForm(t) {
 function hideForm() {
   document.getElementById('ser2mq-form').style.display = 'none';
   editingName = null;
+  activateSubpanel('serial', 'serial-list-view');
 }
 
 function saveForm() {
@@ -223,11 +250,15 @@ function updateTopicPreview() {
 
 // ===== 数据流 =====
 function openStream(name) {
+  activateTopTab('serial');
+  activateSubpanel('serial', 'serial-flow-view');
   flowPackets = [];
   flowTunnel = name;
   flowPaused = false;
   updatePauseBtn();
+  setText('serial-streaming', name);
   document.getElementById('df-select-tunnel').value = name;
+  renderFlow();
 
   closeSer2MQStream();
   openSer2MQStream(name, {
@@ -239,11 +270,6 @@ function openStream(name) {
     onError: (err) => console.warn('stream error:', err.message)
   }, { tail: 50 });
 
-  // 切换到串口 tab 并滚动到数据流
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.querySelector('[data-tab="serial"]').classList.add('active');
-  document.getElementById('panel-serial').classList.add('active');
   document.getElementById('ser2mq-dataflow').scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -258,7 +284,7 @@ function renderFlow() {
   const list = document.getElementById('dataflow-list');
   if (flowPaused || !flowPackets.length) {
     if (!flowPackets.length) {
-      list.innerHTML = '<div class="dataflow-empty">暂无数据</div>';
+      list.innerHTML = emptyStateMarkup(flowTunnel ? '正在等待数据包' : '暂无数据流', flowTunnel ? '链路已打开，但暂时还没有新的串口或 MQTT 数据到达。' : '先选择一条 Ser2MQ 隧道并打开数据流，再在这里观察实时收发。', '~', true);
     }
     return;
   }
@@ -277,6 +303,11 @@ function renderFlow() {
 
   const visible = filtered.slice(-200);
   const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 24;
+
+  if (!visible.length) {
+    list.innerHTML = emptyStateMarkup('没有匹配结果', '当前筛选条件下没有找到符合要求的数据包，请调整方向过滤或搜索关键字。', '?', true);
+    return;
+  }
 
   list.innerHTML = visible.map(p => {
     const dir = p.dir || '?';
@@ -306,4 +337,9 @@ function updatePauseBtn() {
   const btn = document.getElementById('btn-pause-flow');
   btn.textContent = flowPaused ? '继续' : '暂停';
   btn.classList.toggle('btn-primary', flowPaused);
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
 }

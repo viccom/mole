@@ -9,212 +9,550 @@
 <body>
 <div id="app">
   <header class="header">
-    <h1 class="logo">moleAgent</h1>
-    <nav class="tabs">
-      <button class="tab active" data-tab="dashboard">仪表盘</button>
-      <button class="tab" data-tab="tunnels">隧道</button>
-      <button class="tab" data-tab="serial">串口</button>
-      <button class="tab" data-tab="vpn">VPN</button>
-    </nav>
-    <div class="header-right">
-      <span id="conn-badge" class="conn-badge offline">已断开</span>
+    <div class="header-shell">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg class="brand-mark-svg" viewBox="0 0 48 48">
+            <path d="M24 6 10 14v19l14 9 14-9V14L24 6Z" fill="rgba(255,255,255,0.2)"/>
+            <path d="M24 10 14 16.2v13.6L24 36l10-6.2V16.2L24 10Z" fill="none" stroke="currentColor" stroke-width="2.6"/>
+            <path d="M17 24h14M24 17v14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="brand-copy">
+          <h1 class="logo">moleAgent</h1>
+          <div class="brand-subtitle">内网穿透控制台</div>
+          <div class="brand-badge">Secure Mesh Console</div>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="dashboard">仪表盘</button>
+        <button class="tab" data-tab="tunnels">隧道</button>
+        <button class="tab" data-tab="serial">串口</button>
+        <button class="tab" data-tab="vpn">VPN</button>
+      </nav>
+      <div class="header-right">
+        <span class="header-pill">自动刷新</span>
+        <span id="conn-badge" class="conn-badge offline">已断开</span>
+      </div>
     </div>
   </header>
 
   <!-- 仪表盘 -->
   <section id="panel-dashboard" class="panel active">
-    <div class="card">
-      <div class="card-header">
-        <h2>连接状态</h2>
+    <div id="dashboard-hero" class="card dashboard-hero">
+      <div class="dashboard-hero-head">
+        <div>
+          <div class="section-kicker">系统总览</div>
+          <h2>节点与服务链路</h2>
+          <p class="section-desc">将顶部导航和首页主视图区统一到同一视觉中轴，优先呈现当前节点、服务端和隧道运行状态。</p>
+        </div>
         <span id="refresh-info" class="refresh-info">等待首次刷新</span>
       </div>
-      <div class="info-grid">
-        <div class="info-item"><span class="info-label">节点</span><span id="info-node" class="info-value">-</span></div>
-        <div class="info-item"><span class="info-label">服务器</span><span id="info-server" class="info-value">-</span></div>
+      <div class="topology">
+        <div class="topology-node">
+          <div class="node-icon" aria-hidden="true">
+            <svg class="node-icon-svg" viewBox="0 0 24 24"><path d="M4 6h16v10H4zM8 20h8M10 16h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="node-title">本地节点</div>
+          <div id="info-node" class="node-value">-</div>
+        </div>
+        <div class="topology-link">
+          <span class="link-line"></span>
+          <span id="overview-connection" class="link-text">等待连接</span>
+        </div>
+        <div class="topology-node topology-node-core">
+          <div class="node-icon" aria-hidden="true">
+            <svg class="node-icon-svg" viewBox="0 0 24 24"><path d="M12 3 5 7v10l7 4 7-4V7l-7-4Zm0 4.2 3.2 1.8v4L12 15l-3.2-1.9v-4L12 7.2Z" fill="currentColor"/></svg>
+          </div>
+          <div class="node-title">moleAgent</div>
+          <div id="overview-tunnel-count" class="node-value">0 条隧道</div>
+        </div>
+        <div class="topology-link">
+          <span class="link-line"></span>
+          <span class="link-text">转发链路</span>
+        </div>
+        <div class="topology-node">
+          <div class="node-icon" aria-hidden="true">
+            <svg class="node-icon-svg" viewBox="0 0 24 24"><path d="M7 18h10M5 14h14M6 10h12M8 6h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </div>
+          <div class="node-title">服务端</div>
+          <div id="info-server" class="node-value">-</div>
+        </div>
+      </div>
+      <div class="hero-summary">
+        <div class="hero-summary-item">
+          <span class="hero-summary-label">连接状态</span>
+          <span id="overview-conn-text" class="hero-summary-value">已断开</span>
+        </div>
+        <div class="hero-summary-item">
+          <span class="hero-summary-label">在线隧道</span>
+          <span id="overview-online-count" class="hero-summary-value">0</span>
+        </div>
+        <div class="hero-summary-item">
+          <span class="hero-summary-label">控制台状态</span>
+          <span class="hero-summary-value">运行中</span>
+        </div>
       </div>
     </div>
-    <div class="card">
-      <div class="card-header"><h2>流量统计</h2></div>
-      <div class="stats-grid" id="stats-bar"></div>
+
+    <div class="dashboard-grid">
+      <div class="card">
+        <div class="card-header">
+          <h2>节点详情</h2>
+        </div>
+        <div class="info-grid">
+          <div class="info-item"><span class="info-label">节点 ID</span><span id="info-node-secondary" class="info-value">-</span></div>
+          <div class="info-item"><span class="info-label">服务地址</span><span id="info-server-secondary" class="info-value">-</span></div>
+          <div class="info-item"><span class="info-label">链路状态</span><span id="info-conn-secondary" class="info-value">未连接</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h2>流量统计</h2>
+        </div>
+        <div class="stats-grid" id="stats-bar"></div>
+      </div>
     </div>
   </section>
 
   <!-- 隧道 (HTTP/HTTPS/TCP/UDP) -->
   <section id="panel-tunnels" class="panel">
-    <div class="card">
-      <div class="card-header">
-        <h2>隧道列表</h2>
-        <div class="actions">
-          <button id="btn-refresh-tunnels" class="btn">刷新</button>
-          <button id="btn-add-tunnel" class="btn btn-primary">新增隧道</button>
+    <div class="subnav">
+      <button class="subnav-item active" data-panel="tunnels" data-target="tunnels-overview">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 6h7v5H4zM13 6h7v8h-7zM4 13h7v5H4zM13 16h7v2h-7z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">总览</span>
+      </button>
+      <button class="subnav-item" data-panel="tunnels" data-target="tunnels-list-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M5 6h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">隧道列表</span>
+      </button>
+      <button class="subnav-item" data-panel="tunnels" data-target="tunnels-actions">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M13.6 4.4 12 2.8 7.8 7l1.6 1.6L13.6 4.4Zm3 3L15 5.8l-7.2 7.2-.6 3 3-.6L17 8.6ZM4 18h16v2H4z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">操作中心</span>
+      </button>
+    </div>
+
+    <div id="tunnels-overview" class="subview active" data-panel="tunnels">
+      <div class="card overview-card">
+        <div class="card-header">
+          <div>
+            <div class="section-kicker">Tunnel Overview</div>
+            <h2>多协议转发概览</h2>
+          </div>
+          <span class="section-note">优先查看活跃链路，再进入列表做管理。</span>
+        </div>
+        <div class="overview-metrics">
+          <div class="metric-card"><span class="metric-label">隧道总数</span><span id="tunnels-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">在线隧道</span><span id="tunnels-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">HTTP/HTTPS</span><span id="tunnels-web" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">TCP/UDP</span><span id="tunnels-stream" class="metric-value">0</span></div>
+        </div>
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-title">Web 转发</div>
+            <div id="tunnels-http-summary" class="feature-value">暂无配置</div>
+            <div class="feature-desc">适合 HTTP / HTTPS 服务映射与网关代理。</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-title">原始流量</div>
+            <div id="tunnels-tcp-summary" class="feature-value">暂无配置</div>
+            <div class="feature-desc">适合 TCP / UDP 直通，强调稳定与吞吐。</div>
+          </div>
+        </div>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <div class="viz-title">协议分布</div>
+            <div id="tunnels-type-chart" class="viz-list"></div>
+          </div>
+          <div class="viz-card viz-card-center">
+            <div class="viz-title">在线率</div>
+            <div id="tunnels-health-ring" class="viz-ring">0%</div>
+            <div id="tunnels-health-note" class="viz-note">等待隧道数据</div>
+          </div>
         </div>
       </div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr>
-            <th>名称</th><th>类型</th><th>目标</th><th>状态</th><th>流入</th><th>流出</th><th>操作</th>
-          </tr></thead>
-          <tbody id="tunnels-tbody"></tbody>
-        </table>
+    </div>
+
+    <div id="tunnels-list-view" class="subview" data-panel="tunnels">
+      <div class="card">
+        <div class="card-header">
+          <h2>隧道列表</h2>
+          <div class="actions">
+            <button id="btn-refresh-tunnels" class="btn">刷新</button>
+            <button id="btn-add-tunnel" class="btn btn-primary">新增隧道</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>名称</th><th>类型</th><th>目标</th><th>状态</th><th>流入</th><th>流出</th><th>操作</th>
+            </tr></thead>
+            <tbody id="tunnels-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="tunnels-actions" class="subview" data-panel="tunnels">
+      <div class="card action-card">
+        <div class="card-header">
+          <h2>操作中心</h2>
+          <button class="btn btn-primary" id="btn-add-tunnel-secondary">新增隧道</button>
+        </div>
+        <div class="action-grid">
+          <div class="action-tile">
+            <div class="feature-title">创建新映射</div>
+            <div class="feature-desc">先创建，再回到列表核对目标地址、协议类型和在线状态。</div>
+          </div>
+          <div class="action-tile">
+            <div class="feature-title">刷新当前状态</div>
+            <div class="feature-desc">获取服务端最新分配和运行时流量，避免看到过期数据。</div>
+          </div>
+          <div class="action-tile">
+            <div class="feature-title">删除闲置隧道</div>
+            <div class="feature-desc">只保留正在用的映射，减少误操作和界面噪音。</div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
   <!-- 串口 (Ser2MQ) -->
   <section id="panel-serial" class="panel">
-    <div class="card">
-      <div class="card-header">
-        <h2>Ser2MQ 隧道</h2>
-        <div class="actions">
-          <button id="btn-refresh-ser2mq" class="btn">刷新</button>
-          <button id="btn-add-ser2mq" class="btn btn-primary">新增隧道</button>
-        </div>
-      </div>
-      <table class="table">
-        <thead><tr>
-          <th>名称</th><th>Broker</th><th>串口</th><th>启用</th><th>状态</th><th>流入/流出</th><th>操作</th>
-        </tr></thead>
-        <tbody id="ser2mq-tbody"></tbody>
-      </table>
+    <div class="subnav">
+      <button class="subnav-item active" data-panel="serial" data-target="serial-overview">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 6h7v5H4zM13 6h7v8h-7zM4 13h7v5H4zM13 16h7v2h-7z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">总览</span>
+      </button>
+      <button class="subnav-item" data-panel="serial" data-target="serial-list-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M5 6h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">隧道列表</span>
+      </button>
+      <button class="subnav-item" data-panel="serial" data-target="serial-form-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M6 4h12v2H6zm0 4h12v12H6zm2 2v2h8v-2zm0 4v2h5v-2z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">配置表单</span>
+      </button>
+      <button class="subnav-item" data-panel="serial" data-target="serial-flow-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M3 13h4l2-6 4 12 2-6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="subnav-text">实时数据</span>
+      </button>
     </div>
 
-    <div id="ser2mq-form" class="card" style="display:none">
-      <h2 id="ser2mq-form-title">新增 Ser2MQ 隧道</h2>
-      <div class="form-hint-box">模式: <strong>Acceptor</strong> — 将本地串口通过 MQTT 桥接暴露，等待远端 mole-cgui 连接。Topic: <code>/mole/{nodeID}/serial/{port}/out</code> (串口→MQTT) 和 <code>/mole/{nodeID}/serial/{port}/in</code> (MQTT→串口)。</div>
-      <div class="form-section-title">基本信息</div>
-      <div class="form-row">
-        <label>名称</label>
-        <input id="sf-name" type="text" placeholder="如: plc-serial" style="max-width:200px">
-      </div>
-      <div class="form-section-title">MQTT 连接</div>
-      <div class="form-grid">
-        <div class="form-row"><label>Broker URL</label><input id="sf-broker" type="text" placeholder="mqtt://user:pass@host:1883"></div>
-        <div class="form-row">
-          <label>加密密钥</label>
-          <input id="sf-secret" type="text" placeholder="64字符hex密钥">
-          <button id="btn-gen-key" class="btn btn-sm">生成</button>
+    <div id="serial-overview" class="subview active" data-panel="serial">
+      <div class="card overview-card">
+        <div class="card-header">
+          <div>
+            <div class="section-kicker">Ser2MQ Overview</div>
+            <h2>串口桥接概览</h2>
+          </div>
+          <span class="section-note">围绕“配置正确、链路在线、数据可观测”组织操作。</span>
         </div>
-        <div class="form-row">
-          <label>QoS</label>
-          <select id="sf-qos">
-            <option value="0">0 - 最多一次</option>
-            <option value="1" selected>1 - 至少一次</option>
-            <option value="2">2 - 恰好一次</option>
-          </select>
+        <div class="overview-metrics">
+          <div class="metric-card"><span class="metric-label">隧道总数</span><span id="serial-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">运行中</span><span id="serial-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">已启用</span><span id="serial-enabled" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">当前流</span><span id="serial-streaming" class="metric-value">未选择</span></div>
         </div>
-      </div>
-      <div id="topic-preview" class="topic-preview" style="display:none">
-        <div>订阅: <code id="tp-sub"></code></div>
-        <div>发布: <code id="tp-pub"></code></div>
-      </div>
-      <div class="form-section-title">串口配置</div>
-      <div class="form-grid">
-        <div class="form-row"><label>串口端口</label><input id="sf-port" type="text" placeholder="/dev/ttyUSB0"></div>
-        <div class="form-row">
-          <label>波特率</label>
-          <select id="sf-baudrate">
-            <option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option>
-            <option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option>
-            <option value="57600">57600</option><option value="115200">115200</option>
-          </select>
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-title">MQTT 链路</div>
+            <div id="serial-broker-summary" class="feature-value">暂无 Broker</div>
+            <div class="feature-desc">建议优先检查 Broker 地址、密钥和 QoS 是否一致。</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-title">串口入口</div>
+            <div id="serial-port-summary" class="feature-value">暂无端口</div>
+            <div class="feature-desc">常用端口与波特率会影响调试效率，建议固定规范命名。</div>
+          </div>
         </div>
-        <div class="form-row">
-          <label>数据位</label>
-          <select id="sf-databits"><option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option></select>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <div class="viz-title">运行分布</div>
+            <div id="serial-state-chart" class="viz-list"></div>
+          </div>
+          <div class="viz-card viz-card-center">
+            <div class="viz-title">链路可用率</div>
+            <div id="serial-health-ring" class="viz-ring">0%</div>
+            <div id="serial-health-note" class="viz-note">等待串口数据</div>
+          </div>
         </div>
-        <div class="form-row">
-          <label>停止位</label>
-          <select id="sf-stopbits"><option value="1" selected>1</option><option value="1.5">1.5</option><option value="2">2</option></select>
-        </div>
-        <div class="form-row">
-          <label>校验位</label>
-          <select id="sf-parity"><option value="N" selected>无</option><option value="E">偶</option><option value="O">奇</option></select>
-        </div>
-      </div>
-      <div class="form-check"><input type="checkbox" id="sf-enable" checked> 启用</div>
-      <div class="form-actions">
-        <button id="btn-save-ser2mq" class="btn btn-primary">保存</button>
-        <button id="btn-cancel-ser2mq" class="btn">取消</button>
       </div>
     </div>
 
-    <div id="ser2mq-dataflow" class="card">
-      <div class="card-header">
-        <h2>实时数据流</h2>
-        <div class="actions">
-          <select id="df-select-tunnel" class="filter-select">
-            <option value="">选择隧道</option>
-          </select>
-          <select id="df-filter-dir" class="filter-select">
-            <option value="all">全部</option><option value="serial">串口</option><option value="mqtt">MQTT</option>
-          </select>
-          <input id="df-filter-search" type="text" placeholder="搜索 hex..." class="filter-input">
-          <button id="btn-pause-flow" class="btn">暂停</button>
-          <button id="btn-clear-flow" class="btn">清空</button>
+    <div id="serial-list-view" class="subview" data-panel="serial">
+      <div class="card">
+        <div class="card-header">
+          <h2>Ser2MQ 隧道</h2>
+          <div class="actions">
+            <button id="btn-refresh-ser2mq" class="btn">刷新</button>
+            <button id="btn-add-ser2mq" class="btn btn-primary">新增隧道</button>
+          </div>
+        </div>
+        <table class="table">
+          <thead><tr>
+            <th>名称</th><th>Broker</th><th>串口</th><th>启用</th><th>状态</th><th>流入/流出</th><th>操作</th>
+          </tr></thead>
+          <tbody id="ser2mq-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="serial-form-view" class="subview" data-panel="serial">
+      <div class="card helper-card">
+        <div class="card-header">
+          <h2>配置入口</h2>
+          <button id="btn-add-ser2mq-secondary" class="btn btn-primary">新增隧道</button>
+        </div>
+        <p class="section-desc">新建或编辑串口桥接时，先完成 Broker、密钥和串口参数，再到实时数据页验证收发是否正常。</p>
+      </div>
+
+      <div id="ser2mq-form" class="card" style="display:none">
+        <h2 id="ser2mq-form-title">新增 Ser2MQ 隧道</h2>
+        <div class="form-hint-box">模式: <strong>Acceptor</strong> — 将本地串口通过 MQTT 桥接暴露，等待远端 mole-cgui 连接。Topic: <code>/mole/{nodeID}/serial/{port}/out</code> (串口→MQTT) 和 <code>/mole/{nodeID}/serial/{port}/in</code> (MQTT→串口)。</div>
+        <div class="form-section-title">基本信息</div>
+        <div class="form-row">
+          <label>名称</label>
+          <input id="sf-name" type="text" placeholder="如: plc-serial" style="max-width:200px">
+        </div>
+        <div class="form-section-title">MQTT 连接</div>
+        <div class="form-grid">
+          <div class="form-row"><label>Broker URL</label><input id="sf-broker" type="text" placeholder="mqtt://user:pass@host:1883"></div>
+          <div class="form-row">
+            <label>加密密钥</label>
+            <input id="sf-secret" type="text" placeholder="64字符hex密钥">
+            <button id="btn-gen-key" class="btn btn-sm">生成</button>
+          </div>
+          <div class="form-row">
+            <label>QoS</label>
+            <select id="sf-qos">
+              <option value="0">0 - 最多一次</option>
+              <option value="1" selected>1 - 至少一次</option>
+              <option value="2">2 - 恰好一次</option>
+            </select>
+          </div>
+        </div>
+        <div id="topic-preview" class="topic-preview" style="display:none">
+          <div>订阅: <code id="tp-sub"></code></div>
+          <div>发布: <code id="tp-pub"></code></div>
+        </div>
+        <div class="form-section-title">串口配置</div>
+        <div class="form-grid">
+          <div class="form-row"><label>串口端口</label><input id="sf-port" type="text" placeholder="/dev/ttyUSB0"></div>
+          <div class="form-row">
+            <label>波特率</label>
+            <select id="sf-baudrate">
+              <option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option>
+              <option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option>
+              <option value="57600">57600</option><option value="115200">115200</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>数据位</label>
+            <select id="sf-databits"><option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option></select>
+          </div>
+          <div class="form-row">
+            <label>停止位</label>
+            <select id="sf-stopbits"><option value="1" selected>1</option><option value="1.5">1.5</option><option value="2">2</option></select>
+          </div>
+          <div class="form-row">
+            <label>校验位</label>
+            <select id="sf-parity"><option value="N" selected>无</option><option value="E">偶</option><option value="O">奇</option></select>
+          </div>
+        </div>
+        <div class="form-check"><input type="checkbox" id="sf-enable" checked> 启用</div>
+        <div class="form-actions">
+          <button id="btn-save-ser2mq" class="btn btn-primary">保存</button>
+          <button id="btn-cancel-ser2mq" class="btn">取消</button>
         </div>
       </div>
-      <div id="dataflow-list" class="dataflow-list">
-        <div class="dataflow-empty">选中隧道查看数据流</div>
+    </div>
+
+    <div id="serial-flow-view" class="subview" data-panel="serial">
+      <div id="ser2mq-dataflow" class="card">
+        <div class="card-header">
+          <h2>实时数据流</h2>
+          <div class="actions">
+            <select id="df-select-tunnel" class="filter-select">
+              <option value="">选择隧道</option>
+            </select>
+            <select id="df-filter-dir" class="filter-select">
+              <option value="all">全部</option><option value="serial">串口</option><option value="mqtt">MQTT</option>
+            </select>
+            <input id="df-filter-search" type="text" placeholder="搜索 hex..." class="filter-input">
+            <button id="btn-pause-flow" class="btn">暂停</button>
+            <button id="btn-clear-flow" class="btn">清空</button>
+          </div>
+        </div>
+        <div id="dataflow-list" class="dataflow-list">
+          <div class="empty-state empty-state-dark">
+            <div class="empty-state-icon">~</div>
+            <div class="empty-state-title">选择隧道查看实时数据</div>
+            <div class="empty-state-desc">从上方选择正在运行的 Ser2MQ 隧道，系统会自动开始滚动展示串口与 MQTT 的收发内容。</div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
   <!-- VPN -->
   <section id="panel-vpn" class="panel">
-    <div class="card">
-      <div class="card-header">
-        <h2>VPN 隧道</h2>
-        <div class="actions">
-          <button id="btn-refresh-vpn" class="btn">刷新</button>
-          <button id="btn-add-vpn" class="btn btn-primary">新增 VPN</button>
-        </div>
-      </div>
-      <table class="table">
-        <thead><tr>
-          <th>名称</th><th>启用</th><th>状态</th><th>PID</th><th>运行时长</th><th>错误</th><th>操作</th>
-        </tr></thead>
-        <tbody id="vpn-tbody"></tbody>
-      </table>
+    <div class="subnav">
+      <button class="subnav-item active" data-panel="vpn" data-target="vpn-overview">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 6h7v5H4zM13 6h7v8h-7zM4 13h7v5H4zM13 16h7v2h-7z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">总览</span>
+      </button>
+      <button class="subnav-item" data-panel="vpn" data-target="vpn-list-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M5 6h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">实例列表</span>
+      </button>
+      <button class="subnav-item" data-panel="vpn" data-target="vpn-form-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M6 4h12v2H6zm0 4h12v12H6zm2 2v2h8v-2zm0 4v2h5v-2z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">配置表单</span>
+      </button>
+      <button class="subnav-item" data-panel="vpn" data-target="vpn-detail-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M12 5c5 0 9 6 9 7s-4 7-9 7-9-6-9-7 4-7 9-7Zm0 3.5A3.5 3.5 0 1 0 12 15a3.5 3.5 0 0 0 0-7Z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">运行详情</span>
+      </button>
     </div>
 
-    <div id="vpn-form" class="card" style="display:none">
-      <h2 id="vpn-form-title">新增 VPN 隧道</h2>
-      <div class="form-hint-box">管理 VPN 程序（如 vnt-cli）的启停和监视。程序从 <code>./vnt/</code> 目录或 <code>$PATH</code> 中查找。</div>
-      <div class="form-section-title">基本信息</div>
-      <div class="form-row">
-        <label>名称</label>
-        <input id="vf-name" type="text" placeholder="如: office-vpn" style="max-width:200px">
+    <div id="vpn-overview" class="subview active" data-panel="vpn">
+      <div class="card overview-card">
+        <div class="card-header">
+          <div>
+            <div class="section-kicker">VPN Overview</div>
+            <h2>VPN 管理概览</h2>
+          </div>
+          <span class="section-note">围绕启停、异常和运行详情组织常用路径。</span>
+        </div>
+        <div class="overview-metrics">
+          <div class="metric-card"><span class="metric-label">实例总数</span><span id="vpn-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">运行中</span><span id="vpn-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">已启用</span><span id="vpn-enabled" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">异常实例</span><span id="vpn-error-count" class="metric-value">0</span></div>
+        </div>
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-title">当前健康度</div>
+            <div id="vpn-health-summary" class="feature-value">暂无实例</div>
+            <div class="feature-desc">先处理启动失败和异常退出，再进入详情查看 peer 与路由。</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-title">运行入口</div>
+            <div id="vpn-running-summary" class="feature-value">暂无在线实例</div>
+            <div class="feature-desc">常用路径为启动、停机、查看详情和编辑程序参数。</div>
+          </div>
+        </div>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <div class="viz-title">实例状态</div>
+            <div id="vpn-state-chart" class="viz-list"></div>
+          </div>
+          <div class="viz-card viz-card-center">
+            <div class="viz-title">健康率</div>
+            <div id="vpn-health-ring" class="viz-ring">0%</div>
+            <div id="vpn-health-note" class="viz-note">等待 VPN 数据</div>
+          </div>
+        </div>
       </div>
-      <div class="form-row">
-        <label>程序名</label>
-        <input id="vf-binary" type="text" placeholder="vnt-cli" style="max-width:200px">
+    </div>
+
+    <div id="vpn-list-view" class="subview" data-panel="vpn">
+      <div class="card">
+        <div class="card-header">
+          <h2>VPN 隧道</h2>
+          <div class="actions">
+            <button id="btn-refresh-vpn" class="btn">刷新</button>
+            <button id="btn-add-vpn" class="btn btn-primary">新增 VPN</button>
+          </div>
+        </div>
+        <table class="table">
+          <thead><tr>
+            <th>名称</th><th>启用</th><th>状态</th><th>PID</th><th>运行时长</th><th>错误</th><th>操作</th>
+          </tr></thead>
+          <tbody id="vpn-tbody"></tbody>
+        </table>
       </div>
-      <div class="form-section-title">连接参数</div>
-      <div class="form-grid">
-        <div class="form-row"><label>Token</label><input id="vf-token" type="text" placeholder="连接令牌"></div>
-        <div class="form-row"><label>服务器</label><input id="vf-server" type="text" placeholder="vpn.example.com"></div>
-        <div class="form-row"><label>设备ID</label><input id="vf-device-id" type="text" placeholder="device-001"></div>
-        <div class="form-row"><label>设备名称</label><input id="vf-device-name" type="text" placeholder="My Device"></div>
-        <div class="form-row"><label>密码</label><input id="vf-password" type="password" placeholder="可选"></div>
+    </div>
+
+    <div id="vpn-form-view" class="subview" data-panel="vpn">
+      <div class="card helper-card">
+        <div class="card-header">
+          <h2>配置入口</h2>
+          <button id="btn-add-vpn-secondary" class="btn btn-primary">新增 VPN</button>
+        </div>
+        <p class="section-desc">推荐流程：先录入程序名与连接参数，再决定是否自动启动，最后到实例列表验证实际运行状态。</p>
+      </div>
+
+      <div id="vpn-form" class="card" style="display:none">
+        <h2 id="vpn-form-title">新增 VPN 隧道</h2>
+        <div class="form-hint-box">管理 VPN 程序（如 vnt-cli）的启停和监视。程序从 <code>./vnt/</code> 目录或 <code>$PATH</code> 中查找。</div>
+        <div class="form-section-title">基本信息</div>
         <div class="form-row">
-          <label>REST 端口</label>
-          <input id="vf-rest-port" type="number" value="59871" style="max-width:100px">
+          <label>名称</label>
+          <input id="vf-name" type="text" placeholder="如: office-vpn" style="max-width:200px">
         </div>
-      </div>
-      <div class="form-check"><input type="checkbox" id="vf-autostart"> 自动启动</div>
-      <div class="form-check"><input type="checkbox" id="vf-enable" checked> 启用</div>
-      <div class="form-actions">
-        <button id="btn-save-vpn" class="btn btn-primary">保存</button>
-        <button id="btn-cancel-vpn" class="btn">取消</button>
+        <div class="form-row">
+          <label>程序名</label>
+          <input id="vf-binary" type="text" placeholder="vnt-cli" style="max-width:200px">
+        </div>
+        <div class="form-section-title">连接参数</div>
+        <div class="form-grid">
+          <div class="form-row"><label>Token</label><input id="vf-token" type="text" placeholder="连接令牌"></div>
+          <div class="form-row"><label>服务器</label><input id="vf-server" type="text" placeholder="vpn.example.com"></div>
+          <div class="form-row"><label>设备ID</label><input id="vf-device-id" type="text" placeholder="device-001"></div>
+          <div class="form-row"><label>设备名称</label><input id="vf-device-name" type="text" placeholder="My Device"></div>
+          <div class="form-row"><label>密码</label><input id="vf-password" type="password" placeholder="可选"></div>
+          <div class="form-row">
+            <label>REST 端口</label>
+            <input id="vf-rest-port" type="number" value="59871" style="max-width:100px">
+          </div>
+        </div>
+        <div class="form-check"><input type="checkbox" id="vf-autostart"> 自动启动</div>
+        <div class="form-check"><input type="checkbox" id="vf-enable" checked> 启用</div>
+        <div class="form-actions">
+          <button id="btn-save-vpn" class="btn btn-primary">保存</button>
+          <button id="btn-cancel-vpn" class="btn">取消</button>
+        </div>
       </div>
     </div>
 
-    <div id="vpn-detail" class="card" style="display:none">
-      <div class="card-header">
-        <h2 id="vpn-detail-title">VPN 详情</h2>
-        <button id="btn-close-vpn-detail" class="btn btn-sm">关闭</button>
+    <div id="vpn-detail-view" class="subview" data-panel="vpn">
+      <div id="vpn-detail-empty" class="card empty-card">
+        <div class="empty-state">
+          <div class="empty-state-icon">i</div>
+          <div class="empty-state-title">选择一个运行中的 VPN 实例查看详情</div>
+          <div class="empty-state-desc">详情页会展示连接概览、系统信息、在线设备和路由表，适合排查链路健康、peer 状态和地址分配。</div>
+        </div>
       </div>
-      <div id="vpn-detail-content"></div>
+      <div id="vpn-detail" class="card" style="display:none">
+        <div class="card-header">
+          <h2 id="vpn-detail-title">VPN 详情</h2>
+          <button id="btn-close-vpn-detail" class="btn btn-sm">关闭</button>
+        </div>
+        <div id="vpn-detail-content"></div>
+      </div>
     </div>
   </section>
 </div>

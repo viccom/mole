@@ -1,6 +1,6 @@
 // tunnels.js — HTTP/HTTPS/TCP/UDP 隧道管理
 import { api } from './api.js';
-import { fmtBytes, esc, toast } from './main.js';
+import { fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
 
 const TUNNEL_TYPES = ['http', 'https', 'tcp', 'udp'];
 let tunnels = [];
@@ -24,12 +24,14 @@ export function initTunnels() {
 
   // 新增 Modal
   const modal = document.getElementById('tunnel-modal');
-  document.getElementById('btn-add-tunnel').addEventListener('click', () => {
+  const openAddModal = () => {
     document.getElementById('tf-name').value = '';
     document.getElementById('tf-type').value = 'http';
     document.getElementById('tf-target').value = '';
     modal.style.display = 'flex';
-  });
+  };
+  document.getElementById('btn-add-tunnel').addEventListener('click', openAddModal);
+  document.getElementById('btn-add-tunnel-secondary').addEventListener('click', openAddModal);
   document.getElementById('btn-close-tunnel-modal').addEventListener('click', () => modal.style.display = 'none');
   document.getElementById('btn-cancel-tunnel').addEventListener('click', () => modal.style.display = 'none');
   modal.querySelector('.modal-backdrop').addEventListener('click', () => modal.style.display = 'none');
@@ -41,7 +43,11 @@ export function initTunnels() {
     if (!name) { toast('名称不能为空', 'error'); return; }
     if (!target) { toast('目标不能为空', 'error'); return; }
     api.addTunnel({ name, type, target, enabled: true })
-      .then(() => { modal.style.display = 'none'; toast('隧道已添加', 'success'); })
+      .then(() => {
+        modal.style.display = 'none';
+        activateSubpanel('tunnels', 'tunnels-list-view');
+        toast('隧道已添加', 'success');
+      })
       .catch(e => toast(e.message, 'error'));
   });
 
@@ -61,8 +67,26 @@ export function initTunnels() {
 
 function render() {
   const tbody = document.getElementById('tunnels-tbody');
+  const webTunnels = tunnels.filter(t => t.type === 'http' || t.type === 'https');
+  const streamTunnels = tunnels.filter(t => t.type === 'tcp' || t.type === 'udp');
+  const onlineCount = tunnels.filter(t => t.connected).length;
+  setText('tunnels-total', String(tunnels.length));
+  setText('tunnels-online', String(onlineCount));
+  setText('tunnels-web', String(webTunnels.length));
+  setText('tunnels-stream', String(streamTunnels.length));
+  setText('tunnels-http-summary', webTunnels.length ? `${webTunnels.length} 条 Web 映射` : '暂无 Web 映射');
+  setText('tunnels-tcp-summary', streamTunnels.length ? `${streamTunnels.length} 条原始链路` : '暂无原始链路');
+  setText('tunnels-health-note', tunnels.length ? `当前 ${onlineCount}/${tunnels.length} 条隧道在线` : '创建隧道后可查看在线率');
+  renderVizBars('tunnels-type-chart', [
+    { label: 'HTTP', value: tunnels.filter(t => t.type === 'http').length, color: '#22c55e' },
+    { label: 'HTTPS', value: tunnels.filter(t => t.type === 'https').length, color: '#3b82f6' },
+    { label: 'TCP', value: tunnels.filter(t => t.type === 'tcp').length, color: '#f97316' },
+    { label: 'UDP', value: tunnels.filter(t => t.type === 'udp').length, color: '#a855f7' }
+  ], '暂无协议分布', '新增隧道后这里会显示各协议占比。');
+  renderVizRing('tunnels-health-ring', onlineCount, tunnels.length, '#4f46e5');
+
   if (!tunnels.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#aaa;padding:20px">暂无隧道</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty-cell">${emptyStateMarkup('暂无隧道', '先创建一个 HTTP、HTTPS、TCP 或 UDP 映射，随后即可在这里查看运行状态和流量。', '+')}</td></tr>`;
     return;
   }
   tbody.innerHTML = tunnels.map(t => {
@@ -80,4 +104,9 @@ function render() {
       <td><button class="btn btn-danger btn-sm" data-action="delete" data-name="${esc(t.name)}">删除</button></td>
     </tr>`;
   }).join('');
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
 }

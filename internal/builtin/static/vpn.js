@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { fmtBytes, esc, toast } from './main.js';
+import { fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
 
 let tunnels = [];
 
@@ -33,6 +33,7 @@ export function initVPN() {
   });
 
   document.getElementById('btn-add-vpn').addEventListener('click', showAddForm);
+  document.getElementById('btn-add-vpn-secondary').addEventListener('click', showAddForm);
   document.getElementById('btn-cancel-vpn').addEventListener('click', hideForm);
   document.getElementById('btn-save-vpn').addEventListener('click', saveForm);
   document.getElementById('btn-refresh-vpn').addEventListener('click', () => {
@@ -43,6 +44,8 @@ export function initVPN() {
   });
   document.getElementById('btn-close-vpn-detail').addEventListener('click', () => {
     document.getElementById('vpn-detail').style.display = 'none';
+    document.getElementById('vpn-detail-empty').style.display = 'block';
+    activateSubpanel('vpn', 'vpn-list-view');
   });
 
   window.__vpnRefresh = (allTunnels) => {
@@ -53,8 +56,26 @@ export function initVPN() {
 
 function render() {
   const tbody = document.getElementById('vpn-tbody');
+  const onlineCount = tunnels.filter(t => t.connected).length;
+  const enabledCount = tunnels.filter(t => t.enabled).length;
+  const errorTunnels = tunnels.filter(t => (t.status || {}).error);
+  const firstRunning = tunnels.find(t => t.connected);
+  setText('vpn-total', String(tunnels.length));
+  setText('vpn-online', String(onlineCount));
+  setText('vpn-enabled', String(enabledCount));
+  setText('vpn-error-count', String(errorTunnels.length));
+  setText('vpn-health-summary', !tunnels.length ? '暂无实例' : (errorTunnels.length ? `${errorTunnels.length} 个实例异常` : '运行状态稳定'));
+  setText('vpn-running-summary', firstRunning ? `${firstRunning.name} 在线` : '暂无在线实例');
+  setText('vpn-health-note', tunnels.length ? `健康实例 ${Math.max(tunnels.length - errorTunnels.length, 0)}/${tunnels.length}` : '创建 VPN 实例后可查看健康率');
+  renderVizBars('vpn-state-chart', [
+    { label: '运行中', value: onlineCount, color: '#10b981' },
+    { label: '异常', value: errorTunnels.length, color: '#ef4444' },
+    { label: '待机', value: Math.max(tunnels.length - onlineCount - errorTunnels.length, 0), color: '#94a3b8' }
+  ], '暂无实例状态', '新增 VPN 实例后这里会显示健康与运行分布。');
+  renderVizRing('vpn-health-ring', Math.max(tunnels.length - errorTunnels.length, 0), tunnels.length, '#22c55e');
+
   if (!tunnels.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#aaa;padding:20px">暂无 VPN 隧道</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty-cell">${emptyStateMarkup('暂无 VPN 隧道', '先创建一个 VPN 管理实例，配置程序名和连接参数后，就可以在这里启动、停机和排查状态。', 'V')}</td></tr>`;
     return;
   }
   tbody.innerHTML = tunnels.map(t => {
@@ -110,6 +131,7 @@ function formatUptime(ms) {
 }
 
 function showAddForm() {
+  activateSubpanel('vpn', 'vpn-form-view');
   editingName = null;
   document.getElementById('vpn-form-title').textContent = '新增 VPN 隧道';
   document.getElementById('vf-name').value = '';
@@ -127,13 +149,13 @@ function showAddForm() {
 }
 
 function showEditForm(t) {
+  activateSubpanel('vpn', 'vpn-form-view');
   editingName = t.name;
   document.getElementById('vpn-form-title').textContent = '编辑 VPN 隧道';
   document.getElementById('vf-name').value = t.name;
   document.getElementById('vf-name').disabled = true;
   document.getElementById('vf-enable').checked = t.enabled;
 
-  const s = t.status || {};
   const para = t.para || {};
   const vnt = para.vnt || {};
 
@@ -152,6 +174,7 @@ function showEditForm(t) {
 function hideForm() {
   document.getElementById('vpn-form').style.display = 'none';
   editingName = null;
+  activateSubpanel('vpn', 'vpn-list-view');
 }
 
 let editingName = null;
@@ -287,9 +310,11 @@ function showDetail(name) {
   }
 
   if (!html) {
-    html = '<div class="card"><p style="color:#888;padding:24px;text-align:center">进程运行中，等待 vnt-cli 数据...</p></div>';
+    html = `<div class="card empty-card">${emptyStateMarkup('等待运行时详情', '实例已经启动，但 vnt-cli 还没有返回完整的状态信息，请稍后再刷新查看。', 'V')}</div>`;
   }
 
+  activateSubpanel('vpn', 'vpn-detail-view');
+  document.getElementById('vpn-detail-empty').style.display = 'none';
   panel.querySelector('#vpn-detail-content').innerHTML = html;
   panel.style.display = 'block';
   panel.scrollIntoView({ behavior: 'smooth' });
@@ -297,4 +322,9 @@ function showDetail(name) {
 
 function infoItem(label, value) {
   return `<div class="info-item"><span class="info-label">${esc(label)}</span><span class="info-value">${esc(value || '-')}</span></div>`;
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
 }
