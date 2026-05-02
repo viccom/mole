@@ -4,12 +4,15 @@
 
 ## 技术栈
 
-- Go 1.25, 标准库为主
+**后端**: Go 1.25, 标准库为主
 - smux (github.com/xtaci/smux) — TCP 多路复用
 - redka + SQLite — 持久化（用户/角色/配置/接入 Token）
 - mochi-mqtt — 内嵌 MQTT Broker
 - bcrypt + JWT — 认证
 - sha256 + crypto/rand — 接入 Token 哈希存储
+- lumberjack — 日志轮转
+
+**前端 (admin/)**: React 18 + TypeScript + Vite + TailwindCSS + Headless UI
 
 ## 项目结构
 
@@ -21,24 +24,24 @@ internal/
   storage/              redka 仓储层 (UserRepo, RoleRepo, NodeRepo, AccessTokenRepo)
   auth/                 JWT、bcrypt、RBAC、中间件
   api/                  HTTP API 路由与处理器
-  tunnel/               隧道核心 (control, http, tcp, udp, registry)
+  tunnel/               隧道核心 (control, http, tcp, udp, registry, stats, transport)
   node/                 分片节点管理器 + 健康检查
   service/              业务服务（接入 Token 认证、隧道配置）
   mqtt/                 内嵌 MQTT Broker
   logging/              日志初始化
 configs/                配置文件模板
-admin/                  前端静态文件
+admin/                  前端 React SPA（构建产物部署在 admin/dist/）
 ```
 
 ## 架构要点
 
-**节点连接**: 节点通过控制端口连接 → Challenge-Response 认证 → 建立 smux 会话 → 注册隧道配置。
+**节点连接**: 节点通过控制端口连接 → Challenge-Response 认证 → 建立 smux 会话 → 注册隧道配置。传输层通过 `Transport` 接口抽象（`tunnel/transport.go`），当前实现 `TCPTransport`（支持 TCP/TLS），未来可扩展 KCP/WebSocket 等。
 
 **节点接入认证**: 支持两级 Token — 用户级 AccessToken（优先）和旧全局 nodetoken（兼容）。接入后自动绑定 `Node.OwnerUserID`。
 
-**隧道转发**: 网关收到外部请求 → 路由匹配(域名/路径/端口) → 通过节点的 smux 会话 OpenStream 转发数据。`enabled=false` 的隧道不参与路由。
+**隧道转发**: 网关收到外部请求 → 路由匹配(域名/路径/端口) → 通过节点的 smux 会话 OpenStream 转发数据。`enabled=false` 的隧道不参与路由。双向透传使用 1MB buffer 优化大流量场景（如 RDP）。
 
-**节点管理**: ShardedNodeManager(256分片) + 健康检查(30s间隔, 90s超时)。
+**节点管理**: ShardedNodeManager(256分片) + 健康检查(30s间隔, 90s超时)。节点断开时由 `ReleaseNodeResources` 清理监听器和统计。
 
 **认证流程**: JWT token (Bearer/Cookie) → AuthMiddleware → RBAC 权限检查 + 资源归属过滤。
 
@@ -49,12 +52,13 @@ admin/                  前端静态文件
 ```
 外部请求 → Gateway 端口(:9980) → TunnelGateway.ServeHTTP
   → 路由匹配(泛域名/路径/精确域名, 跳过 enabled=false) → nodeMgr.GetSession() → smux.OpenStream()
-  → 数据透传到节点代理
+  → biCopy 双向透传(1MB buffer) → counting wrapper 采集运行时统计
 
 节点连接 → Control 端口(:9981) → Challenge-Response
   → NodeAccessAuthenticator 统一认证（用户级 Token 优先 → 旧全局 Token 兜底）
-  → smux.Server() → AcceptStream() → register/ping 控制命令
+  → smux.Server() → AcceptStream() → register/ping/tunnel_update 控制命令
   → handleRegister 写入 OwnerUserID + AccessTokenID
+  → TunnelConfigService.LoadPersisted() 下发持久化隧道配置
 ```
 
 ## 关键约定
@@ -62,6 +66,7 @@ admin/                  前端静态文件
 - `UserStatus` / `NodeStatus` / `AccessTokenStatus` 是类型化常量，不使用原始字符串
 - `core.UserRepo` / `core.RoleRepo` / `core.AccessTokenRepo` 是接口，storage 包提供实现
 - `core.NodeAccessAuthenticator` 是接入认证接口，service 包提供实现
+- `core.TunnelConfigManager` 是隧道配置变更接口（ApplyTunnel/RemoveTunnel/ReplaceTunnels/SyncFromClient/LoadPersisted），service.TunnelConfigService 提供实现
 - smux Session 存储在 `ShardedNodeManager` 内部 `sessions` map 中，与 `core.Node` 领域模型分离
 - API 路由注册在 `cmd/moleagent-serv/main.go` 的 `buildAPIRouter`
 - 种子数据在 `storage/db.go` 的 `seedData()`
@@ -78,6 +83,7 @@ admin/                  前端静态文件
 - `NodeHandler.Create()` 自动绑定 OwnerUserID：管理员创建 → system，普通用户 → 自己
 - `UserHandler.Delete()` 级联处理同时更新持久化层（nodeRepo）和运行态（nodeMgr），保证在线节点归属同步
 - `AccessTokenRepo.Update()` 维护 hash 索引一致性：hash 变更时删除旧索引、建立新索引，操作失败有回滚保护
+- 修改代码前必须先  git pull  同步最新远程代码
 
 ## 节点模型语义
 
@@ -153,19 +159,65 @@ admin/                  前端静态文件
 - 非管理员只能给自己的节点添加/修改隧道
 - 管理员不受限制
 
+### 隧道类型扩展
+
+- 标准类型 `http/https/tcp/udp`：REST API 和客户端注册均支持，服务端校验 target 格式为 `host:port`
+- 客户端本地类型 `ser2mq/vpn-manager`：仅客户端注册时通过，服务端不校验 target 格式，配置在 `Tunnel.Para` (json.RawMessage) 中
+- REST API (`TunnelHandler.Create`) 仅接受标准四种类型，客户端本地类型由节点自行注册
+
+### 隧道运行时统计
+
+- `tunnel/counting.go` 包装连接，采集每条隧道的流量(bytes_in/out)、连接数、活跃状态
+- `core.TunnelStatsReader` 接口解耦 api 层与 tunnel 层
+- `GET /api/v1/tunnels/usage` 汇总统计，支持 `node_id`/`type`/`status` 查询参数过滤
+- 统计 key 格式：`nodeID/tunnelName`，节点断开时通过 `ReleaseNodeResources` 清理
+
+### 节点断开资源回收
+
+- `TunnelConfigService.ReleaseNodeResources()` 负责清理离线节点的 TCP/UDP 监听器、路由索引和统计条目
+- 不修改持久化配置，节点重连时通过 `applyRuntimeTunnels` 重新激活
+- 由 `controlSrv.SetOnNodeDisconnect` 和 `health check` 两处触发
+
 ## 构建 & 运行
 
 ```bash
+# 后端
 go build -o moleagent-serv ./cmd/moleagent-serv
 ./moleagent-serv -config configs/config.example.yaml
+
+# 前端
+cd admin && npm install && npm run build    # 产物在 admin/dist/
+
+# 前端开发模式
+cd admin && npm run dev
 ```
 
-环境变量可覆盖配置: `MA_JWT_SECRET`, `MA_ADMIN_USER`, `MA_ADMIN_PASS`
+环境变量覆盖配置:
+
+| 环境变量 | 用途 |
+|---------|------|
+| `MA_JWT_SECRET` | JWT 签名密钥（未设则自动生成，适合开发） |
+| `MA_ADMIN_USER` / `MA_ADMIN_PASS` | 种子管理员凭据 |
+| `MA_NODE_TOKEN` | 旧全局节点接入 Token |
+| `MA_DB_PATH` | SQLite 数据库路径 |
+| `MA_CONTROL_PORT` / `MA_GATEWAY_PORT` / `MA_API_PORT` | 端口覆盖 |
+| `MA_LOG_LEVEL` | 日志级别 |
+| `MA_TLS_ENABLED` / `MA_TLS_CERT` / `MA_TLS_KEY` | TLS 配置 |
 
 ## 测试
 
 ```bash
+# 后端全量测试
 go test ./...
+
+# 单个包测试
+go test ./internal/tunnel/...
+
+# 运行单个测试函数
+go test ./internal/api/ -run TestTunnelHandler_Create -v
+
+# 前端测试
+cd admin && npm test
 ```
 
 测试辅助：`auth.SetClaims(ctx, claims)` 用于 handler 测试注入认证上下文。

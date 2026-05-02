@@ -111,7 +111,7 @@ func main() {
 			MinVersion:   tls.VersionTLS12,
 		}
 	}
-	controlSrv := tunnel.NewControlServer(cfg.Server.ControlPort, nodeMgr, token, tlsConfig, nodeRepo)
+	controlSrv := tunnel.NewControlServer(cfg.Server.ControlPort, tunnel.NewTCPTransport(tlsConfig), nodeMgr, token, nodeRepo)
 	controlSrv.SetOnNodeChange(func() {
 		gateway.RebuildIndex(context.Background())
 	})

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -91,10 +90,10 @@ func (s *connState) get() *core.Node {
 // ControlServer 控制端口服务
 type ControlServer struct {
 	addr            string
+	transport       Transport                 // 传输层（TCP/TLS/KCP/WS 等）
 	nodeMgr         *node.ShardedNodeManager
 	nodeToken       string                    // 全局节点认证令牌（兼容期保留）
 	authenticator   core.NodeAccessAuthenticator // 用户级 token 认证服务
-	tlsConfig       *tls.Config // TLS 配置
 	listener        net.Listener
 	onNodeChange    func()        // 节点变更回调
 	onNodeDisconnect func(nodeID string, tunnels []core.Tunnel) // 节点断开回调
@@ -103,12 +102,12 @@ type ControlServer struct {
 }
 
 // NewControlServer 创建控制端口服务
-func NewControlServer(addr string, nodeMgr *node.ShardedNodeManager, nodeToken string, tlsConfig *tls.Config, nodeRepo core.NodeRepo) *ControlServer {
+func NewControlServer(addr string, transport Transport, nodeMgr *node.ShardedNodeManager, nodeToken string, nodeRepo core.NodeRepo) *ControlServer {
 	return &ControlServer{
 		addr:      addr,
+		transport: transport,
 		nodeMgr:   nodeMgr,
 		nodeToken: nodeToken,
-		tlsConfig: tlsConfig,
 		nodeRepo:  nodeRepo,
 	}
 }
@@ -135,17 +134,13 @@ func (cs *ControlServer) SetAuthenticator(auth core.NodeAccessAuthenticator) {
 
 // Start 启动控制端口监听
 func (cs *ControlServer) Start(ctx context.Context) error {
-	listener, err := net.Listen("tcp", cs.addr)
+	listener, err := cs.transport.Listen(cs.addr)
 	if err != nil {
-		return fmt.Errorf("control listen on %s: %w", cs.addr, err)
-	}
-	if cs.tlsConfig != nil {
-		listener = tls.NewListener(listener, cs.tlsConfig)
-		slog.Info("Control server TLS enabled", "addr", cs.addr)
+		return fmt.Errorf("control listen on %s (%s): %w", cs.addr, cs.transport.Name(), err)
 	}
 	cs.listener = listener
 
-	slog.Info("Control server listening", "addr", cs.addr)
+	slog.Info("Control server listening", "addr", cs.addr, "transport", cs.transport.Name())
 
 	// Worker pool
 	connChan := make(chan net.Conn, 1000)
@@ -190,11 +185,6 @@ func (cs *ControlServer) connectionWorker(ctx context.Context, connChan <-chan n
 func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
 	defer conn.Close()
-
-	// Disable Nagle's algorithm for low-latency tunnel traffic (RDP, SSH, etc.)
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetNoDelay(true)
-	}
 
 	// 1. Challenge-Response 认证
 	challenge := make([]byte, 32)
