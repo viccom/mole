@@ -4,6 +4,7 @@ server:
   control_port: ":9981"    # Node 连接端口
   gateway_port: ":9980"    # 外部请求网关
   api_port: ":9983"        # REST API
+  transport: "tcp"         # 传输协议: tcp, ws (TLS 由 tls.enabled 控制)
   max_nodes: 10000
   max_concurrent: 50000
   tls:

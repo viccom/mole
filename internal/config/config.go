@@ -25,6 +25,7 @@ type ServerConfig struct {
 	APIPort       string         `yaml:"api_port"`        // REST API 端口，如 :9983
 	MaxNodes      int            `yaml:"max_nodes"`       // 最大节点数
 	MaxConcurrent int            `yaml:"max_concurrent"`  // 最大并发连接数
+	Transport     string         `yaml:"transport"`       // 传输协议: tcp, ws (TLS 由 tls.enabled 控制)
 	TLS           TLSConfig      `yaml:"tls"`             // TLS 配置
 	Gateway       GatewayConfig  `yaml:"gateway"`         // 网关配置
 }
@@ -87,6 +88,7 @@ func DefaultConfig() *Config {
 			APIPort:       ":9983",
 			MaxNodes:      10000,
 			MaxConcurrent: 50000,
+			Transport:     "tcp",
 			Gateway: GatewayConfig{
 				HyphenRouting: true, // 默认使用 hyphen(-) 作为泛域名分隔符
 			},
@@ -165,6 +167,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MA_API_PORT"); v != "" {
 		cfg.Server.APIPort = v
 	}
+	if v := os.Getenv("MA_TRANSPORT"); v != "" {
+		cfg.Server.Transport = v
+	}
 	if v := os.Getenv("MA_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
@@ -215,6 +220,11 @@ func (c *Config) validate() error {
 		if c.Server.TLS.KeyFile == "" {
 			return fmt.Errorf("server.tls.key_file is required when TLS is enabled")
 		}
+	}
+
+	validTransports := map[string]bool{"tcp": true, "ws": true}
+	if !validTransports[c.Server.Transport] {
+		return fmt.Errorf("invalid transport: %s (must be tcp or ws)", c.Server.Transport)
 	}
 
 	return nil
