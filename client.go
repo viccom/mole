@@ -3,6 +3,7 @@ package moleAgent_client
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -71,8 +72,30 @@ func New(cfg *Config) (*Client, error) {
 		return nil, err
 	}
 
-	tlsCfg := &transport.TLSConfig{Enabled: cfg.UseTLS}
-	dial := transport.DefaultDialer(tlsCfg)
+	var dial transport.DialFunc
+	switch cfg.Transport {
+	case "ws":
+		var wsTLS *tls.Config
+		if cfg.UseTLS {
+			wsTLS = &tls.Config{}
+		}
+		dial = transport.NewWSDialer(transport.WSDialerConfig{TLSConfig: wsTLS})
+	case "kcp":
+		dial = transport.NewKCPDialer(transport.KCPDialerConfig{
+			Key:          cfg.KCP.Key,
+			DataShards:   cfg.KCP.DataShards,
+			ParityShards: cfg.KCP.ParityShards,
+			NoDelay:      cfg.KCP.NoDelay,
+			Interval:     cfg.KCP.Interval,
+			Resend:       cfg.KCP.Resend,
+			NoCongestion: cfg.KCP.NoCongestion,
+			SendWindow:   cfg.KCP.SendWindow,
+			RecvWindow:   cfg.KCP.RecvWindow,
+		})
+	default:
+		tlsCfg := &transport.TLSConfig{Enabled: cfg.UseTLS}
+		dial = transport.DefaultDialer(tlsCfg)
+	}
 
 	// 创建管理器（使用背景 context，生命周期由 Client 统一管理）
 	// nodeID 在 ApplyDefaults 中已生成
@@ -405,6 +428,7 @@ func (c *Client) heartbeat(ctx context.Context) {
 			if err := c.sendPing(); err != nil {
 				log.Printf("Heartbeat failed: %v", err)
 				c.events.Emit(Event{Type: EventHeartbeatFail, Data: map[string]any{"error": err.Error()}})
+				c.transport.Close()
 				return
 			}
 			c.events.Emit(Event{Type: EventHeartbeatOK})

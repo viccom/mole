@@ -36,6 +36,7 @@ func main() {
 	nodeIDFlag := flag.String("id", "", "节点 ID (默认自动生成)")
 	nameFlag := flag.String("name", "", "节点名称")
 	tlsFlag := flag.Bool("tls", false, "启用 TLS")
+	transportFlag := flag.String("transport", "", "传输协议: tcp, ws, kcp")
 	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:18080, off 关闭)")
 	tunnelsFlag := flag.Bool("tunnels", false, "隧道管理子命令 (见: moleagent-client -tunnels -h)")
 	flag.CommandLine.Usage = func() {
@@ -48,6 +49,7 @@ Options:
   -id <nodeid>         节点 ID (默认自动生成)
   -name <name>         节点名称
   -tls                 启用 TLS
+  -transport <proto>   传输协议 (tcp, ws, kcp)
   -http <port>         内置 HTTP 端口 (默认 127.0.0.1:18080, off 关闭)
   -tunnels             隧道管理子命令 (见: moleagent-client -tunnels -h)
 
@@ -87,6 +89,9 @@ Examples:
 	if *tlsFlag {
 		cfg.UseTLS = true
 	}
+	if *transportFlag != "" {
+		cfg.Transport = *transportFlag
+	}
 	if *httpFlag != "" {
 		cfg.BuiltinHTTP = *httpFlag
 	}
@@ -104,7 +109,7 @@ Examples:
 
 	log.Printf("moleAgent_client %s starting...", version)
 	log.Printf("  Node ID:  %s", client.NodeID())
-	log.Printf("  Server:   %s (TLS=%v)", cfg.ServerAddr, cfg.UseTLS)
+	log.Printf("  Server:   %s (transport=%s, TLS=%v)", cfg.ServerAddr, cfg.Transport, cfg.UseTLS)
 	log.Printf("  Tunnels:  %d (will be loaded from server after connect)", len(client.Tunnels()))
 
 	ctx, cancel := context.WithCancel(context.Background())

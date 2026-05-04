@@ -80,13 +80,17 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 	}
 
 	// Challenge-Response 认证
-	if err := authenticate(conn, token); err != nil {
+	br, err := authenticate(conn, token)
+	if err != nil {
 		conn.Close()
 		return fmt.Errorf("auth: %w", err)
 	}
 
+	// Wrap conn so smux sees both bufio buffered data and raw conn reads
+	sessionConn := &bufferedConn{Conn: conn, reader: br}
+
 	// 建立 smux 会话
-	session, err := smux.Client(conn, &smux.Config{
+	session, err := smux.Client(sessionConn, &smux.Config{
 		Version:           DefaultSmuxVersion,
 		KeepAliveDisabled: false,
 		KeepAliveInterval: SmuxKeepAliveInterval,
@@ -127,29 +131,29 @@ func (sm *SessionManager) Close() {
 	}
 }
 
-// authenticate 执行 Challenge-Response 认证
-func authenticate(conn net.Conn, token string) error {
+// authenticate 执行 Challenge-Response 认证，返回 bufio.Reader 保留缓冲数据
+func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 	// 读取 32 字节 challenge
 	conn.SetReadDeadline(time.Now().Add(DefaultAuthTimeout))
 	challenge := make([]byte, 32)
 	if _, err := io.ReadFull(conn, challenge); err != nil {
-		return fmt.Errorf("read challenge: %w", err)
+		return nil, fmt.Errorf("read challenge: %w", err)
 	}
 
 	// 发送认证消息
 	authMsg, err := json.Marshal(map[string]string{"token": token})
 	if err != nil {
-		return fmt.Errorf("marshal auth: %w", err)
+		return nil, fmt.Errorf("marshal auth: %w", err)
 	}
 	if _, err := conn.Write(append(authMsg, '\n')); err != nil {
-		return fmt.Errorf("send auth: %w", err)
+		return nil, fmt.Errorf("send auth: %w", err)
 	}
 
 	// 读取认证响应
 	reader := bufio.NewReader(conn)
 	authResp, err := reader.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("read auth response: %w", err)
+		return nil, fmt.Errorf("read auth response: %w", err)
 	}
 	conn.SetReadDeadline(time.Time{})
 
@@ -158,11 +162,22 @@ func authenticate(conn net.Conn, token string) error {
 		Msg string `json:"msg"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(authResp)), &result); err != nil {
-		return fmt.Errorf("parse auth response: %w", err)
+		return nil, fmt.Errorf("parse auth response: %w", err)
 	}
 	if result.Cmd != "ok" {
-		return fmt.Errorf("auth failed: %s", result.Msg)
+		return nil, fmt.Errorf("auth failed: %s", result.Msg)
 	}
 
-	return nil
+	return reader, nil
+}
+
+// bufferedConn wraps net.Conn to first drain bufio.Reader buffered data,
+// preventing data loss between auth and smux handshake.
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
 }

@@ -13,6 +13,7 @@ type Config struct {
 	Token      string   `json:"token"`
 	NodeID     string   `json:"node_id"`
 	NodeName   string   `json:"node_name"`
+	Transport  string   `json:"transport"` // 传输协议: tcp, ws, kcp
 	UseTLS     bool     `json:"tls"`
 	Tunnels    []Tunnel `json:"tunnels"`
 
@@ -25,6 +26,22 @@ type Config struct {
 
 	// 重连间隔
 	ReconnectInterval time.Duration `json:"reconnect_interval,omitempty"`
+
+	// KCP 配置
+	KCP KCPConfig `json:"kcp,omitempty"`
+}
+
+// KCPConfig KCP 协议客户端配置
+type KCPConfig struct {
+	Key          string `json:"key"`
+	DataShards   int    `json:"data_shards"`
+	ParityShards int    `json:"parity_shards"`
+	NoDelay      int    `json:"nodelay"`
+	Interval     int    `json:"interval"`
+	Resend       int    `json:"resend"`
+	NoCongestion int    `json:"no_congestion"`
+	SendWindow   int    `json:"send_window"`
+	RecvWindow   int    `json:"recv_window"`
 }
 
 // LoadConfigFile 从 JSON 文件加载配置
@@ -44,6 +61,7 @@ func LoadConfigFile(path string) (*Config, error) {
 func DefaultConfig() *Config {
 	return &Config{
 		ServerAddr:        "127.0.0.1:9981",
+		Transport:         "tcp",
 		Token:             "default-node-token-change-me",
 		BuiltinHTTP:       "127.0.0.1:18080",
 		HeartbeatInterval: 10 * time.Second,
@@ -59,6 +77,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Token == "" {
 		c.Token = "default-node-token-change-me"
+	}
+	if c.Transport == "" {
+		c.Transport = "tcp"
 	}
 	if c.NodeID == "" {
 		c.NodeID = DefaultNodeID()
@@ -91,6 +112,23 @@ func (c *Config) Validate() error {
 	if !ValidateNodeID(c.NodeID) {
 		return fmt.Errorf("invalid node_id %q: must be exactly 8 alphanumeric characters starting with a letter", c.NodeID)
 	}
+
+	validTransports := map[string]bool{"tcp": true, "ws": true, "kcp": true}
+	if !validTransports[c.Transport] {
+		return fmt.Errorf("invalid transport %q (must be tcp, ws or kcp)", c.Transport)
+	}
+
+	if c.Transport == "kcp" && c.UseTLS {
+		return fmt.Errorf("TLS is not applicable to KCP transport; use kcp.key for encryption instead")
+	}
+
+	if c.KCP.DataShards+c.KCP.ParityShards > 255 {
+		return fmt.Errorf("kcp data_shards(%d) + parity_shards(%d) must not exceed 255", c.KCP.DataShards, c.KCP.ParityShards)
+	}
+	if c.KCP.DataShards == 0 && c.KCP.ParityShards > 0 {
+		return fmt.Errorf("kcp parity_shards > 0 requires data_shards > 0")
+	}
+
 	for _, t := range c.Tunnels {
 		if err := t.Validate(); err != nil {
 			return fmt.Errorf("tunnel %q: %w", t.Name, err)
