@@ -533,3 +533,128 @@ slog.Info("Node registered", "instance", instanceID, "nodeId", nodeID, ...)
 6. **用户级联测试**（**新增**）：实例 B 删除用户 → NOTIFY → 实例 A 更新内存态节点归属
 7. **故障转移测试**：停止实例 A → 节点状态标记 offline → 客户端重连实例 B
 8. **兼容性测试**：不配 PG 时仍可用 SQLite 单机模式
+
+## 十二、单实例模式兼容性设计
+
+### 12.1 核心原则
+
+所有多实例功能通过**接口抽象**实现条件启用，SQLite 单实例模式下注入空实现，调用方无需 `if multiInstance` 判断。确保 `database.type` 未配置时默认 `"sqlite"`，行为与当前完全一致。
+
+### 12.2 接口抽象
+
+#### 状态同步接口
+
+```go
+// internal/state/syncer.go
+
+// StatusSyncer 节点/实例状态同步接口
+type StatusSyncer interface {
+    // 实例生命周期
+    RegisterInstance(ctx context.Context, info InstanceInfo) error
+    UnregisterInstance(ctx context.Context) error
+    Heartbeat(ctx context.Context) error
+
+    // 节点状态
+    OnNodeConnect(ctx context.Context, nodeID string, info NodeStatusInfo) error
+    OnNodeDisconnect(ctx context.Context, nodeID string) error
+    OnNodeHeartbeat(ctx context.Context, nodeID string) error
+
+    // 全局查询
+    GetAllNodesStatus(ctx context.Context) (map[string]NodeStatusInfo, error)
+    GetAllInstances(ctx context.Context) ([]InstanceInfo, error)
+}
+
+// PG 实现：写 PG redka hash + 心跳续期
+type PGStatusSyncer struct { db *redka.DB; instanceID string }
+
+// SQLite 空实现：所有方法直接返回 nil / 空值
+type NoopStatusSyncer struct{}
+func (n *NoopStatusSyncer) RegisterInstance(_ context.Context, _ InstanceInfo) error { return nil }
+func (n *NoopStatusSyncer) OnNodeConnect(_ context.Context, _ string, _ NodeStatusInfo) error { return nil }
+// ... 其余方法均为空操作
+```
+
+#### 跨实例事件通知接口
+
+```go
+// internal/state/notify.go
+
+// EventBus 跨实例事件通知接口
+type EventBus interface {
+    Start(ctx context.Context) error
+    Publish(ctx context.Context, event Event) error
+    OnEvent(handler func(event Event))
+}
+
+// PG 实现：PG NOTIFY/LISTEN
+type PGEventBus struct { sqlDB *sql.DB; handlers []func(Event) }
+
+// SQLite 空实现：Publish 直接执行本地回调（单实例无需跨进程通知）
+type LocalEventBus struct { handlers []func(Event) }
+func (b *LocalEventBus) Publish(_ context.Context, event Event) error {
+    for _, h := range b.handlers { h(event) }  // 直接本地调用
+    return nil
+}
+```
+
+> **LocalEventBus 说明**：SQLite 模式下虽然不需要跨进程通知，但隧道推送、节点断开等事件在**单进程内**仍然需要触发（如 ApplyTunnel → pushToClient → RebuildIndex）。LocalEventBus 保证事件在本地正常流转，代码路径与 PG 模式一致。
+
+### 12.3 接口注入位置
+
+在 `cmd/moleagent-serv/main.go` 中根据配置注入：
+
+```go
+// 初始化
+var syncer state.StatusSyncer
+var eventBus state.EventBus
+
+if cfg.Database.Type == "postgres" {
+    syncer = state.NewPGStatusSyncer(db, cfg.Server.InstanceID)
+    eventBus = state.NewPGEventBus(sqlDB)
+} else {
+    syncer = &state.NoopStatusSyncer{}
+    eventBus = &state.LocalEventBus{}
+}
+
+// 注入
+controlSrv.SetStatusSyncer(syncer)
+tunnelSvc.SetEventBus(eventBus)
+nodeH.SetStatusSyncer(syncer)
+```
+
+### 12.4 受影响的组件注入
+
+| 组件 | 注入接口 | PG 模式 | SQLite 模式 |
+|------|---------|---------|-------------|
+| `ControlServer` | `StatusSyncer` | 节点连接/断开写 PG 状态 | 空操作 |
+| `TunnelConfigService` | `EventBus` | ApplyTunnel 发布 NOTIFY | 本地直接回调 |
+| `NodeHandler` | `StatusSyncer` | 列表合并全局状态 | 仅查本地内存 |
+| `UserHandler` | `EventBus` | 删除用户发布级联通知 | 本地直接执行级联 |
+| `SystemHandler` | `StatusSyncer` | /servers 返回多实例 | /servers 返回仅自身 |
+
+### 12.5 默认值与配置校验
+
+```yaml
+database:
+  type: "sqlite"              # 默认 sqlite，无需配置 PG
+  path: "data/config.db"      # sqlite 默认路径
+  # 以下仅 type=postgres 时需要
+  # postgres_dsn: ""
+  # max_open_conns: 25
+  # max_idle_conns: 10
+```
+
+配置校验规则：
+- `type == "postgres"` 时 `postgres_dsn` 必填，否则启动失败
+- `type == "sqlite"` 时忽略所有 PG 相关配置
+- `type` 不填或非法值默认 `"sqlite"`
+
+### 12.6 兼容性保证清单
+
+| 场景 | 预期行为 |
+|------|---------|
+| 不改配置文件直接启动 | 行为与当前完全一致（SQLite 单实例） |
+| `database.type` 设为 `postgres` 但 DSN 错误 | 启动报错，明确提示 DSN 配置问题 |
+| 单实例使用 PG | 正常工作，无需额外实例（功能等价于 SQLite 单实例 + PG 持久化） |
+| SQLite 模式下调用 `/api/v1/servers` | 返回 `{"items": [{"id":"local","status":"online"}]}`（单实例自身） |
+| SQLite 模式下的乐观锁 | version 从 0 开始，首次更新不受版本约束，之后正常递增 |
