@@ -504,6 +504,14 @@ body {
   margin-bottom: 0;
 }
 
+.dashboard-grid-3col {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+}
+
+.info-grid-single {
+  grid-template-columns: 1fr;
+}
+
 /* ===== Sub Navigation ===== */
 .subnav {
   display: flex;
@@ -1175,6 +1183,7 @@ body {
 
   .hero-summary,
   .dashboard-grid,
+  .dashboard-grid-3col,
   .form-grid,
   .overview-metrics,
   .feature-grid,
