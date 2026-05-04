@@ -23,12 +23,15 @@ import (
 	"moleAgent_Serv/internal/service"
 	"moleAgent_Serv/internal/storage"
 	"moleAgent_Serv/internal/tunnel"
+	"moleAgent_Serv/internal/version"
 )
 
 func main() {
 	configPath := flag.String("config", "", "配置文件路径 (YAML)，默认查找顺序: config.yaml → configs/config.yaml")
 	nodeToken := flag.String("nodetoken", "", "节点认证令牌")
 	flag.Parse()
+
+	slog.Info("Starting moleAgent-Serv", "version", version.VersionString())
 
 	// 确定配置文件路径：命令行 > config.yaml > configs/config.yaml > 无配置启动
 	resolved := *configPath
@@ -283,6 +286,7 @@ func buildAPIRouter(
 	// === 公开端点 ===
 	router.RegisterPublic("POST", "/api/v1/auth/login", authH.Login)
 	router.RegisterPublic("GET", "/api/v1/health", sysH.Health)
+	router.RegisterPublic("GET", "/api/v1/version", sysH.Version)
 
 	// === 需要认证的端点 ===
 	router.RegisterAuth("POST", "/api/v1/auth/logout", authH.Logout)

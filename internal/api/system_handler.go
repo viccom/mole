@@ -9,6 +9,7 @@ import (
 	"github.com/nalgeon/redka"
 
 	"moleAgent_Serv/internal/config"
+	"moleAgent_Serv/internal/version"
 )
 
 var startTime = time.Now()
@@ -20,6 +21,10 @@ type SystemHandler struct {
 
 func NewSystemHandler(db *redka.DB, cfg *config.Config) *SystemHandler {
 	return &SystemHandler{db: db, cfg: cfg}
+}
+
+func (h *SystemHandler) Version(w http.ResponseWriter, r *http.Request) {
+	ResponseOK(w, version.GetSystemInfo())
 }
 
 func (h *SystemHandler) Health(w http.ResponseWriter, r *http.Request) {
