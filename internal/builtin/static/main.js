@@ -163,6 +163,16 @@ async function refreshData() {
     ]);
     renderDashboard(status);
 
+    // 版本信息（独立请求，失败不影响主流程）
+    api.getVersion().then(v => {
+      if (!v) return;
+      setText('info-version', `${v.version} (${v.git_hash})`);
+      setText('info-build-date', v.build_date || '-');
+      setText('info-binary-path', v.binary_path || '-');
+      setText('info-cpu-num', v.cpu_num ? String(v.cpu_num) : '-');
+      setText('info-mem-usage', v.mem_sys_mb ? `${v.mem_alloc_mb} / ${v.mem_sys_mb} MB` : '-');
+    }).catch(() => {});
+
     // 传递 nodeID 给 ser2mq 模块
     if (window.__ser2mqNodeID && status.node_id) window.__ser2mqNodeID(status.node_id);
 

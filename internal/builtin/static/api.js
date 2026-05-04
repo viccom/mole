@@ -53,6 +53,11 @@ export const api = {
     return request('GET', '/api/status');
   },
 
+  // 版本与系统信息
+  getVersion() {
+    return request('GET', '/api/version');
+  },
+
   // 统一隧道 API
   listTunnels() {
     return request('GET', '/api/tunnels');
