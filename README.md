@@ -71,7 +71,7 @@ docker run -d \
                                     └──────┬──────┘
                                            │ smux 流
                                     ┌──────▼──────┐
-[节点客户端]  ── TCP + smux ──▶  │  Control     │
+[节点客户端]  ── TCP/WS/KCP + smux ──▶  │  Control     │
                                     │  :9981       │
                                     └──────┬──────┘
                                            │
@@ -97,6 +97,24 @@ docker run -d \
 2. **Gateway Port (9980)** — 接收外部请求，转发到对应节点
 3. **API Port (9983)** — REST API + 管理页面
 
+### 传输协议
+
+Control Port 支持三种底层传输协议，通过 `server.transport` 配置：
+
+| 协议 | 配置值 | 加密方式 | 适用场景 |
+|------|--------|---------|---------|
+| TCP | `tcp` | TLS（可选） | 默认选择，稳定可靠，内网/专线推荐 |
+| WebSocket | `ws` | TLS → `wss` | 需穿透 HTTP 代理/CDN/防火墙，Web 友好 |
+| KCP (UDP) | `kcp` | AES-256（可选） | 高延迟/弱网环境，FEC 纠错+低延迟模式 |
+
+**TLS 加密**：仅适用于 `tcp` 和 `ws` 协议。`ws` + TLS 即 `wss`。
+
+**KCP 加密**：通过 `server.kcp.key` 设置共享密钥，使用 SHA-256 派生 AES-256 密钥。
+
+**KCP FEC 纠错**：配置 `data_shards` 和 `parity_shards` 启用前向纠错，适合丢包率高的网络。
+
+> **注意**：KCP 不支持 TLS（UDP 协议），配置校验会拒绝 `transport: kcp` + `tls.enabled: true`。
+
 ---
 
 ## 配置文件
@@ -108,7 +126,22 @@ server:
   control_port: ":9981"    # 节点控制端口
   gateway_port: ":9980"    # 网关端口
   api_port: ":9983"        # API + 管理页面端口
+  transport: "tcp"         # 传输协议: tcp, ws, kcp
   max_concurrent: 50000    # 最大并发连接数
+  tls:
+    enabled: false         # TLS 加密（仅 tcp/ws，KCP 使用独立加密）
+    cert_file: "certs/server.crt"
+    key_file: "certs/server.key"
+  kcp:                     # KCP 协议调优（transport: kcp 时生效）
+    key: ""                # 加密密钥（空=不加密）
+    data_shards: 10        # FEC 数据分片（0=禁用，推荐 10）
+    parity_shards: 3       # FEC 校验分片（推荐 3）
+    nodelay: 1             # 低延迟模式（推荐 1）
+    interval: 10           # ACK 间隔 ms（推荐 10）
+    resend: 2              # 快速重传阈值（推荐 2）
+    no_congestion: 1       # 禁用拥塞控制（隧道场景推荐 1）
+    send_window: 0         # 发送窗口（0=默认）
+    recv_window: 0         # 接收窗口（0=默认）
 
 mqtt:
   enabled: true
@@ -149,6 +182,10 @@ logging:
 | `MA_CONTROL_PORT` | `server.control_port` | 控制端口 |
 | `MA_GATEWAY_PORT` | `server.gateway_port` | 网关端口 |
 | `MA_API_PORT` | `server.api_port` | API 端口 |
+| `MA_TRANSPORT` | `server.transport` | 传输协议（tcp, ws, kcp） |
+| `MA_TLS_ENABLED` | `server.tls.enabled` | 启用 TLS |
+| `MA_TLS_CERT` | `server.tls.cert_file` | TLS 证书路径 |
+| `MA_TLS_KEY` | `server.tls.key_file` | TLS 私钥路径 |
 | `MA_LOG_LEVEL` | `logging.level` | 日志等级 |
 
 ---
@@ -609,6 +646,7 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
 | 方法 | 路径 | 说明 | 权限 |
 |------|------|------|------|
 | GET | `/health` | 健康检查 | **否** |
+| GET | `/version` | 版本与系统信息 | **否** |
 | GET | `/metrics` | 系统指标 | `system:read` |
 | GET | `/config` | 运行时配置 | `system:admin` |
 | GET | `/accesskey` | AccessKey 状态 | `accesskey:read` |
@@ -624,7 +662,7 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
 ```
 [Node 客户端]                     [moleAgent_Serv]
      │                                   │
-     │──────── TCP 连接 ─────────────────▶│
+     │──── TCP/WS/KCP 连接 ────────────▶│
      │                                   │
      │◀────── 32 字节 Challenge ─────────│
      │                                   │
@@ -897,6 +935,42 @@ grep "ERROR" logs/moleagent.log
 
 # JSON 格式查看
 cat logs/moleagent.log | jq
+```
+
+### Q: 如何选择传输协议
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| 内网/专线 | `tcp` | 延迟最低，最稳定 |
+| 需穿透 HTTP 代理/防火墙 | `ws` | WebSocket 走 HTTP 升级，兼容性好 |
+| 公网高延迟/弱网 | `kcp` | UDP 底层 + FEC 纠错 + 低延迟模式 |
+
+客户端和服务端必须使用相同的 `transport` 配置。
+
+### Q: KCP 加密如何配置
+
+服务端和客户端设置相同的 `kcp.key`，系统使用 SHA-256 派生 AES-256 密钥加密所有 KCP 流量：
+
+```yaml
+# 服务端 config.yaml
+server:
+  transport: "kcp"
+  kcp:
+    key: "my-secret-key"
+    data_shards: 10
+    parity_shards: 3
+```
+
+```json
+// 客户端 config.json
+{
+  "transport": "kcp",
+  "kcp": {
+    "key": "my-secret-key",
+    "data_shards": 10,
+    "parity_shards": 3
+  }
+}
 ```
 
 ### Q: 升级后旧节点看不到
