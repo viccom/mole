@@ -169,8 +169,6 @@ async function refreshData() {
       setText('info-version', `${v.version} (${v.git_hash})`);
       setText('info-build-date', v.build_date || '-');
       setText('info-binary-path', v.binary_path || '-');
-      setText('info-cpu-num', v.cpu_num ? String(v.cpu_num) : '-');
-      setText('info-mem-usage', v.mem_sys_mb ? `${v.mem_alloc_mb} / ${v.mem_sys_mb} MB` : '-');
     }).catch(() => {});
 
     // 传递 nodeID 给 ser2mq 模块
