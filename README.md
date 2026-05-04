@@ -99,13 +99,26 @@ docker run -d \
 
 ### 传输协议
 
-Control Port 支持三种底层传输协议，通过 `server.transport` 配置：
+Control Port 支持三种底层传输协议，可**同时启用**多种协议：
 
-| 协议 | 配置值 | 加密方式 | 适用场景 |
-|------|--------|---------|---------|
-| TCP | `tcp` | TLS（可选） | 默认选择，稳定可靠，内网/专线推荐 |
-| WebSocket | `ws` | TLS → `wss` | 需穿透 HTTP 代理/CDN/防火墙，Web 友好 |
-| KCP (UDP) | `kcp` | AES-256（可选） | 高延迟/弱网环境，FEC 纠错+低延迟模式 |
+| 协议 | 主配置 | 额外监听 | 加密方式 | 适用场景 |
+|------|--------|---------|---------|---------|
+| TCP | `transport: "tcp"` | — | TLS（可选） | 默认选择，稳定可靠 |
+| WebSocket | `transport: "ws"` | `ws_port: ":9988"` | TLS → `wss` | 穿透 HTTP 代理/防火墙 |
+| KCP (UDP) | `transport: "kcp"` | `kcp_port: ":9981"` | AES-256（可选） | 高延迟/弱网，FEC 纠错 |
+
+**单协议模式**：设置 `transport` 为 `tcp`/`ws`/`kcp`，仅启用一种协议。
+
+**多协议同时监听**（推荐）：`transport` 设为 `tcp`（默认），再配置 `ws_port` 和 `kcp_port` 启用额外协议：
+
+```yaml
+server:
+  control_port: ":9981"    # TCP（始终启用）
+  ws_port: ":9988"         # WebSocket（空=禁用）
+  kcp_port: ":9981"        # KCP/UDP（空=禁用，可与 TCP 共用端口号）
+```
+
+三种协议的节点共用同一套认证、smux 会话、注册流程，完全互通。
 
 **TLS 加密**：仅适用于 `tcp` 和 `ws` 协议。`ws` + TLS 即 `wss`。
 
@@ -123,10 +136,12 @@ Control Port 支持三种底层传输协议，通过 `server.transport` 配置�
 
 ```yaml
 server:
-  control_port: ":9981"    # 节点控制端口
+  control_port: ":9981"    # 节点控制端口（TCP，始终启用）
   gateway_port: ":9980"    # 网关端口
   api_port: ":9983"        # API + 管理页面端口
-  transport: "tcp"         # 传输协议: tcp, ws, kcp
+  transport: "tcp"         # 主传输协议: tcp, ws, kcp
+  ws_port: ""              # WebSocket 额外监听（空=禁用, 如 ":9988"）
+  kcp_port: ""             # KCP/UDP 额外监听（空=禁用, 如 ":9981"）
   max_concurrent: 50000    # 最大并发连接数
   tls:
     enabled: false         # TLS 加密（仅 tcp/ws，KCP 使用独立加密）
