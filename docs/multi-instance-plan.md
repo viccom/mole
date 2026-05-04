@@ -274,9 +274,179 @@ server:
 
 多个实例启动时都会执行 `seedData()`，需要确保幂等性（当前实现已是幂等的：先检查是否存在再创建）。
 
-## 六、客户端自动择优（moleAgent_client）
+## 六、跨实例操作通知（关键遗漏补充）
 
-### 6.1 配置格式
+这是计划中**最大的遗漏**。以下操作在当前架构中仅在本机内存/Session 中执行，多实例时需要跨实例路由。
+
+### 6.1 问题场景
+
+| 操作 | 触发方式 | 问题 |
+|------|---------|------|
+| **隧道推送** | 管理员在实例 B 调用 `POST /api/v1/tunnels`，为目标节点创建/修改隧道 | `PushTunnelUpdate` 需要 smux Session，但 Session 在实例 A 上 → 推送失败 |
+| **节点断开** | 管理员在实例 B 调用 `DELETE /api/v1/nodes/{id}` | `Disconnect` 操作找不到本地 Session → 无法断开 |
+| **用户删除级联** | 管理员在实例 B 删除用户，需更新在线节点的 `OwnerUserID` | 实例 A 的 `ShardedNodeManager` 内存状态未更新 |
+| **隧道配置同步** | `ApplyTunnel/RemoveTunnel` 需要刷新本机路由索引 + 推送到客户端 | 只有持有 Session 的实例才能推送 |
+| **Access Token 使用** | 节点在实例 A 接入，需更新 `last_used_at` | 写 PG 即可，无跨实例问题 |
+
+### 6.2 解决方案：PG NOTIFY/LISTEN 跨实例事件通知
+
+PostgreSQL 内置 `NOTIFY/LISTEN` 机制，无需引入额外中间件即可实现跨实例事件通知。
+
+```
+实例 A (LISTEN)  ←──PG NOTIFY──→  实例 B (LISTEN)
+        │                               │
+   收到事件 → 执行本地操作        收到事件 → 执行本地操作
+```
+
+#### 事件通道设计
+
+```sql
+-- 实例启动时注册监听
+LISTEN moleagent_events;
+```
+
+#### 事件消息格式
+
+```json
+// 隧道配置变更事件
+{"type":"tunnel_change","instance_id":"srv-b","node_id":"prodSrv01","action":"apply","tunnel_name":"web"}
+
+// 节点断开事件
+{"type":"node_disconnect","instance_id":"srv-b","node_id":"prodSrv01"}
+
+// 用户删除级联事件
+{"type":"user_delete_cascade","instance_id":"srv-b","user_id":"alice"}
+
+// 节点归属变更事件
+{"type":"node_owner_change","instance_id":"srv-b","node_id":"prodSrv01","owner_user_id":"system"}
+```
+
+#### 跨实例操作流程（以隧道推送为例）
+
+```
+1. 管理员在实例 B 调用 POST /api/v1/tunnels (node_id=prodSrv01)
+2. 实例 B：
+   a. 持久化隧道配置到 PG（事务内）
+   b. 查询 PG：serv:node_status:prodSrv01 → instance_id="srv-a"
+   c. 发现节点不在本实例 → NOTIFY 'moleagent_events', '{"type":"tunnel_change","node_id":"prodSrv01"}'
+   d. 如果节点在本实例 → 直接 pushToClient（无需通知）
+3. 实例 A 收到 NOTIFY：
+   a. 重新加载节点的持久化隧道配置
+   b. 调用 pushToClient → 通过 smux Session 推送到客户端
+   c. 刷新本机路由索引
+```
+
+### 6.3 各操作的跨实例处理
+
+| 操作 | 发起实例动作 | 目标实例动作 |
+|------|------------|------------|
+| **ApplyTunnel** | 写 PG + NOTIFY | 收到通知 → 从 PG 重新加载配置 → pushToClient + RebuildIndex |
+| **RemoveTunnel** | 写 PG + NOTIFY | 收到通知 → 从 PG 重新加载配置 → pushToClient + RebuildIndex |
+| **Delete Node** | 写 PG + NOTIFY | 收到通知 → 断开本机 smux Session + 清理资源 |
+| **User Delete** | 写 PG（级联 Token/NodeOwner）+ NOTIFY | 收到通知 → 更新本机 ShardedNodeManager 内存态 |
+| **Node Disconnect** | 查 PG 定位实例 + NOTIFY | 收到通知 → 关闭 smux Session |
+
+### 6.4 NOTIFY 的注意事项
+
+- **消息不持久化**：PG NOTIFY 只发给当前连接的监听者，不排队。实例重启后错过的事件通过**定期全量同步**补偿
+- **定期全量同步**（每 60s）：从 PG 重新加载所有节点配置，与本地内存态对比，确保一致性
+- **网络分区恢复**：分区恢复后，PG LISTEN 自动重连，全量同步补齐期间遗漏的变更
+- **消息大小限制**：PG NOTIFY payload 限制 8000 字节，足够传递事件元数据（不含完整隧道配置，接收方从 PG 读取）
+
+### 6.5 实现方式
+
+```go
+// internal/state/notify.go
+
+type EventBus struct {
+    db      *redka.DB
+    sqlDB   *sql.DB       // 原始 sql.DB，用于 LISTEN/NOTIFY
+    handler func(event Event)
+}
+
+func (bus *EventBus) Start(ctx context.Context) error {
+    // 1. LISTEN moleagent_events
+    // 2. goroutine 循环接收通知 → 解析 → 调用 handler
+}
+
+func (bus *EventBus) Publish(event Event) error {
+    // NOTIFY 'moleagent_events', '{"type":"tunnel_change",...}'
+}
+```
+
+> **注意**：PG NOTIFY/LISTEN 需要使用原始 `*sql.DB` 或 `*sql.Conn`，redka 本身不暴露此功能。在 `storage/db.go` 中额外暴露原始 `*sql.DB` 即可。
+
+## 七、其他遗漏补充
+
+### 7.1 MQTT 跨实例
+
+当前每个实例内嵌独立的 MQTT Broker。多实例部署时：
+
+- **方案 A（推荐）：MQTT 独立部署**，各实例通过 MQTT 互不干扰
+- **方案 B：MQTT 保持内嵌**，各实例的 MQTT 相互独立，客户端需连到对应实例的 MQTT 端口
+
+由于 MQTT 消息本身有 topic 路由，跨实例 MQTT 共享会引入较大复杂度。建议 MQTT 保持独立，不作为多实例同步的一部分。
+
+### 7.2 实例崩溃恢复
+
+实例崩溃（无 graceful shutdown）时：
+- `serv:instances` 中的注册信息未清理
+- `serv:node_status` 中节点状态仍为 online
+- **恢复机制**：其他实例的心跳清理 goroutine 检测到心跳超时（90s）后：
+  1. 标记该实例离线
+  2. 该实例下所有 node_status 改为 offline
+  3. 释放相关隧道运行时资源（TCP/UDP 监听器无法远程释放，需等实例恢复后自行清理）
+
+### 7.3 TCP/UDP 监听器跨实例冲突
+
+当两个实例上的节点配置了相同的 `listen_port`（如都配置了 `:20001`）：
+- **当前无跨实例校验**：每个实例独立绑定端口，不同服务器上不冲突
+- **API 层需提示**：创建隧道时，应告知管理员该端口属于哪个实例，避免混淆
+- 跨实例 listen_port 唯一性无法在 PG 层保证（不同服务器可以绑定相同端口），这属于管理规范问题
+
+### 7.4 PG 驱动依赖
+
+需新增 PostgreSQL 驱动 import：
+```go
+import _ "github.com/lib/pq"  // 或 github.com/jackc/pgx/v5/stdlib
+```
+
+### 7.5 PG 连接池配置
+
+多实例共享 PG 时需合理配置连接池：
+```yaml
+database:
+  postgres_dsn: "postgres://..."
+  max_open_conns: 25       # 每个实例的最大连接数
+  max_idle_conns: 10
+  conn_max_lifetime: "5m"
+```
+
+需在 `db.go` 中通过 `sql.DB.SetMaxOpenConns()` 等方法设置。
+
+### 7.6 日志增强
+
+多实例部署时日志应包含 `instance_id`：
+```go
+slog.Info("Node registered", "instance", instanceID, "nodeId", nodeID, ...)
+```
+
+### 7.7 API 响应增强
+
+节点列表 API 应返回节点所属实例信息：
+```json
+{
+    "id": "prodSrv01",
+    "status": "online",
+    "instance_id": "srv-a",
+    "instance_addr": "10.0.0.1:9981",
+    ...
+}
+```
+
+## 八、客户端自动择优（moleAgent_client）
+
+### 8.1 配置格式
 
 ```json
 {
@@ -289,14 +459,14 @@ server:
 }
 ```
 
-### 6.2 择优策略
+### 8.2 择优策略
 
 1. 启动时并发 TCP connect 探测所有服务器延迟
 2. 选择最低延迟的服务器建立连接
 3. 断开后自动切换到次优服务器
 4. 后台定期探测（60s），下次重连时使用更优服务器
 
-## 七、实施阶段
+## 九、实施阶段
 
 ### 阶段 1：PostgreSQL 支持 + 数据唯一性（后端核心）
 - `storage/db.go` — PG 初始化分支
@@ -305,12 +475,17 @@ server:
 - `config/config.go` — 新增 PG 配置
 - **验证**：启动两个 API 实例连同一 PG，并发创建同 username，验证唯一一个成功
 
-### 阶段 2：实时状态同步 + 全局 API
-- `internal/state/` — 实例注册、节点状态发布（新建）
+### 阶段 2：实时状态同步 + 跨实例通知 + 全局 API
+- `internal/state/instance.go` — 实例注册与心跳
+- `internal/state/node_status.go` — 节点状态同步
+- `internal/state/notify.go` — PG NOTIFY/LISTEN 事件总线（**新增**）
 - `tunnel/control.go` — 节点连接/断开时同步状态
-- `api/node_handler.go` — 列表接口合并在线状态
+- `service/tunnel_service.go` — 跨实例隧道推送通知（**新增**）
+- `api/node_handler.go` — 列表接口合并在线状态、跨实例 Delete/Disconnect
+- `api/user_handler.go` — 用户删除级联发布跨实例通知
 - `api/system_handler.go` — 新增 /servers 端点
-- **验证**：两个实例，客户端连实例 A，实例 B 的 API 可查到节点在线
+- `storage/db.go` — 暴露原始 *sql.DB 供 NOTIFY/LISTEN 使用
+- **验证**：两个实例，客户端连实例 A，实例 B 的 API 创建隧道 → 实例 A 收到通知并推送到客户端
 
 ### 阶段 3：客户端自动择优（moleAgent_client）
 - 多服务器配置支持
@@ -318,7 +493,7 @@ server:
 - 故障转移
 - **验证**：配置 3 个服务器地址，模拟故障验证自动切换
 
-## 八、关键文件清单
+## 十、关键文件清单
 
 ### 修改文件（阶段 1）
 - `internal/storage/db.go` — PG 初始化
@@ -333,21 +508,28 @@ server:
 ### 新增文件（阶段 2）
 - `internal/state/instance.go` — 实例注册与心跳
 - `internal/state/node_status.go` — 节点状态同步
+- `internal/state/notify.go` — PG NOTIFY/LISTEN 事件总线
 
 ### 修改文件（阶段 2）
 - `internal/tunnel/control.go` — 节点状态同步钩子
-- `internal/api/node_handler.go` — 全局节点视图
+- `internal/service/tunnel_service.go` — 跨实例隧道推送（NOTIFY 替代直接 push）
+- `internal/api/node_handler.go` — 全局节点视图、跨实例 Delete/Disconnect
+- `internal/api/user_handler.go` — 用户删除级联发布跨实例通知
 - `internal/api/system_handler.go` — /servers 端点
-- `cmd/moleagent-serv/main.go` — 状态同步初始化
+- `internal/storage/db.go` — 暴露原始 *sql.DB 供 NOTIFY/LISTEN
+- `cmd/moleagent-serv/main.go` — EventBus 初始化与事件注册
 
 ### moleAgent_client 修改（阶段 3）
 - 配置文件解析 — 多服务器支持
 - 连接管理 — 探测、选择、故障转移
 
-## 九、验证计划
+## 十一、验证计划
 
 1. **单元测试**：事务化 repo 的 CRUD + 并发冲突测试
 2. **并发测试**：两个 API 实例并发创建同 username/node_id
 3. **状态同步测试**：节点连实例 A → 实例 B 的 API 查到在线
-4. **故障转移测试**：停止实例 A → 节点状态标记 offline → 客户端重连实例 B
-5. **兼容性测试**：不配 PG 时仍可用 SQLite 单机模式
+4. **跨实例推送测试**（**新增**）：实例 B API 创建隧道 → NOTIFY → 实例 A 收到并推送到客户端
+5. **跨实例断开测试**（**新增**）：实例 B API 删除节点 → NOTIFY → 实例 A 断开 smux Session
+6. **用户级联测试**（**新增**）：实例 B 删除用户 → NOTIFY → 实例 A 更新内存态节点归属
+7. **故障转移测试**：停止实例 A → 节点状态标记 offline → 客户端重连实例 B
+8. **兼容性测试**：不配 PG 时仍可用 SQLite 单机模式
