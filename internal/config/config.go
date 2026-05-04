@@ -25,8 +25,9 @@ type ServerConfig struct {
 	APIPort       string         `yaml:"api_port"`        // REST API 端口，如 :9983
 	MaxNodes      int            `yaml:"max_nodes"`       // 最大节点数
 	MaxConcurrent int            `yaml:"max_concurrent"`  // 最大并发连接数
-	Transport     string         `yaml:"transport"`       // 传输协议: tcp, ws (TLS 由 tls.enabled 控制)
+	Transport     string         `yaml:"transport"`       // 传输协议: tcp, ws, kcp (TLS 由 tls.enabled 控制)
 	TLS           TLSConfig      `yaml:"tls"`             // TLS 配置
+	KCP           KCPConfig      `yaml:"kcp"`             // KCP 配置
 	Gateway       GatewayConfig  `yaml:"gateway"`         // 网关配置
 }
 
@@ -40,6 +41,19 @@ type TLSConfig struct {
 // GatewayConfig 网关配置
 type GatewayConfig struct {
 	HyphenRouting bool `yaml:"hyphen_routing"` // 泛域名分隔符：true=hyphen(-), false=dot(.)
+}
+
+// KCPConfig KCP 协议配置
+type KCPConfig struct {
+	Key          string `yaml:"key"`             // 加密密钥（空=不加密）
+	DataShards   int    `yaml:"data_shards"`     // FEC 数据分片数（0=禁用 FEC）
+	ParityShards int    `yaml:"parity_shards"`   // FEC 校验分片数
+	NoDelay      int    `yaml:"nodelay"`          // 0:默认, 1:启用低延迟模式
+	Interval     int    `yaml:"interval"`         // ACK 间隔 ms（默认 40, 推荐 10）
+	Resend       int    `yaml:"resend"`           // 快速重传阈值（0:默认, 推荐 2）
+	NoCongestion int    `yaml:"no_congestion"`    // 0:默认, 1:禁用拥塞控制
+	SendWindow   int    `yaml:"send_window"`      // 发送窗口大小（0:使用默认值）
+	RecvWindow   int    `yaml:"recv_window"`      // 接收窗口大小（0:使用默认值）
 }
 
 type MQTTConfig struct {
@@ -222,9 +236,22 @@ func (c *Config) validate() error {
 		}
 	}
 
-	validTransports := map[string]bool{"tcp": true, "ws": true}
+	validTransports := map[string]bool{"tcp": true, "ws": true, "kcp": true}
 	if !validTransports[c.Server.Transport] {
-		return fmt.Errorf("invalid transport: %s (must be tcp or ws)", c.Server.Transport)
+		return fmt.Errorf("invalid transport: %s (must be tcp, ws or kcp)", c.Server.Transport)
+	}
+
+	// KCP 不支持标准 TLS
+	if c.Server.Transport == "kcp" && c.Server.TLS.Enabled {
+		return fmt.Errorf("TLS is not applicable to KCP transport; use kcp.key for encryption instead")
+	}
+
+	// FEC 分片校验
+	if c.Server.KCP.DataShards+ c.Server.KCP.ParityShards > 255 {
+		return fmt.Errorf("kcp data_shards(%d) + parity_shards(%d) must not exceed 255", c.Server.KCP.DataShards, c.Server.KCP.ParityShards)
+	}
+	if c.Server.KCP.DataShards == 0 && c.Server.KCP.ParityShards > 0 {
+		return fmt.Errorf("kcp parity_shards > 0 requires data_shards > 0")
 	}
 
 	return nil

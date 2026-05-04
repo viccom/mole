@@ -119,7 +119,65 @@ func TestAdminUser(t *testing.T) {
 	}
 }
 
-func TestParseExpiry(t *testing.T) {
-	// 这在 main.go 中，但可以测试 time.ParseDuration
-	// 简单验证
+func TestConfigValidation_KCPConflicts(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.JWTSecret = "valid-secret-key-for-testing-12345"
+
+	// KCP + TLS should be rejected
+	cfg.Server.Transport = "kcp"
+	cfg.Server.TLS.Enabled = true
+	cfg.Server.TLS.CertFile = "cert"
+	cfg.Server.TLS.KeyFile = "key"
+	if err := cfg.validate(); err == nil {
+		t.Error("should reject KCP with TLS enabled")
+	}
+
+	// KCP without TLS should pass
+	cfg.Server.TLS.Enabled = false
+	if err := cfg.validate(); err != nil {
+		t.Errorf("KCP without TLS should pass, got %v", err)
+	}
+}
+
+func TestConfigValidation_KCPFECShards(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.JWTSecret = "valid-secret-key-for-testing-12345"
+	cfg.Server.Transport = "kcp"
+
+	// Total > 255 should fail
+	cfg.Server.KCP.DataShards = 200
+	cfg.Server.KCP.ParityShards = 60
+	if err := cfg.validate(); err == nil {
+		t.Error("should reject dataShards + parityShards > 255")
+	}
+
+	// parityShards > 0 with dataShards = 0 should fail
+	cfg.Server.KCP.DataShards = 0
+	cfg.Server.KCP.ParityShards = 3
+	if err := cfg.validate(); err == nil {
+		t.Error("should reject parityShards > 0 without dataShards")
+	}
+
+	// Valid FEC config
+	cfg.Server.KCP.DataShards = 10
+	cfg.Server.KCP.ParityShards = 3
+	if err := cfg.validate(); err != nil {
+		t.Errorf("valid FEC config should pass, got %v", err)
+	}
+
+	// No FEC (both 0) should pass
+	cfg.Server.KCP.DataShards = 0
+	cfg.Server.KCP.ParityShards = 0
+	if err := cfg.validate(); err != nil {
+		t.Errorf("no FEC should pass, got %v", err)
+	}
+}
+
+func TestConfigValidation_InvalidTransport(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.JWTSecret = "valid-secret-key-for-testing-12345"
+	cfg.Server.Transport = "quic"
+	if err := cfg.validate(); err == nil {
+		t.Error("should reject unknown transport")
+	}
 }

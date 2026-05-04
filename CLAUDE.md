@@ -35,7 +35,7 @@ admin/                  前端 React SPA（构建产物部署在 admin/dist/）
 
 ## 架构要点
 
-**节点连接**: 节点通过控制端口连接 → Challenge-Response 认证 → 建立 smux 会话 → 注册隧道配置。传输层通过 `Transport` 接口抽象（`tunnel/transport.go`），当前实现 `TCPTransport`（TCP/TLS）和 `WSTransport`（WS/WSS），未来可扩展 KCP 等。配置通过 `server.transport` 字段选择（`tcp` 或 `ws`），TLS 由 `server.tls.enabled` 统一控制。
+**节点连接**: 节点通过控制端口连接 → Challenge-Response 认证 → 建立 smux 会话 → 注册隧道配置。传输层通过 `Transport` 接口抽象（`tunnel/transport.go`），当前实现 `TCPTransport`（TCP/TLS）、`WSTransport`（WS/WSS）和 `KCPTransport`（KCP，支持 FEC 和 AES 加密）。配置通过 `server.transport` 字段选择（`tcp`、`ws` 或 `kcp`），TLS 由 `server.tls.enabled` 控制（仅 tcp/ws），KCP 使用独立加密密钥 `server.kcp.key`。
 
 **节点接入认证**: 支持两级 Token — 用户级 AccessToken（优先）和旧全局 nodetoken（兼容）。接入后自动绑定 `Node.OwnerUserID`。
 
@@ -201,7 +201,7 @@ cd admin && npm run dev
 | `MA_NODE_TOKEN` | 旧全局节点接入 Token |
 | `MA_DB_PATH` | SQLite 数据库路径 |
 | `MA_CONTROL_PORT` / `MA_GATEWAY_PORT` / `MA_API_PORT` | 端口覆盖 |
-| `MA_TRANSPORT` | 传输协议（tcp, ws） |
+| `MA_TRANSPORT` | 传输协议（tcp, ws, kcp） |
 | `MA_LOG_LEVEL` | 日志级别 |
 | `MA_TLS_ENABLED` / `MA_TLS_CERT` / `MA_TLS_KEY` | TLS 配置 |
 

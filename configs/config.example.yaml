@@ -4,13 +4,23 @@ server:
   control_port: ":9981"    # Node 连接端口
   gateway_port: ":9980"    # 外部请求网关
   api_port: ":9983"        # REST API
-  transport: "tcp"         # 传输协议: tcp, ws (TLS 由 tls.enabled 控制)
+  transport: "tcp"         # 传输协议: tcp, ws, kcp (TLS 由 tls.enabled 控制, 仅 tcp/ws)
   max_nodes: 10000
   max_concurrent: 50000
   tls:
     enabled: false         # 是否启用 TLS 加密控制端口
     cert_file: "certs/server.crt"  # TLS 证书文件路径
     key_file: "certs/server.key"    # TLS 私钥文件路径
+  kcp:
+    key: ""                # KCP 加密密钥（空=不加密）
+    data_shards: 0         # FEC 数据分片数（0=禁用 FEC，推荐 10）
+    parity_shards: 0       # FEC 校验分片数（推荐 3）
+    nodelay: 1             # 0:默认, 1:启用低延迟模式
+    interval: 10           # ACK 间隔 ms（默认 40, 推荐 10）
+    resend: 2              # 快速重传阈值（推荐 2）
+    no_congestion: 1       # 0:默认, 1:禁用拥塞控制（隧道场景推荐关闭）
+    send_window: 0         # 发送窗口（0=使用默认值）
+    recv_window: 0         # 接收窗口（0=使用默认值）
   gateway:
     hyphen_routing: true    # 泛域名分隔符: true=hyphen(-), false=dot(.)
 

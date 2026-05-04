@@ -227,7 +227,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		slog.Info("Node authenticated", "remote", remoteAddr, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
 
 		// 建立 smux 会话并使用 grant
-		cs.setupSmuxAndAccept(ctx, conn, remoteAddr, grant)
+		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, grant)
 		return
 	}
 
@@ -236,7 +236,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		writeControlResp(conn, "ok", "authenticated")
 		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr)
 
-		cs.setupSmuxAndAccept(ctx, conn, remoteAddr, &core.NodeAccessGrant{
+		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, &core.NodeAccessGrant{
 			UserID:       "system",
 			LegacyGlobal: true,
 		})
@@ -525,4 +525,15 @@ func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tu
 	}
 
 	return nil
+}
+
+// bufferedConn wraps net.Conn to drain bufio.Reader buffered data first,
+// preventing data loss between auth and smux handshake.
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
 }

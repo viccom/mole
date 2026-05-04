@@ -116,6 +116,19 @@ func main() {
 	switch cfg.Server.Transport {
 	case "ws":
 		transport = tunnel.NewWSTransport(tlsConfig)
+	case "kcp":
+		kcpCfg := tunnel.KCPConfig{
+			Key:          cfg.Server.KCP.Key,
+			DataShards:   cfg.Server.KCP.DataShards,
+			ParityShards: cfg.Server.KCP.ParityShards,
+			NoDelay:      cfg.Server.KCP.NoDelay,
+			Interval:     cfg.Server.KCP.Interval,
+			Resend:       cfg.Server.KCP.Resend,
+			NoCongestion: cfg.Server.KCP.NoCongestion,
+			SendWindow:   cfg.Server.KCP.SendWindow,
+			RecvWindow:   cfg.Server.KCP.RecvWindow,
+		}
+		transport = tunnel.NewKCPTransport(kcpCfg)
 	default:
 		transport = tunnel.NewTCPTransport(tlsConfig)
 	}

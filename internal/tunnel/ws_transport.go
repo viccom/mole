@@ -83,7 +83,12 @@ func (wl *wsListener) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("WS upgrade failed", "remote", r.RemoteAddr, "error", err)
 		return
 	}
-	wl.connCh <- &wsConn{conn: conn}
+	select {
+	case wl.connCh <- &wsConn{conn: conn}:
+	default:
+		conn.Close()
+		slog.Warn("WS accept queue full, connection rejected", "remote", conn.RemoteAddr())
+	}
 }
 
 func (wl *wsListener) Accept() (net.Conn, error) {

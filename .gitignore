@@ -24,3 +24,6 @@ admin/tsconfig.tsbuildinfo
 # OS
 .DS_Store
 Thumbs.db
+
+.omc/
+.claude/
