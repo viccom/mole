@@ -1,6 +1,6 @@
 # moleAgent_client
 
-内网穿透客户端，支持 HTTP/TCP/UDP/ser2mq/vpn-manager 多种隧道类型。
+内网穿透客户端，支持 HTTP/TCP/UDP/ser2mq/vpn-manager 多种隧道类型，以及 TCP/WebSocket/KCP 多种传输协议。
 
 ## 隧道类型
 
@@ -15,7 +15,51 @@
 ## 快速开始
 
 ```bash
+# 默认 TCP 传输
 ./moleagent-client -server 82.157.196.219:9981 -token your-token
+
+# WebSocket 传输（穿透 HTTP 代理/CDN）
+./moleagent-client -server 82.157.196.219:9981 -token your-token -transport ws
+
+# KCP 传输（高延迟/弱网环境）
+./moleagent-client -server 82.157.196.219:9981 -token your-token -transport kcp
+```
+
+### 传输协议
+
+| 协议 | `-transport` 值 | 加密 | 适用场景 |
+|------|-----------------|------|---------|
+| TCP | `tcp` | TLS（`-tls` 标志） | 默认，稳定可靠 |
+| WebSocket | `ws` | TLS → wss（`-tls` 标志） | 穿透 HTTP 代理/防火墙 |
+| KCP (UDP) | `kcp` | AES-256（`kcp.key`） | 高延迟/弱网，FEC 纠错 |
+
+> **注意**：KCP 不支持 TLS。加密通过 `kcp.key` 配置。
+
+### 配置文件
+
+```json
+{
+  "server_addr": "82.157.196.219:9981",
+  "token": "your-token",
+  "transport": "tcp",
+  "tls": false,
+  "tunnels": [],
+  "kcp": {
+    "key": "",
+    "data_shards": 10,
+    "parity_shards": 3,
+    "nodelay": 1,
+    "interval": 10,
+    "resend": 2,
+    "no_congestion": 1,
+    "send_window": 0,
+    "recv_window": 0
+  }
+}
+```
+
+```bash
+./moleagent-client -config client.json
 ```
 
 ## ser2mq 配置示例
@@ -96,6 +140,7 @@ MQTT 主题：`/mole/<nodeid>/serial/<port>/out`（串口→MQTT）、`/mole/<no
 | 方法 | 端点 | 说明 |
 |------|------|------|
 | `GET` | `/api/status` | 客户端连接状态、全局流量统计 |
+| `GET` | `/api/version` | 版本号、编译日期、CPU/内存使用 |
 
 ### 统一隧道状态响应
 
@@ -134,12 +179,19 @@ MQTT 主题：`/mole/<nodeid>/serial/<port>/out`（串口→MQTT）、`/mole/<no
 
 ## 构建
 
-POSIX shell 环境（Linux/macOS/Git Bash）：
-
 ```bash
+# 当前平台（自动从 git tag 注入版本号）
 make build
+
+# 交叉编译所有平台
 make release
 ```
+
+版本号通过 `go build -ldflags` 注入，由 Makefile 自动从 git tag 获取：
+
+- `Version` = git tag（如 `v0.1.0`）
+- `GitHash` = git commit hash
+- `BuildDate` = 编译时间（UTC）
 
 Windows PowerShell：
 
