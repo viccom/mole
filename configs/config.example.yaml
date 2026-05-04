@@ -1,10 +1,12 @@
 # moleAgent_Serv 配置示例
 
 server:
-  control_port: ":9981"    # Node 连接端口
+  control_port: ":9981"    # Node 连接端口（TCP）
   gateway_port: ":9980"    # 外部请求网关
   api_port: ":9983"        # REST API
-  transport: "tcp"         # 传输协议: tcp, ws, kcp (TLS 由 tls.enabled 控制, 仅 tcp/ws)
+  transport: "tcp"         # 主传输协议: tcp, ws, kcp (TLS 由 tls.enabled 控制, 仅 tcp/ws)
+  ws_port: ""              # WebSocket 额外监听端口（空=禁用, 如 ":9988"）
+  kcp_port: ""             # KCP/UDP 额外监听端口（空=禁用, 可与 TCP 共用端口号如 ":9981"）
   max_nodes: 10000
   max_concurrent: 50000
   tls:

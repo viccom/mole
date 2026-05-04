@@ -91,14 +91,21 @@ func (s *connState) get() *core.Node {
 type ControlServer struct {
 	addr            string
 	transport       Transport                 // 传输层（TCP/TLS/KCP/WS 等）
+	extraTargets    []listenTarget             // 额外传输层监听
 	nodeMgr         *node.ShardedNodeManager
 	nodeToken       string                    // 全局节点认证令牌（兼容期保留）
 	authenticator   core.NodeAccessAuthenticator // 用户级 token 认证服务
 	listener        net.Listener
+	listeners       []net.Listener             // 所有活跃 listener（含 primary）
 	onNodeChange    func()        // 节点变更回调
 	onNodeDisconnect func(nodeID string, tunnels []core.Tunnel) // 节点断开回调
 	nodeRepo        core.NodeRepo // 隧道持久化仓库
 	tunnelSvc       core.TunnelConfigManager
+}
+
+type listenTarget struct {
+	addr      string
+	transport Transport
 }
 
 // NewControlServer 创建控制端口服务
@@ -110,6 +117,11 @@ func NewControlServer(addr string, transport Transport, nodeMgr *node.ShardedNod
 		nodeToken: nodeToken,
 		nodeRepo:  nodeRepo,
 	}
+}
+
+// AddTransport 添加额外传输层监听（如 WS、KCP）
+func (cs *ControlServer) AddTransport(addr string, transport Transport) {
+	cs.extraTargets = append(cs.extraTargets, listenTarget{addr, transport})
 }
 
 // SetOnNodeChange 设置节点变更回调
@@ -132,37 +144,54 @@ func (cs *ControlServer) SetAuthenticator(auth core.NodeAccessAuthenticator) {
 	cs.authenticator = auth
 }
 
-// Start 启动控制端口监听
+// Start 启动控制端口监听（主传输层 + 额外传输层）
 func (cs *ControlServer) Start(ctx context.Context) error {
-	listener, err := cs.transport.Listen(cs.addr)
-	if err != nil {
-		return fmt.Errorf("control listen on %s (%s): %w", cs.addr, cs.transport.Name(), err)
-	}
-	cs.listener = listener
-
-	slog.Info("Control server listening", "addr", cs.addr, "transport", cs.transport.Name())
-
-	// Worker pool
+	// Worker pool（所有 listener 共用）
 	connChan := make(chan net.Conn, 1000)
 	workerCount := runtime.NumCPU() * 2
 	for i := 0; i < workerCount; i++ {
 		go cs.connectionWorker(ctx, connChan)
 	}
 
-	go func() {
-		<-ctx.Done()
-		listener.Close()
-		slog.Info("Control server stopped")
-	}()
+	// 启动主 listener
+	primaryLn, err := cs.transport.Listen(cs.addr)
+	if err != nil {
+		return fmt.Errorf("control listen on %s (%s): %w", cs.addr, cs.transport.Name(), err)
+	}
+	cs.listener = primaryLn
+	cs.listeners = append(cs.listeners, primaryLn)
+	slog.Info("Control server listening", "addr", cs.addr, "transport", cs.transport.Name())
+	go cs.acceptLoop(ctx, primaryLn, connChan, cs.transport.Name())
 
+	// 启动额外 listener（WS、KCP 等）
+	for _, lt := range cs.extraTargets {
+		ln, err := lt.transport.Listen(lt.addr)
+		if err != nil {
+			return fmt.Errorf("control listen on %s (%s): %w", lt.addr, lt.transport.Name(), err)
+		}
+		cs.listeners = append(cs.listeners, ln)
+		slog.Info("Control server listening", "addr", lt.addr, "transport", lt.transport.Name())
+		go cs.acceptLoop(ctx, ln, connChan, lt.transport.Name())
+	}
+
+	// 等待关闭
+	<-ctx.Done()
+	for _, ln := range cs.listeners {
+		ln.Close()
+	}
+	slog.Info("Control server stopped")
+	return nil
+}
+
+func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connChan chan<- net.Conn, transportName string) {
 	for {
-		conn, err := listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			select {
 			case <-ctx.Done():
-				return nil
+				return
 			default:
-				slog.Error("Accept connection failed", "error", err)
+				slog.Error("Accept connection failed", "transport", transportName, "error", err)
 				continue
 			}
 		}
@@ -171,7 +200,7 @@ func (cs *ControlServer) Start(ctx context.Context) error {
 		case connChan <- conn:
 		default:
 			conn.Close()
-			slog.Warn("Connection queue full, rejected", "remote", conn.RemoteAddr())
+			slog.Warn("Connection queue full, rejected", "remote", conn.RemoteAddr(), "transport", transportName)
 		}
 	}
 }

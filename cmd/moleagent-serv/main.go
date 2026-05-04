@@ -136,6 +136,24 @@ func main() {
 		transport = tunnel.NewTCPTransport(tlsConfig)
 	}
 	controlSrv := tunnel.NewControlServer(cfg.Server.ControlPort, transport, nodeMgr, token, nodeRepo)
+
+	// 额外传输层：WS、KCP 可与 TCP 同时监听
+	if cfg.Server.WSPort != "" {
+		controlSrv.AddTransport(cfg.Server.WSPort, tunnel.NewWSTransport(tlsConfig))
+	}
+	if cfg.Server.KCPPort != "" {
+		controlSrv.AddTransport(cfg.Server.KCPPort, tunnel.NewKCPTransport(tunnel.KCPConfig{
+			Key:          cfg.Server.KCP.Key,
+			DataShards:   cfg.Server.KCP.DataShards,
+			ParityShards: cfg.Server.KCP.ParityShards,
+			NoDelay:      cfg.Server.KCP.NoDelay,
+			Interval:     cfg.Server.KCP.Interval,
+			Resend:       cfg.Server.KCP.Resend,
+			NoCongestion: cfg.Server.KCP.NoCongestion,
+			SendWindow:   cfg.Server.KCP.SendWindow,
+			RecvWindow:   cfg.Server.KCP.RecvWindow,
+		}))
+	}
 	controlSrv.SetOnNodeChange(func() {
 		gateway.RebuildIndex(context.Background())
 	})

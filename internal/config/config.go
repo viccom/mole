@@ -23,6 +23,8 @@ type ServerConfig struct {
 	ControlPort   string         `yaml:"control_port"`    // Node 控制端口，如 :9981
 	GatewayPort   string         `yaml:"gateway_port"`   // 外部请求网关端口，如 :9980
 	APIPort       string         `yaml:"api_port"`        // REST API 端口，如 :9983
+	WSPort        string         `yaml:"ws_port"`         // WebSocket 额外监听端口（空=禁用）
+	KCPPort       string         `yaml:"kcp_port"`        // KCP/UDP 额外监听端口（空=禁用）
 	MaxNodes      int            `yaml:"max_nodes"`       // 最大节点数
 	MaxConcurrent int            `yaml:"max_concurrent"`  // 最大并发连接数
 	Transport     string         `yaml:"transport"`       // 传输协议: tcp, ws, kcp (TLS 由 tls.enabled 控制)
