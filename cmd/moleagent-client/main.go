@@ -16,12 +16,7 @@ import (
 
 	moleAgent_client "moleAgent_client"
 	"moleAgent_client/internal/builtin"
-)
-
-var (
-	version   = "dev"
-	build     = "unknown"
-	buildDate = "unknown"
+	"moleAgent_client/internal/version"
 )
 
 func main() {
@@ -107,7 +102,7 @@ Examples:
 		log.Printf("[Event] %s %v", ev.Type, ev.Data)
 	})
 
-	log.Printf("moleAgent_client %s starting...", version)
+	log.Printf("moleAgent_client %s starting...", version.VersionString())
 	log.Printf("  Node ID:  %s", client.NodeID())
 	log.Printf("  Server:   %s (transport=%s, TLS=%v)", cfg.ServerAddr, cfg.Transport, cfg.UseTLS)
 	log.Printf("  Tunnels:  %d (will be loaded from server after connect)", len(client.Tunnels()))

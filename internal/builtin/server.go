@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"moleAgent_client"
+	"moleAgent_client/internal/version"
 )
 
 //go:embed static
@@ -70,6 +71,15 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 
 	// API
 	registerTunnelAPI(mux, client)
+
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		json.NewEncoder(w).Encode(version.GetSystemInfo())
+	})
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
