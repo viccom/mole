@@ -15,9 +15,9 @@ DATE     := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 # 编译标志
 LDFLAGS  := -s -w \
-            -X main.version=$(VERSION) \
-            -X main.build=$(BUILD) \
-            -X main.buildDate=$(DATE)
+            -X moleAgent_client/internal/version.Version=$(VERSION) \
+            -X moleAgent_client/internal/version.GitHash=$(BUILD) \
+            -X moleAgent_client/internal/version.BuildDate=$(DATE)
 
 # 交叉编译目标（armv7 → GOARCH=arm, GOARM=7）
 TARGETS := \
