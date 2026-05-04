@@ -124,6 +124,12 @@ func (cs *ControlServer) AddTransport(addr string, transport Transport) {
 	cs.extraTargets = append(cs.extraTargets, listenTarget{addr, transport})
 }
 
+// connEntry 携带传输协议标识的连接（用于日志和审计）
+type connEntry struct {
+	conn          net.Conn
+	transportName string
+}
+
 // SetOnNodeChange 设置节点变更回调
 func (cs *ControlServer) SetOnNodeChange(fn func()) {
 	cs.onNodeChange = fn
@@ -147,7 +153,7 @@ func (cs *ControlServer) SetAuthenticator(auth core.NodeAccessAuthenticator) {
 // Start 启动控制端口监听（主传输层 + 额外传输层）
 func (cs *ControlServer) Start(ctx context.Context) error {
 	// Worker pool（所有 listener 共用）
-	connChan := make(chan net.Conn, 1000)
+	connChan := make(chan connEntry, 1000)
 	workerCount := runtime.NumCPU() * 2
 	for i := 0; i < workerCount; i++ {
 		go cs.connectionWorker(ctx, connChan)
@@ -167,6 +173,10 @@ func (cs *ControlServer) Start(ctx context.Context) error {
 	for _, lt := range cs.extraTargets {
 		ln, err := lt.transport.Listen(lt.addr)
 		if err != nil {
+			// 清理已启动的 listener
+			for _, l := range cs.listeners {
+				l.Close()
+			}
 			return fmt.Errorf("control listen on %s (%s): %w", lt.addr, lt.transport.Name(), err)
 		}
 		cs.listeners = append(cs.listeners, ln)
@@ -183,7 +193,7 @@ func (cs *ControlServer) Start(ctx context.Context) error {
 	return nil
 }
 
-func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connChan chan<- net.Conn, transportName string) {
+func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connChan chan<- connEntry, transportName string) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -197,7 +207,7 @@ func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connCh
 		}
 
 		select {
-		case connChan <- conn:
+		case connChan <- connEntry{conn: conn, transportName: transportName}:
 		default:
 			conn.Close()
 			slog.Warn("Connection queue full, rejected", "remote", conn.RemoteAddr(), "transport", transportName)
@@ -205,13 +215,13 @@ func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connCh
 	}
 }
 
-func (cs *ControlServer) connectionWorker(ctx context.Context, connChan <-chan net.Conn) {
-	for conn := range connChan {
-		cs.handleConnection(ctx, conn)
+func (cs *ControlServer) connectionWorker(ctx context.Context, connChan <-chan connEntry) {
+	for entry := range connChan {
+		cs.handleConnection(ctx, entry.conn, entry.transportName)
 	}
 }
 
-func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
+func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, transportName string) {
 	remoteAddr := conn.RemoteAddr().String()
 	defer conn.Close()
 
@@ -230,7 +240,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	authLine, err := reader.ReadString('\n')
 	if err != nil {
-		slog.Warn("Node auth read failed", "remote", remoteAddr, "error", err)
+		slog.Warn("Node auth read failed", "remote", remoteAddr, "transport", transportName, "error", err)
 		return
 	}
 	conn.SetReadDeadline(time.Time{})
@@ -240,7 +250,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 	if err := json.Unmarshal([]byte(authLine), &authMsg); err != nil {
 		writeControlResp(conn, "err", "invalid auth format")
-		slog.Warn("Node auth format invalid", "remote", remoteAddr)
+		slog.Warn("Node auth format invalid", "remote", remoteAddr, "transport", transportName)
 		return
 	}
 
@@ -249,11 +259,11 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 		grant, err := cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
 		if err != nil {
 			writeControlResp(conn, "err", "invalid token")
-			slog.Warn("Node auth failed", "remote", remoteAddr)
+			slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
 			return
 		}
 		writeControlResp(conn, "ok", "authenticated")
-		slog.Info("Node authenticated", "remote", remoteAddr, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
+		slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
 
 		// 建立 smux 会话并使用 grant
 		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, grant)
@@ -263,7 +273,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 	// 无 authenticator 时回退到旧全局 token 直接比对（兼容未注入场景）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) == 1 {
 		writeControlResp(conn, "ok", "authenticated")
-		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr)
+		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr, "transport", transportName)
 
 		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, &core.NodeAccessGrant{
 			UserID:       "system",
@@ -273,7 +283,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	writeControlResp(conn, "err", "invalid token")
-	slog.Warn("Node auth failed", "remote", remoteAddr, "reason", "invalid token")
+	slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName, "reason", "invalid token")
 
 }
 
