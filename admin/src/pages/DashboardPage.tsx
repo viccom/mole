@@ -1,5 +1,5 @@
 import { api } from '../api/client'
-import type { Node, SystemMetrics } from '../types/api'
+import type { Node, SystemMetrics, VersionInfo } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
 import { StatCard } from '../components/StatCard'
 import { Badge } from '../components/Badge'
@@ -11,19 +11,22 @@ import { formatTimeAgo, formatUptime } from '../lib/utils'
 
 export function DashboardPage() {
   const { data, loading, run: refresh } = useRequest(async () => {
-    const [nodesRes, metricsRes] = await Promise.all([
+    const [nodesRes, metricsRes, versionRes] = await Promise.all([
       api.getNodes().catch(() => ({ items: [] as Node[], total: 0 })),
       api.getMetrics().catch(() => null as SystemMetrics | null),
+      api.getVersion().catch(() => null as VersionInfo | null),
     ])
 
     return {
       nodes: nodesRes.items || [],
       metrics: metricsRes,
+      version: versionRes,
     }
   })
 
   const nodes = data?.nodes || []
   const metrics = data?.metrics || null
+  const version = data?.version || null
 
   if (loading) return <Loading />
 
@@ -50,6 +53,17 @@ export function DashboardPage() {
           <StatCard icon={Network} iconBg="bg-blue-100" iconColor="text-blue-600" value={String(totalTunnels)} label="隧道总数" />
           <StatCard icon={Activity} iconBg="bg-purple-100" iconColor="text-purple-600" value={metrics?.goroutines ? String(metrics.goroutines) : '-'} label="Goroutines" />
           <StatCard icon={Clock} iconBg="bg-amber-100" iconColor="text-amber-600" value={metrics ? formatUptime(metrics.uptime_seconds) : '-'} label="运行时长" />
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm">
+          <div className="px-5 py-4 border-b border-gray-200"><h3 className="font-semibold text-gray-900">版本信息</h3></div>
+          <div className="p-5">
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm"><span className="text-gray-500">版本</span><span className="font-mono font-medium">{version ? `${version.version} (${version.git_hash})` : '-'}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-gray-500">编译日期</span><span className="font-mono font-medium">{version?.build_date || '-'}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-gray-500">二进制路径</span><span className="font-mono font-medium text-xs truncate ml-4" title={version?.binary_path}>{version?.binary_path || '-'}</span></div>
+            </div>
+          </div>
         </div>
 
         <div className="bg-white rounded-lg shadow-sm">

@@ -1,4 +1,4 @@
-import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig } from '../types/api'
+import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, VersionInfo } from '../types/api'
 
 const API = '/api/v1'
 let token = localStorage.getItem('ma_tk')
@@ -166,6 +166,7 @@ export const api = {
     request('/mqtt/publish', { method: 'POST', body: JSON.stringify({ topic, payload, qos, retain }) }),
 
   // System
+  getVersion: () => request<VersionInfo>('/version'),
   getMetrics: () => request<SystemMetrics>('/metrics'),
   getConfig: () => request<ServerConfig>('/config'),
   getAccessKey: () => request<{ enabled: boolean }>('/accesskey'),

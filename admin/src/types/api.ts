@@ -159,6 +159,17 @@ export interface SystemMetrics {
   uptime_seconds: number
 }
 
+export interface VersionInfo {
+  version: string
+  git_hash: string
+  build_date: string
+  binary_path: string
+  cpu_num: number
+  goroutines: number
+  mem_alloc_mb: number
+  mem_sys_mb: number
+}
+
 export interface ServerConfig {
   server: {
     control_port: string
