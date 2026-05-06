@@ -67,7 +67,7 @@ export function renderVizRing(containerId, value, total, color = '#4f46e5') {
   el.innerHTML = `<span>${percent}%</span>`;
 }
 
-function setText(id, value) {
+export function setText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
 }

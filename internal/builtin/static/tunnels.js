@@ -1,6 +1,6 @@
 // tunnels.js — HTTP/HTTPS/TCP/UDP 隧道管理
 import { api } from './api.js';
-import { fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
+import { setText, fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
 
 const TUNNEL_TYPES = ['http', 'https', 'tcp', 'udp'];
 let tunnels = [];
@@ -104,9 +104,4 @@ function render() {
       <td><button class="btn btn-danger btn-sm" data-action="delete" data-name="${esc(t.name)}">删除</button></td>
     </tr>`;
   }).join('');
-}
-
-function setText(id, value) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = value;
 }

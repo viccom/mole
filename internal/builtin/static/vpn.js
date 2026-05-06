@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
+import { setText, fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
 
 let tunnels = [];
 
@@ -42,15 +42,27 @@ export function initVPN() {
       render();
     }).catch(() => {});
   });
-  document.getElementById('btn-close-vpn-detail').addEventListener('click', () => {
-    document.getElementById('vpn-detail').style.display = 'none';
-    document.getElementById('vpn-detail-empty').style.display = 'block';
+  $('btn-close-vpn-detail').addEventListener('click', () => {
+    $('vpn-detail').style.display = 'none';
+    $('vpn-detail-empty').style.display = 'block';
+    currentDetailName = null;
     activateSubpanel('vpn', 'vpn-list-view');
+  });
+
+  $('vpn-detail-tabs').addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-vpn-tab]');
+    if (!tab) return;
+    currentVpnTab = tab.dataset.vpnTab;
+    document.querySelectorAll('.vpn-tab-btn').forEach(b => b.classList.toggle('active', b === tab));
+    loadVpnTab();
   });
 
   window.__vpnRefresh = (allTunnels) => {
     tunnels = allTunnels.filter(t => t.type === 'vpn-manager');
     render();
+    if (currentDetailName && $('vpn-detail').style.display !== 'none') {
+      loadVpnTab();
+    }
   };
 }
 
@@ -130,86 +142,107 @@ function formatUptime(ms) {
   return d + '天';
 }
 
+function $(id) {
+  return document.getElementById(id);
+}
+
+function readInput(id) {
+  return $(id).value.trim();
+}
+
+function pushArg(args, id, flag) {
+  const val = readInput(id);
+  if (val) args.push(flag, val);
+  return val;
+}
+
 function showAddForm() {
   activateSubpanel('vpn', 'vpn-form-view');
   editingName = null;
-  document.getElementById('vpn-form-title').textContent = '新增 VPN 隧道';
-  document.getElementById('vf-name').value = '';
-  document.getElementById('vf-name').disabled = false;
-  document.getElementById('vf-binary').value = 'vnt-cli';
-  document.getElementById('vf-token').value = '';
-  document.getElementById('vf-server').value = '';
-  document.getElementById('vf-device-id').value = '';
-  document.getElementById('vf-device-name').value = '';
-  document.getElementById('vf-password').value = '';
-  document.getElementById('vf-rest-port').value = '59871';
-  document.getElementById('vf-autostart').checked = false;
-  document.getElementById('vf-enable').checked = true;
-  document.getElementById('vpn-form').style.display = 'block';
+  $('vpn-form-title').textContent = '新增 VPN 隧道';
+  $('vf-name').value = '';
+  $('vf-name').disabled = false;
+  $('vf-binary').value = 'vnt-cli';
+  $('vf-token').value = '';
+  $('vf-server').value = '';
+  $('vf-device-id').value = '';
+  $('vf-device-name').value = '';
+  $('vf-password').value = '';
+  $('vf-in-ip').value = '';
+  $('vf-out-ip').value = '';
+  $('vf-virtual-ip').value = '';
+  $('vf-rest-port').value = '59871';
+  $('vf-autostart').checked = false;
+  $('vf-enable').checked = true;
+  $('vpn-form').style.display = 'block';
 }
 
 function showEditForm(t) {
   activateSubpanel('vpn', 'vpn-form-view');
   editingName = t.name;
-  document.getElementById('vpn-form-title').textContent = '编辑 VPN 隧道';
-  document.getElementById('vf-name').value = t.name;
-  document.getElementById('vf-name').disabled = true;
-  document.getElementById('vf-enable').checked = t.enabled;
+  $('vpn-form-title').textContent = '编辑 VPN 隧道';
+  $('vf-name').value = t.name;
+  $('vf-name').disabled = true;
+  $('vf-enable').checked = t.enabled;
 
   const para = t.para || {};
   const vnt = para.vnt || {};
 
-  document.getElementById('vf-binary').value = (para.binary && para.binary.name) || 'vnt-cli';
-  document.getElementById('vf-token').value = vnt.token || '';
-  document.getElementById('vf-server').value = vnt.server || '';
-  document.getElementById('vf-device-id').value = vnt.device_id || '';
-  document.getElementById('vf-device-name').value = vnt.name || '';
-  document.getElementById('vf-password').value = vnt.password || '';
-  document.getElementById('vf-rest-port').value = String(vnt.rest_port || 59871);
-  document.getElementById('vf-autostart').checked = !!(para.lifecycle && para.lifecycle.autostart);
+  $('vf-binary').value = (para.binary && para.binary.name) || 'vnt-cli';
+  $('vf-token').value = vnt.token || '';
+  $('vf-server').value = vnt.server || '';
+  $('vf-device-id').value = vnt.device_id || '';
+  $('vf-device-name').value = vnt.name || '';
+  $('vf-password').value = vnt.password || '';
+  $('vf-in-ip').value = vnt.in_ip || '';
+  $('vf-out-ip').value = vnt.out_ip || '';
+  $('vf-virtual-ip').value = vnt.ip || '';
+  $('vf-rest-port').value = String(vnt.rest_port || 59871);
+  $('vf-autostart').checked = !!(para.lifecycle && para.lifecycle.autostart);
 
-  document.getElementById('vpn-form').style.display = 'block';
+  $('vpn-form').style.display = 'block';
 }
 
 function hideForm() {
-  document.getElementById('vpn-form').style.display = 'none';
+  $('vpn-form').style.display = 'none';
   editingName = null;
   activateSubpanel('vpn', 'vpn-list-view');
 }
 
 let editingName = null;
+let currentDetailName = null;
+let currentVpnTab = 'info';
 
 function saveForm() {
-  const name = document.getElementById('vf-name').value.trim();
-  const binary = document.getElementById('vf-binary').value.trim();
-  const token = document.getElementById('vf-token').value.trim();
-  const server = document.getElementById('vf-server').value.trim();
-  const deviceID = document.getElementById('vf-device-id').value.trim();
+  const name = readInput('vf-name');
+  const binary = readInput('vf-binary');
+  const token = readInput('vf-token');
 
   if (!name) { toast('名称不能为空', 'error'); return; }
   if (!binary) { toast('程序名不能为空', 'error'); return; }
   if (!token) { toast('Token 不能为空', 'error'); return; }
-  if (!server) { toast('服务器地址不能为空', 'error'); return; }
-  if (!deviceID) { toast('设备ID不能为空', 'error'); return; }
 
-  const args = ['-k', token, '-s', server, '-d', deviceID];
-  const deviceName = document.getElementById('vf-device-name').value.trim();
-  if (deviceName) args.push('-n', deviceName);
-  const password = document.getElementById('vf-password').value.trim();
-  if (password) args.push('-w', password);
+  const args = ['-k', token];
+  const server = pushArg(args, 'vf-server', '-s');
+  const deviceID = pushArg(args, 'vf-device-id', '-d');
+  const deviceName = pushArg(args, 'vf-device-name', '-n');
+  const password = pushArg(args, 'vf-password', '-w');
+  const inIP = pushArg(args, 'vf-in-ip', '-i');
+  const outIP = pushArg(args, 'vf-out-ip', '-o');
+  const virtualIP = pushArg(args, 'vf-virtual-ip', '--ip');
 
-  const restPort = parseInt(document.getElementById('vf-rest-port').value) || 59871;
+  const restPort = parseInt($('vf-rest-port').value) || 59871;
 
   const payload = {
     name,
     type: 'vpn-manager',
     target: server,
-    enabled: document.getElementById('vf-enable').checked,
+    enabled: $('vf-enable').checked,
     para: {
       binary: { name: binary },
       args,
       lifecycle: {
-        autostart: document.getElementById('vf-autostart').checked,
+        autostart: $('vf-autostart').checked,
         restart_on_crash: true,
         max_restarts: 3,
         restart_delay: 5,
@@ -223,6 +256,9 @@ function saveForm() {
         device_id: deviceID,
         name: deviceName,
         password,
+        in_ip: inIP,
+        out_ip: outIP,
+        ip: virtualIP,
         rest_port: restPort,
       },
     },
@@ -236,95 +272,156 @@ function saveForm() {
 function showDetail(name) {
   const t = tunnels.find(t => t.name === name);
   if (!t) return;
+  currentDetailName = name;
+  currentVpnTab = 'info';
 
-  const s = t.status || {};
-  const panel = document.getElementById('vpn-detail');
-  document.getElementById('vpn-detail-title').textContent = name + ' — VPN 详情';
+  $('vpn-detail-title').textContent = name + ' — VPN 详情';
+  $('vpn-detail-empty').style.display = 'none';
+  $('vpn-detail').style.display = 'block';
 
-  let html = '';
-
-  // 概览
-  const info = s.vnt_info;
-  if (info) {
-    html += '<div class="card"><div class="card-header"><h2>连接概览</h2></div>';
-    html += '<div class="info-grid">';
-    html += infoItem('虚拟IP', info.virtual_ip);
-    html += infoItem('网关', info.virtual_gateway);
-    html += infoItem('子网掩码', info.virtual_netmask);
-    html += infoItem('连接状态', info.connect_status);
-    html += infoItem('中继服务器', info.relay_server);
-    html += infoItem('NAT 类型', info.nat_type);
-    html += infoItem('公网IP', info.public_ips);
-    html += infoItem('本地地址', info.local_addr);
-    html += '</div></div>';
-  }
-
-  // 系统信息
-  const buildInfo = s.vnt_status;
-  if (buildInfo) {
-    html += '<div class="card"><div class="card-header"><h2>系统信息</h2></div>';
-    html += '<div class="info-grid">';
-    html += infoItem('版本', buildInfo.version);
-    html += infoItem('CPU', buildInfo.cpu_usage.toFixed(1) + '%');
-    html += infoItem('内存', fmtBytes(buildInfo.memory_usage));
-    html += '</div></div>';
-  }
-
-  // 设备列表
-  const peers = s.vnt_peers;
-  if (peers && peers.length) {
-    html += '<div class="card"><div class="card-header"><h2>在线设备 (' + peers.length + ')</h2></div>';
-    html += '<div class="table-wrap"><table class="table"><thead><tr>';
-    html += '<th>名称</th><th>虚拟IP</th><th>状态</th><th>穿透方式</th><th>公网IP</th><th>本地IP</th>';
-    html += '</tr></thead><tbody>';
-    for (const p of peers) {
-      html += `<tr>
-        <td>${esc(p.name)}</td>
-        <td><strong>${esc(p.virtual_ip)}</strong></td>
-        <td>${esc(p.status)}</td>
-        <td>${esc(p.nat_traversal_type)}</td>
-        <td style="font-size:12px;color:#667085">${esc(p.public_ips)}</td>
-        <td style="font-size:12px;color:#667085">${esc(p.local_ip)}</td>
-      </tr>`;
-    }
-    html += '</tbody></table></div></div>';
-  }
-
-  // 路由表
-  const routes = s.vnt_routes;
-  if (routes && routes.length) {
-    html += '<div class="card"><div class="card-header"><h2>路由表</h2></div>';
-    html += '<div class="table-wrap"><table class="table"><thead><tr>';
-    html += '<th>目标</th><th>下一跳</th><th>度量</th><th>接口</th><th>RT</th>';
-    html += '</tr></thead><tbody>';
-    for (const r of routes) {
-      html += `<tr>
-        <td>${esc(r.destination)}</td>
-        <td>${esc(r.next_hop)}</td>
-        <td>${esc(r.metric)}</td>
-        <td style="font-size:12px">${esc(r.interface)}</td>
-        <td>${esc(r.rt)}</td>
-      </tr>`;
-    }
-    html += '</tbody></table></div></div>';
-  }
-
-  if (!html) {
-    html = `<div class="card empty-card">${emptyStateMarkup('等待运行时详情', '实例已经启动，但 vnt-cli 还没有返回完整的状态信息，请稍后再刷新查看。', 'V')}</div>`;
-  }
-
+  document.querySelectorAll('.vpn-tab-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
   activateSubpanel('vpn', 'vpn-detail-view');
-  document.getElementById('vpn-detail-empty').style.display = 'none';
-  panel.querySelector('#vpn-detail-content').innerHTML = html;
-  panel.style.display = 'block';
-  panel.scrollIntoView({ behavior: 'smooth' });
+  loadVpnTab();
+  $('vpn-detail').scrollIntoView({ behavior: 'smooth' });
 }
 
-function infoItem(label, value) {
-  return `<div class="info-item"><span class="info-label">${esc(label)}</span><span class="info-value">${esc(value || '-')}</span></div>`;
+function loadVpnTab() {
+  const t = tunnels.find(t => t.name === currentDetailName);
+  if (!t) return;
+  loaders[currentVpnTab](t);
 }
 
-function setText(id, value) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = value;
+const loaders = {
+  info(t) {
+    const s = t.status || {};
+    const info = s.vnt_info;
+    const status = s.vnt_status;
+    let html = '';
+    if (status) {
+      const mem = status.memory_usage ? (status.memory_usage / 1048576).toFixed(1) + ' MB' : '-';
+      html += '<div style="margin-bottom:12px"><div class="info-grid">'
+        + field('版本', status.git_tag + ' (' + status.git_hash + ')')
+        + field('编译时间', status.build_time)
+        + field('程序路径', status.exe_path)
+        + field('CPU 占用', status.cpu_usage.toFixed(1) + '%')
+        + field('内存占用', mem)
+        + field('序列号', status.serial)
+        + '</div></div>';
+    }
+    if (info) {
+      html += '<div class="info-grid">'
+        + field('设备名称', info.name)
+        + field('虚拟 IP', info.virtual_ip)
+        + field('虚拟网关', info.virtual_gateway)
+        + field('子网掩码', info.virtual_netmask)
+        + field('连接状态', info.connect_status)
+        + field('NAT 类型', info.nat_type)
+        + field('中继服务器', info.relay_server)
+        + field('公网 IP', info.public_ips)
+        + field('本地地址', info.local_addr)
+        + field('IPv6 地址', info.ipv6_addr)
+        + field('UDP 监听', (info.udp_listen_addr || []).join(', ') || '无')
+        + field('TCP 监听', info.tcp_listen_addr || '无')
+        + '</div>';
+    }
+    $('vpn-detail-content').innerHTML = html || emptyHtml();
+  },
+
+  list(t) {
+    const peers = (t.status || {}).vnt_peers;
+    if (!peers || !peers.length) {
+      $('vpn-detail-content').innerHTML = '<div class="empty" style="text-align:center;color:#94a3b8;padding:40px 0;font-size:14px">暂无其他设备</div>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>设备名称</th><th>虚拟IP</th><th>状态</th><th>连接方式</th><th>延时</th></tr></thead><tbody>';
+    peers.forEach((p, i) => {
+      html += '<tr><td>' + (i + 1) + '</td><td>' + esc(p.name) + '</td><td>' + esc(p.virtual_ip)
+        + '</td><td>' + statusTag(p.status) + '</td><td>' + connTag(p.nat_traversal_type)
+        + '</td><td>' + (p.rt ? esc(p.rt) : '-') + '</td></tr>';
+    });
+    $('vpn-detail-content').innerHTML = html + '</tbody></table></div>';
+  },
+
+  route(t) {
+    const routes = (t.status || {}).vnt_routes;
+    if (!routes || !routes.length) {
+      $('vpn-detail-content').innerHTML = '<div class="empty" style="text-align:center;color:#94a3b8;padding:40px 0;font-size:14px">暂无路由信息</div>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table class="table"><thead><tr><th>目标地址</th><th>下一跳</th><th>跃点</th><th>延时</th><th>接口</th></tr></thead><tbody>';
+    routes.forEach(r => {
+      html += '<tr><td>' + esc(r.destination) + '</td><td>' + esc(r.next_hop) + '</td><td>' + esc(r.metric)
+        + '</td><td>' + (r.rt ? esc(r.rt) : '-') + '</td><td>' + esc(r.interface) + '</td></tr>';
+    });
+    $('vpn-detail-content').innerHTML = html + '</tbody></table></div>';
+  },
+
+  chart(t) {
+    const name = t.name;
+    api.getVPNChart(name).then(d => {
+      if (currentDetailName !== name) return;
+      if (d.disable_stats) {
+        $('vpn-detail-content').innerHTML = '<div class="empty" style="text-align:center;color:#94a3b8;padding:40px 0;font-size:14px">流量统计未启用，请去掉 --disable-stats 参数后重启</div>';
+        return;
+      }
+      const upTotal = d.up_total || 0, downTotal = d.down_total || 0;
+      const upMap = d.up_map || {}, downMap = d.down_map || {};
+      const ips = {};
+      Object.keys(upMap).forEach(k => { ips[k] = true; });
+      Object.keys(downMap).forEach(k => { ips[k] = true; });
+      const sorted = Object.keys(ips).sort((a, b) => {
+        const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+        for (let i = 0; i < 4; i++) { if (pa[i] !== pb[i]) return pa[i] - pb[i]; }
+        return 0;
+      });
+      let maxUp = 0, maxDown = 0;
+      sorted.forEach(ip => {
+        if ((upMap[ip] || 0) > maxUp) maxUp = upMap[ip];
+        if ((downMap[ip] || 0) > maxDown) maxDown = downMap[ip];
+      });
+      let html = '<div class="vpn-chart-summary">'
+        + '<div class="vpn-stat-card"><div class="vpn-stat-label">总上传</div><div class="vpn-stat-value up">' + fmtBytes(upTotal) + '</div></div>'
+        + '<div class="vpn-stat-card"><div class="vpn-stat-label">总下载</div><div class="vpn-stat-value down">' + fmtBytes(downTotal) + '</div></div>'
+        + '</div>';
+      if (!sorted.length) {
+        html += '<div class="empty" style="text-align:center;color:#94a3b8;padding:40px 0;font-size:14px">暂无流量数据</div>';
+      } else {
+        html += '<div class="table-wrap"><table class="table"><thead><tr><th>IP 地址</th><th>上传</th><th>下载</th></tr></thead><tbody>';
+        sorted.forEach(ip => {
+          const uv = upMap[ip] || 0, dv = downMap[ip] || 0;
+          const upPct = maxUp ? (uv / maxUp * 100).toFixed(1) : '0.0';
+          const downPct = maxDown ? (dv / maxDown * 100).toFixed(1) : '0.0';
+          html += '<tr><td>' + esc(ip) + '</td>'
+            + '<td><div class="vpn-bar-cell"><div class="vpn-bar-bg"><div class="vpn-bar-fill up" style="width:' + upPct + '%"></div></div><span>' + fmtBytes(uv) + '</span></div></td>'
+            + '<td><div class="vpn-bar-cell"><div class="vpn-bar-bg"><div class="vpn-bar-fill down" style="width:' + downPct + '%"></div></div><span>' + fmtBytes(dv) + '</span></div></td></tr>';
+        });
+        html += '</tbody></table></div>';
+      }
+      $('vpn-detail-content').innerHTML = html;
+    }).catch(() => {
+      $('vpn-detail-content').innerHTML = '<div class="empty" style="text-align:center;color:#dc2626;padding:40px 0;font-size:14px">获取流量统计失败</div>';
+    });
+  }
+};
+
+function field(label, value) {
+  return '<div class="info-item"><span class="info-label">' + esc(label) + '</span><span class="info-value">' + esc(value || '-') + '</span></div>';
+}
+
+function emptyHtml() {
+  return '<div class="empty" style="text-align:center;color:#94a3b8;padding:40px 0;font-size:14px">等待运行时详情</div>';
+}
+
+function statusTag(s) {
+  const v = esc(s);
+  if (s === 'Connected') return '<span class="vpn-tag vpn-tag-green">' + v + '</span>';
+  if (s === 'Disconnected' || s === 'Stopped') return '<span class="vpn-tag vpn-tag-red">' + v + '</span>';
+  return '<span class="vpn-tag vpn-tag-gray">' + v + '</span>';
+}
+
+function connTag(t) {
+  const v = esc(t);
+  if (t === 'p2p' || t === 'tcp-p2p') return '<span class="vpn-tag vpn-tag-green">' + v + '</span>';
+  if (t && t.indexOf('relay') >= 0) return '<span class="vpn-tag vpn-tag-amber">' + v + '</span>';
+  return '<span class="vpn-tag vpn-tag-gray">' + v + '</span>';
 }

@@ -10,7 +10,8 @@ import (
 // Manager VPN 管理器（管理多个进程）
 type Manager struct {
 	mu      sync.RWMutex
-	procs   map[string]*ProcessMgr
+	configs map[string]Config      // 所有 VPN 隧道配置
+	procs   map[string]*ProcessMgr // 已创建的进程管理器
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
@@ -19,9 +20,10 @@ type Manager struct {
 func NewManager(ctx context.Context) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
 	return &Manager{
-		procs:  make(map[string]*ProcessMgr),
-		ctx:    ctx,
-		cancel: cancel,
+		configs: make(map[string]Config),
+		procs:   make(map[string]*ProcessMgr),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 }
 
@@ -62,15 +64,26 @@ func (m *Manager) Create(name string, cfg Config) error {
 	return nil
 }
 
-// Start 启动指定进程
+// Start 启动指定进程（按需创建 ProcessMgr）
 func (m *Manager) Start(name string) error {
-	m.mu.RLock()
+	m.mu.Lock()
 	pm, ok := m.procs[name]
-	m.mu.RUnlock()
-
 	if !ok {
-		return fmt.Errorf("vpn manager %q not found", name)
+		cfg, cfgOk := m.configs[name]
+		if !cfgOk {
+			m.mu.Unlock()
+			return fmt.Errorf("vpn manager %q not found", name)
+		}
+		var err error
+		pm, err = NewProcessMgr(name, cfg)
+		if err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("vpn manager %q create failed: %w", name, err)
+		}
+		m.procs[name] = pm
 	}
+	m.mu.Unlock()
+
 	if pm.IsRunning() {
 		return fmt.Errorf("vpn manager %q already running", name)
 	}
@@ -140,6 +153,18 @@ func (m *Manager) VNTData(name string) (*VNTInfo, []VNTDeviceItem, []VNTRouteIte
 	return info, peers, routes, status, nil
 }
 
+// VNTChart 查询指定隧道的 vnt-cli 流量统计
+func (m *Manager) VNTChart(name string) (*VNTChartA, error) {
+	m.mu.RLock()
+	pm, ok := m.procs[name]
+	m.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("vpn manager %q not found", name)
+	}
+	return pm.VNTChart()
+}
+
 // OnTunnelUpdate 处理隧道更新（从 tunnel_push 触发）
 func (m *Manager) OnTunnelUpdate(tunnelTypes []string, tunnelConfigs map[string]Config) {
 	m.mu.Lock()
@@ -149,6 +174,16 @@ func (m *Manager) OnTunnelUpdate(tunnelTypes []string, tunnelConfigs map[string]
 	needMgr := make(map[string]bool)
 	for _, t := range tunnelTypes {
 		needMgr[t] = true
+	}
+
+	// 更新配置映射：移除已删除的，保存现有的
+	for name := range m.configs {
+		if !needMgr[name] {
+			delete(m.configs, name)
+		}
+	}
+	for name, cfg := range tunnelConfigs {
+		m.configs[name] = cfg
 	}
 
 	// 停止不再需要的进程

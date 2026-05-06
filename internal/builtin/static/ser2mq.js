@@ -1,7 +1,7 @@
 // ser2mq.js — 串口转 MQTT 隧道管理（移植自 mole-cgui，适配 REST API + SSE）
 import { api } from './api.js';
 import { openSer2MQStream, closeSer2MQStream } from './ser2mq-stream.js';
-import { fmtBytes, esc, toast, activateTopTab, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
+import { setText, fmtBytes, esc, toast, activateTopTab, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
 
 let tunnels = [];
 let nodeID = '';
@@ -337,9 +337,4 @@ function updatePauseBtn() {
   const btn = document.getElementById('btn-pause-flow');
   btn.textContent = flowPaused ? '继续' : '暂停';
   btn.classList.toggle('btn-primary', flowPaused);
-}
-
-function setText(id, value) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = value;
 }

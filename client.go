@@ -776,7 +776,6 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 	case TunnelTypeVPNMgr:
 		if status, err := c.vpnMgr.Status(t.Name); err == nil {
 			ts.Connected = status.Running
-			ts.Status = status
 			// 填充 vnt-cli REST API 实时数据
 			if status.Running {
 				if info, peers, routes, buildInfo, _ := c.vpnMgr.VNTData(t.Name); info != nil {
@@ -786,9 +785,9 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 					status.VNTStatus = buildInfo
 				}
 			}
+			ts.Status = status
 		}
 	}
-
 	return ts
 }
 
@@ -857,6 +856,10 @@ func (c *Client) VPNCrashLogs(name string) ([]vpn.CrashLog, error) {
 
 func (c *Client) VPNVNTData(name string) (*vpn.VNTInfo, []vpn.VNTDeviceItem, []vpn.VNTRouteItem, *vpn.VNTBuildInfo, error) {
 	return c.vpnMgr.VNTData(name)
+}
+
+func (c *Client) VPNVNTChart(name string) (*vpn.VNTChartA, error) {
+	return c.vpnMgr.VNTChart(name)
 }
 
 // ===== Ser2MQ Manager API =====

@@ -50,7 +50,7 @@ func (t Tunnel) Validate() error {
 	default:
 		return fmt.Errorf("invalid tunnel type: %s", t.Type)
 	}
-	if t.Target == "" {
+	if t.Target == "" && t.Type != TunnelTypeVPNMgr {
 		return fmt.Errorf("tunnel target is required")
 	}
 	return nil

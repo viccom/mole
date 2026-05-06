@@ -225,6 +225,17 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			return
 		}
 		json.NewEncoder(w).Encode(routes)
+	case "chart":
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		chart, err := c.VPNVNTChart(name)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(chart)
 	case "stream":
 		handleTunnelStream(w, r, c, name)
 	default:

@@ -529,15 +529,21 @@
         </div>
         <div class="form-section-title">连接参数</div>
         <div class="form-grid">
-          <div class="form-row"><label>Token</label><input id="vf-token" type="text" placeholder="连接令牌"></div>
-          <div class="form-row"><label>服务器</label><input id="vf-server" type="text" placeholder="vpn.example.com"></div>
-          <div class="form-row"><label>设备ID</label><input id="vf-device-id" type="text" placeholder="device-001"></div>
-          <div class="form-row"><label>设备名称</label><input id="vf-device-name" type="text" placeholder="My Device"></div>
+          <div class="form-row"><label>Token <span class="req">*</span></label><input id="vf-token" type="text" placeholder="连接令牌（必填）"></div>
+          <div class="form-row"><label>服务器</label><input id="vf-server" type="text" placeholder="vpn.example.com（选填）"></div>
+          <div class="form-row"><label>设备ID</label><input id="vf-device-id" type="text" placeholder="device-001（选填）"></div>
+          <div class="form-row"><label>设备名称</label><input id="vf-device-name" type="text" placeholder="My Device（选填）"></div>
           <div class="form-row"><label>密码</label><input id="vf-password" type="password" placeholder="可选"></div>
           <div class="form-row">
             <label>REST 端口</label>
             <input id="vf-rest-port" type="number" value="59871" style="max-width:100px">
           </div>
+        </div>
+        <div class="form-section-title">网络参数</div>
+        <div class="form-grid">
+          <div class="form-row"><label>输入代理 (-i)</label><input id="vf-in-ip" type="text" placeholder="192.168.0.0/24,10.26.0.3（选填）"></div>
+          <div class="form-row"><label>输出代理 (-o)</label><input id="vf-out-ip" type="text" placeholder="192.168.0.0/24（选填）"></div>
+          <div class="form-row"><label>虚拟IP (--ip)</label><input id="vf-virtual-ip" type="text" placeholder="默认由服务器分配（选填）"></div>
         </div>
         <div class="form-check"><input type="checkbox" id="vf-autostart"> 自动启动</div>
         <div class="form-check"><input type="checkbox" id="vf-enable" checked> 启用</div>
@@ -560,6 +566,12 @@
         <div class="card-header">
           <h2 id="vpn-detail-title">VPN 详情</h2>
           <button id="btn-close-vpn-detail" class="btn btn-sm">关闭</button>
+        </div>
+        <div id="vpn-detail-tabs" style="display:flex;gap:4px;padding:0 0 8px 0;border-bottom:1px solid #e2e8f0;margin-bottom:12px">
+          <button class="vpn-tab-btn active" data-vpn-tab="info">概览</button>
+          <button class="vpn-tab-btn" data-vpn-tab="list">设备列表</button>
+          <button class="vpn-tab-btn" data-vpn-tab="route">路由表</button>
+          <button class="vpn-tab-btn" data-vpn-tab="chart">流量统计</button>
         </div>
         <div id="vpn-detail-content"></div>
       </div>

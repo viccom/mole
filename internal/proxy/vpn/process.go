@@ -386,6 +386,18 @@ func (pm *ProcessMgr) VNTData() (*VNTInfo, []VNTDeviceItem, []VNTRouteItem, *VNT
 	return info, peers, routes, status
 }
 
+// VNTChart 查询 vnt-cli 流量统计
+func (pm *ProcessMgr) VNTChart() (*VNTChartA, error) {
+	pm.mu.RLock()
+	client := pm.vntClient
+	pm.mu.RUnlock()
+
+	if client == nil {
+		return nil, fmt.Errorf("vnt client not available")
+	}
+	return client.Chart()
+}
+
 // handleExit 处理进程退出
 func (pm *ProcessMgr) handleExit(err error) {
 	pm.mu.Lock()

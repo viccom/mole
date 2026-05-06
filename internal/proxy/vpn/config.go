@@ -20,6 +20,9 @@ type VNTConfig struct {
 	DeviceID string `json:"device_id"`  // -d 设备标识
 	Name     string `json:"name"`       // -n 设备名称
 	Password string `json:"password"`   // -w 密码
+	InIP     string `json:"in_ip"`      // -i 输入代理子网
+	OutIP    string `json:"out_ip"`     // -o 输出代理子网
+	IP       string `json:"ip"`         // --ip 指定虚拟IP
 	RestPort int    `json:"rest_port"`  // REST API 端口，默认 59871
 }
 

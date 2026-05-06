@@ -95,6 +95,9 @@ export const api = {
   },
   getVNTRoutes(name) {
     return request('GET', '/api/tunnels/' + encodeURIComponent(name) + '/routes');
+  },
+  getVPNChart(name) {
+    return request('GET', '/api/tunnels/' + encodeURIComponent(name) + '/chart');
   }
 };
 
