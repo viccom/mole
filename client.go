@@ -315,6 +315,7 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 			if err := json.Unmarshal(t.Para, &cfg); err != nil {
 				log.Printf("notifyManagers: unmarshal ser2mq %q failed: %v", t.Name, err)
 			} else {
+				cfg.Enable = t.IsEnabled()
 				ser2mqConfigs[t.Name] = cfg
 			}
 		}
