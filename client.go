@@ -303,18 +303,26 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 	ser2mqConfigs := make(map[string]ser2mq.Ser2MQConfig)
 	vpnConfigs := make(map[string]vpn.Config)
 	for _, t := range tunnels {
+		if t.Type == TunnelTypeSer2MQ || t.Type == TunnelTypeVPNMgr {
+			log.Printf("notifyManagers: tunnel %q type=%s enabled=%v para=%s",
+				t.Name, t.Type, t.IsEnabled(), string(t.Para))
+		}
 		if !t.IsEnabled() {
 			continue
 		}
 		if t.Type == TunnelTypeSer2MQ && t.Para != nil {
 			var cfg ser2mq.Ser2MQConfig
-			if json.Unmarshal(t.Para, &cfg) == nil {
+			if err := json.Unmarshal(t.Para, &cfg); err != nil {
+				log.Printf("notifyManagers: unmarshal ser2mq %q failed: %v", t.Name, err)
+			} else {
 				ser2mqConfigs[t.Name] = cfg
 			}
 		}
 		if t.Type == TunnelTypeVPNMgr && t.Para != nil {
 			var cfg vpn.Config
-			if json.Unmarshal(t.Para, &cfg) == nil {
+			if err := json.Unmarshal(t.Para, &cfg); err != nil {
+				log.Printf("notifyManagers: unmarshal vpn %q failed: %v", t.Name, err)
+			} else {
 				vpnConfigs[t.Name] = cfg
 			}
 		}
