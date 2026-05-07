@@ -27,14 +27,15 @@ func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelCon
 func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 	nodes := h.nodeMgr.GetAll(r.Context())
 	type tunnelInfo struct {
-		Name       string `json:"name"`
-		Type       string `json:"type"`
-		Target     string `json:"target"`
-		Domain     string `json:"domain,omitempty"`
-		ListenPort int    `json:"listen_port,omitempty"`
-		Enabled    bool   `json:"enabled"`
-		NodeID     string `json:"node_id"`
-		Status     string `json:"status"`
+		Name       string          `json:"name"`
+		Type       string          `json:"type"`
+		Target     string          `json:"target"`
+		Domain     string          `json:"domain,omitempty"`
+		ListenPort int             `json:"listen_port,omitempty"`
+		Enabled    bool            `json:"enabled"`
+		NodeID     string          `json:"node_id"`
+		Status     string          `json:"status"`
+		Para       json.RawMessage `json:"para,omitempty"`
 	}
 
 	claims := auth.GetClaims(r.Context())
@@ -58,6 +59,7 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 				Enabled:    t.IsEnabled(),
 				NodeID:     n.ID,
 				Status:     "active",
+				Para:       t.Para,
 			})
 		}
 	}
@@ -90,6 +92,8 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	udpCount := 0
 	httpCount := 0
 	httpsCount := 0
+	ser2mqCount := 0
+	vpnMgrCount := 0
 
 	for _, n := range nodes {
 		totalTunnels += len(n.Tunnels)
@@ -106,6 +110,10 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 				httpCount++
 			case core.TunnelTypeHTTPS:
 				httpsCount++
+			case "ser2mq":
+				ser2mqCount++
+			case "vpn-manager":
+				vpnMgrCount++
 			}
 		}
 	}
@@ -127,19 +135,22 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		"udp_tunnels":    udpCount,
 		"http_tunnels":   httpCount,
 		"https_tunnels":  httpsCount,
+		"ser2mq_tunnels":  ser2mqCount,
+		"vpn_mgr_tunnels": vpnMgrCount,
 	})
 }
 
 // Create 创建/更新隧道配置，通过 TunnelConfigService 统一处理
 func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name       string `json:"name"`
-		Type       string `json:"type"`
-		Target     string `json:"target"`
-		Domain     string `json:"domain,omitempty"`
-		ListenPort int    `json:"listen_port,omitempty"`
-		Enabled    *bool  `json:"enabled,omitempty"`
-		NodeID     string `json:"node_id"`
+		Name       string          `json:"name"`
+		Type       string          `json:"type"`
+		Target     string          `json:"target"`
+		Domain     string          `json:"domain,omitempty"`
+		ListenPort int             `json:"listen_port,omitempty"`
+		Enabled    *bool           `json:"enabled,omitempty"`
+		NodeID     string          `json:"node_id"`
+		Para       json.RawMessage `json:"para,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
@@ -161,8 +172,13 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tunnelType := core.TunnelType(req.Type)
-	if tunnelType != core.TunnelTypeHTTP && tunnelType != core.TunnelTypeHTTPS && tunnelType != core.TunnelTypeTCP && tunnelType != core.TunnelTypeUDP {
-		ResponseError(w, http.StatusBadRequest, 400, "type must be http, https, tcp, or udp")
+	switch tunnelType {
+	case core.TunnelTypeHTTP, core.TunnelTypeHTTPS, core.TunnelTypeTCP, core.TunnelTypeUDP:
+		// 标准隧道类型
+	case "ser2mq", "vpn-manager":
+		// 客户端本地类型，配置在 Para 字段中
+	default:
+		ResponseError(w, http.StatusBadRequest, 400, "unsupported tunnel type: "+req.Type)
 		return
 	}
 
@@ -173,6 +189,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Domain:     req.Domain,
 		ListenPort: req.ListenPort,
 		Enabled:    req.Enabled,
+		Para:       req.Para,
 	}
 
 	if h.tunnelSvc == nil {
@@ -292,20 +309,21 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type usageItem struct {
-		Name         string `json:"name"`
-		Type         string `json:"type"`
-		Target       string `json:"target"`
-		Domain       string `json:"domain,omitempty"`
-		ListenPort   int    `json:"listen_port,omitempty"`
-		Enabled      bool   `json:"enabled"`
-		NodeID       string `json:"node_id"`
-		NodeStatus   string `json:"node_status"`
-		OwnerUserID  string `json:"owner_user_id"`
-		BytesIn      int64  `json:"bytes_in"`
-		BytesOut     int64  `json:"bytes_out"`
-		TotalConns   int64  `json:"total_connections"`
-		ActiveConns  int64  `json:"active_connections"`
-		LastActivity string `json:"last_activity,omitempty"`
+		Name         string          `json:"name"`
+		Type         string          `json:"type"`
+		Target       string          `json:"target"`
+		Domain       string          `json:"domain,omitempty"`
+		ListenPort   int             `json:"listen_port,omitempty"`
+		Enabled      bool            `json:"enabled"`
+		NodeID       string          `json:"node_id"`
+		NodeStatus   string          `json:"node_status"`
+		OwnerUserID  string          `json:"owner_user_id"`
+		BytesIn      int64           `json:"bytes_in"`
+		BytesOut     int64           `json:"bytes_out"`
+		TotalConns   int64           `json:"total_connections"`
+		ActiveConns  int64           `json:"active_connections"`
+		LastActivity string          `json:"last_activity,omitempty"`
+		Para         json.RawMessage `json:"para,omitempty"`
 	}
 
 	items := make([]usageItem, 0)
@@ -329,6 +347,7 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 				NodeID:      n.ID,
 				NodeStatus:  string(n.Status),
 				OwnerUserID: n.OwnerUserID,
+				Para:        t.Para,
 			}
 
 			// 关联运行时统计

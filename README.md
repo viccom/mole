@@ -128,6 +128,35 @@ server:
 
 > **注意**：KCP 不支持 TLS（UDP 协议），配置校验会拒绝 `transport: kcp` + `tls.enabled: true`。
 
+### Nginx 反向代理 WebSocket
+
+WS 端口可通过 nginx 反向代理，实现 TLS 终结和统一入口。WS transport 的升级路径固定为 `/ws`。
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name tunnel.example.com;
+
+    ssl_certificate     /etc/ssl/certs/tunnel.example.com.pem;
+    ssl_certificate_key /etc/ssl/private/tunnel.example.com.key;
+
+    location /ws {
+        proxy_pass http://127.0.0.1:9988;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+客户端连接地址改为 `wss://tunnel.example.com/ws`，由 nginx 终结 TLS 后转发到内部 WS 端口。
+
+> **提示**：`proxy_read_timeout` 建议设为 3600s 或更大。smux 心跳间隔 30s，但隧道空闲时连接可能长时间无数据，nginx 默认 60s 超时会断开长连接。
+
 ---
 
 ## 配置文件
