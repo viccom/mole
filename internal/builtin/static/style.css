@@ -932,6 +932,7 @@ body {
 .badge-https { background: #dbeafe; color: #1e40af; }
 .badge-tcp { background: #ffedd5; color: #9a3412; }
 .badge-udp { background: #f3e8ff; color: #6b21a8; }
+.badge-err { background: #fee2e2; color: #991b1b; }
 
 /* ===== Status ===== */
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; }

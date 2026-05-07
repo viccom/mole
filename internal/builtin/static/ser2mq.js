@@ -33,6 +33,13 @@ export function initSer2MQ() {
       if (t) showEditForm(t);
     } else if (action === 'stream') {
       openStream(name);
+    } else if (action === 'toggle') {
+      const t = tunnels.find(t => t.name === name);
+      if (!t) return;
+      const para = Object.assign({}, t.para, { enable: !t.enabled });
+      api.addTunnel({ name: t.name, type: 'ser2mq', target: t.target, enabled: !t.enabled, para })
+        .then(() => toast(t.enabled ? '已禁用' : '已启用', 'success'))
+        .catch(e => toast(e.message, 'error'));
     }
   });
 
@@ -106,7 +113,7 @@ function render() {
   renderVizRing('serial-health-ring', onlineCount, tunnels.length, '#06b6d4');
 
   if (!tunnels.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty-cell">${emptyStateMarkup('暂无 Ser2MQ 隧道', '建议先创建串口桥接，配置好 Broker、密钥和串口参数后，再进入实时数据查看收发内容。', 'S')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty-cell">${emptyStateMarkup('暂无 Ser2MQ 隧道', '建议先创建串口桥接，配置好 Broker、密钥和串口参数后，再进入实时数据查看收发内容。', 'S')}</td></tr>`;
     return;
   }
   tbody.innerHTML = tunnels.map(t => {
@@ -116,9 +123,15 @@ function render() {
     const enabledText = t.enabled ? '启用' : '禁用';
     const runningClass = running ? 'badge-on' : 'badge-off';
     const runningText = running ? '运行中' : '已停止';
+    const errorInfo = s.error ? `<span class="badge badge-err" title="${esc(s.error)}">${esc(s.error_phase || '错误')}</span>` : '';
+    const mqttBadge = `<span class="badge ${s.mqtt_connected ? 'badge-on' : 'badge-off'}">MQTT</span>`;
+    const serialBadge = `<span class="badge ${s.serial_open ? 'badge-on' : 'badge-off'}">Serial</span>`;
 
     let actions = `<button class="btn btn-sm" data-action="stream" data-name="${esc(t.name)}">数据流</button>`;
     actions += `<button class="btn btn-sm" data-action="edit" data-name="${esc(t.name)}">编辑</button>`;
+    actions += t.enabled
+      ? `<button class="btn btn-sm" data-action="toggle" data-name="${esc(t.name)}">禁用</button>`
+      : `<button class="btn btn-primary btn-sm" data-action="toggle" data-name="${esc(t.name)}">启用</button>`;
     actions += `<button class="btn btn-danger btn-sm" data-action="delete" data-name="${esc(t.name)}">删除</button>`;
 
     return `<tr>
@@ -126,7 +139,8 @@ function render() {
       <td style="font-size:12px;color:#667085;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.broker || t.target || '-')}</td>
       <td>${esc(s.serial_port || '-')}</td>
       <td><span class="badge ${enabledClass}">${enabledText}</span></td>
-      <td><span class="badge ${runningClass}">${runningText}</span></td>
+      <td><span class="badge ${runningClass}">${runningText}</span>${errorInfo}</td>
+      <td>${mqttBadge} ${serialBadge}</td>
       <td>${fmtBytes(s.bytes_in || t.bytes_in)} / ${fmtBytes(s.bytes_out || t.bytes_out)}</td>
       <td class="actions">${actions}</td>
     </tr>`;
@@ -170,10 +184,14 @@ function showEditForm(t) {
   document.getElementById('sf-enable').checked = t.enabled;
 
   const s = t.status || {};
-  if (s.serial_port) document.getElementById('sf-port').value = s.serial_port;
-  if (s.baudrate) document.getElementById('sf-baudrate').value = String(s.baudrate);
-  if (s.databits) document.getElementById('sf-databits').value = String(s.databits);
-  if (s.parity) document.getElementById('sf-parity').value = s.parity;
+  const p = t.para || {};
+  const serial = p.serial || {};
+  if (serial.port) document.getElementById('sf-port').value = serial.port;
+  if (serial.baudrate) document.getElementById('sf-baudrate').value = String(serial.baudrate);
+  if (serial.databits) document.getElementById('sf-databits').value = String(serial.databits);
+  if (serial.stopbits) document.getElementById('sf-stopbits').value = String(serial.stopbits);
+  if (serial.parity) document.getElementById('sf-parity').value = serial.parity;
+  document.getElementById('sf-timeout').value = serial.timeout || 3000;
 
   document.getElementById('ser2mq-form').style.display = 'block';
   updateTopicPreview();
@@ -210,7 +228,7 @@ function saveForm() {
         databits: parseInt(document.getElementById('sf-databits').value),
         stopbits: parseFloat(document.getElementById('sf-stopbits').value),
         parity: document.getElementById('sf-parity').value,
-        timeout: 3000
+        timeout: parseInt(document.getElementById('sf-timeout').value) || 3000
       },
       qos: parseInt(document.getElementById('sf-qos').value) || 1
     }

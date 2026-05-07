@@ -166,23 +166,29 @@ func (h *Ser2MQHandler) Stats() Ser2MQStats {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return Ser2MQStats{
-		Name:       h.name,
-		Running:    h.running,
-		BytesIn:    h.bytesIn.Load(),
-		BytesOut:   h.bytesOut.Load(),
-		Broker:     h.cfg.Broker,
-		SerialPort: h.cfg.Serial.Port,
+		Name:          h.name,
+		Running:       h.running,
+		BytesIn:       h.bytesIn.Load(),
+		BytesOut:      h.bytesOut.Load(),
+		Broker:        h.cfg.Broker,
+		SerialPort:    h.cfg.Serial.Port,
+		MQTTConnected: h.mqtt != nil && h.mqtt.IsConnected(),
+		SerialOpen:    h.serial != nil,
 	}
 }
 
 // Ser2MQStats 统计信息
 type Ser2MQStats struct {
-	Name       string `json:"name"`
-	Running    bool   `json:"running"`
-	BytesIn    uint64 `json:"bytes_in"`
-	BytesOut   uint64 `json:"bytes_out"`
-	Broker     string `json:"broker"`
-	SerialPort string `json:"serial_port"`
+	Name          string `json:"name"`
+	Running       bool   `json:"running"`
+	BytesIn       uint64 `json:"bytes_in"`
+	BytesOut      uint64 `json:"bytes_out"`
+	Broker        string `json:"broker"`
+	SerialPort    string `json:"serial_port"`
+	MQTTConnected bool   `json:"mqtt_connected"`
+	SerialOpen    bool   `json:"serial_open"`
+	Error         string `json:"error,omitempty"`
+	ErrorPhase    string `json:"error_phase,omitempty"`
 }
 
 // runSerialToMQTT 串口数据 → MQTT

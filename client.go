@@ -767,12 +767,11 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 			ts.BytesOut = traffic.TCPBytesOut + traffic.HTTPBytesOut
 		}
 	case TunnelTypeSer2MQ:
-		if stats, err := c.ser2mqMgr.Status(t.Name); err == nil {
-			ts.Connected = stats.Running
-			ts.BytesIn = stats.BytesIn
-			ts.BytesOut = stats.BytesOut
-			ts.Status = stats
-		}
+		stats, _ := c.ser2mqMgr.Status(t.Name)
+		ts.Connected = stats.Running
+		ts.BytesIn = stats.BytesIn
+		ts.BytesOut = stats.BytesOut
+		ts.Status = stats
 	case TunnelTypeVPNMgr:
 		if status, err := c.vpnMgr.Status(t.Name); err == nil {
 			ts.Connected = status.Running

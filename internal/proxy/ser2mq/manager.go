@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 )
 
@@ -11,6 +12,7 @@ import (
 type Manager struct {
 	mu      sync.RWMutex
 	tunnels map[string]*Ser2MQHandler
+	errors  map[string]Ser2MQStats // 启动失败的隧道错误信息
 	nodeID  string
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -28,6 +30,7 @@ func NewManager(ctx context.Context, nodeID string) *Manager {
 	hub := NewStreamHub(200)
 	return &Manager{
 		tunnels:   make(map[string]*Ser2MQHandler),
+		errors:    make(map[string]Ser2MQStats),
 		nodeID:    nodeID,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -54,6 +57,18 @@ func (m *Manager) SetNodeID(nodeID string) {
 	m.mu.Lock()
 	m.nodeID = nodeID
 	m.mu.Unlock()
+}
+
+// detectErrorPhase 根据错误判断失败阶段
+func (m *Manager) detectErrorPhase(err error) string {
+	errStr := err.Error()
+	if strings.Contains(errStr, "serial") || strings.Contains(errStr, "port") || strings.Contains(errStr, "open") {
+		return "serial"
+	}
+	if strings.Contains(errStr, "mqtt") || strings.Contains(errStr, "connect") || strings.Contains(errStr, "broker") {
+		return "mqtt"
+	}
+	return "unknown"
 }
 
 // Close 关闭管理器
@@ -106,6 +121,7 @@ func (m *Manager) Stop(name string) error {
 		m.stopHandler(handler)
 		delete(m.tunnels, name)
 	}
+	delete(m.errors, name)
 	m.mu.Unlock()
 
 	if !ok {
@@ -118,12 +134,18 @@ func (m *Manager) Stop(name string) error {
 func (m *Manager) Status(name string) (Ser2MQStats, error) {
 	m.mu.RLock()
 	handler, ok := m.tunnels[name]
-	m.mu.RUnlock()
-
-	if !ok {
-		return Ser2MQStats{}, fmt.Errorf("ser2mq tunnel %q not found", name)
+	if ok {
+		stats := handler.Stats()
+		m.mu.RUnlock()
+		return stats, nil
 	}
-	return handler.Stats(), nil
+	// 返回 errors map 中存储的启动失败信息
+	if errStats, hasError := m.errors[name]; hasError {
+		m.mu.RUnlock()
+		return errStats, nil
+	}
+	m.mu.RUnlock()
+	return Ser2MQStats{}, fmt.Errorf("ser2mq tunnel %q not found", name)
 }
 
 // List 列出所有隧道状态
@@ -151,6 +173,7 @@ func (m *Manager) OnTunnelUpdate(tunnelConfigs map[string]Ser2MQConfig) {
 			log.Printf("ser2mq: stopping removed tunnel %s", name)
 			m.stopHandler(h)
 			delete(m.tunnels, name)
+			delete(m.errors, name)
 		}
 	}
 
@@ -167,19 +190,35 @@ func (m *Manager) OnTunnelUpdate(tunnelConfigs map[string]Ser2MQConfig) {
 			log.Printf("ser2mq: restarting tunnel %s to apply updated config", name)
 			m.stopHandler(existing)
 			delete(m.tunnels, name)
+			delete(m.errors, name)
 		}
 
 		handler, err := m.newHandler(name, m.nodeID, cfg)
 		if err != nil {
 			log.Printf("ser2mq: create handler %s error: %v", name, err)
+			m.errors[name] = Ser2MQStats{
+				Name:       name,
+				Broker:     cfg.Broker,
+				SerialPort: cfg.Serial.Port,
+				Error:      err.Error(),
+				ErrorPhase: "serial",
+			}
 			continue
 		}
 
 		if err := m.startHandler(handler, m.ctx); err != nil {
 			log.Printf("ser2mq: start tunnel %s error: %v", name, err)
+			m.errors[name] = Ser2MQStats{
+				Name:       name,
+				Broker:     cfg.Broker,
+				SerialPort: cfg.Serial.Port,
+				Error:      err.Error(),
+				ErrorPhase: m.detectErrorPhase(err),
+			}
 			continue
 		}
 
+		delete(m.errors, name)
 		m.tunnels[name] = handler
 		log.Printf("ser2mq: started tunnel %s (serial: %s)", name, cfg.Serial.Port)
 	}

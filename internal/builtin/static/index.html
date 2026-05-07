@@ -26,7 +26,8 @@
       </div>
       <nav class="tabs">
         <button class="tab active" data-tab="dashboard">仪表盘</button>
-        <button class="tab" data-tab="tunnels">隧道</button>
+        <button class="tab" data-tab="web">Web 隧道</button>
+        <button class="tab" data-tab="stream">透明隧道</button>
         <button class="tab" data-tab="serial">串口</button>
         <button class="tab" data-tab="vpn">VPN</button>
       </nav>
@@ -125,77 +126,59 @@
     </div>
   </section>
 
-  <!-- 隧道 (HTTP/HTTPS/TCP/UDP) -->
-  <section id="panel-tunnels" class="panel">
+  <!-- Web 隧道 (HTTP/HTTPS) -->
+  <section id="panel-web" class="panel">
     <div class="subnav">
-      <button class="subnav-item active" data-panel="tunnels" data-target="tunnels-overview">
+      <button class="subnav-item active" data-panel="web" data-target="web-overview">
         <span class="subnav-icon" aria-hidden="true">
           <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 6h7v5H4zM13 6h7v8h-7zM4 13h7v5H4zM13 16h7v2h-7z" fill="currentColor"/></svg>
         </span>
         <span class="subnav-text">总览</span>
       </button>
-      <button class="subnav-item" data-panel="tunnels" data-target="tunnels-list-view">
+      <button class="subnav-item" data-panel="web" data-target="web-list-view">
         <span class="subnav-icon" aria-hidden="true">
           <svg class="icon-svg" viewBox="0 0 24 24"><path d="M5 6h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9z" fill="currentColor"/></svg>
         </span>
         <span class="subnav-text">隧道列表</span>
       </button>
-      <button class="subnav-item" data-panel="tunnels" data-target="tunnels-actions">
-        <span class="subnav-icon" aria-hidden="true">
-          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M13.6 4.4 12 2.8 7.8 7l1.6 1.6L13.6 4.4Zm3 3L15 5.8l-7.2 7.2-.6 3 3-.6L17 8.6ZM4 18h16v2H4z" fill="currentColor"/></svg>
-        </span>
-        <span class="subnav-text">操作中心</span>
-      </button>
     </div>
 
-    <div id="tunnels-overview" class="subview active" data-panel="tunnels">
+    <div id="web-overview" class="subview active" data-panel="web">
       <div class="card overview-card">
         <div class="card-header">
           <div>
-            <div class="section-kicker">Tunnel Overview</div>
-            <h2>多协议转发概览</h2>
+            <div class="section-kicker">Web Tunnel Overview</div>
+            <h2>Web 转发概览</h2>
           </div>
-          <span class="section-note">优先查看活跃链路，再进入列表做管理。</span>
+          <span class="section-note">HTTP / HTTPS 服务映射与网关代理。</span>
         </div>
         <div class="overview-metrics">
-          <div class="metric-card"><span class="metric-label">隧道总数</span><span id="tunnels-total" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">在线隧道</span><span id="tunnels-online" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">HTTP/HTTPS</span><span id="tunnels-web" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">TCP/UDP</span><span id="tunnels-stream" class="metric-value">0</span></div>
-        </div>
-        <div class="feature-grid">
-          <div class="feature-card">
-            <div class="feature-title">Web 转发</div>
-            <div id="tunnels-http-summary" class="feature-value">暂无配置</div>
-            <div class="feature-desc">适合 HTTP / HTTPS 服务映射与网关代理。</div>
-          </div>
-          <div class="feature-card">
-            <div class="feature-title">原始流量</div>
-            <div id="tunnels-tcp-summary" class="feature-value">暂无配置</div>
-            <div class="feature-desc">适合 TCP / UDP 直通，强调稳定与吞吐。</div>
-          </div>
+          <div class="metric-card"><span class="metric-label">Web 隧道</span><span id="web-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">在线</span><span id="web-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">HTTP</span><span id="web-http" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">HTTPS</span><span id="web-https" class="metric-value">0</span></div>
         </div>
         <div class="viz-grid">
           <div class="viz-card">
             <div class="viz-title">协议分布</div>
-            <div id="tunnels-type-chart" class="viz-list"></div>
+            <div id="web-type-chart" class="viz-list"></div>
           </div>
           <div class="viz-card viz-card-center">
             <div class="viz-title">在线率</div>
-            <div id="tunnels-health-ring" class="viz-ring">0%</div>
-            <div id="tunnels-health-note" class="viz-note">等待隧道数据</div>
+            <div id="web-health-ring" class="viz-ring">0%</div>
+            <div id="web-health-note" class="viz-note">等待隧道数据</div>
           </div>
         </div>
       </div>
     </div>
 
-    <div id="tunnels-list-view" class="subview" data-panel="tunnels">
+    <div id="web-list-view" class="subview" data-panel="web">
       <div class="card">
         <div class="card-header">
-          <h2>隧道列表</h2>
+          <h2>Web 隧道列表</h2>
           <div class="actions">
-            <button id="btn-refresh-tunnels" class="btn">刷新</button>
-            <button id="btn-add-tunnel" class="btn btn-primary">新增隧道</button>
+            <button id="btn-refresh-web" class="btn">刷新</button>
+            <button id="btn-add-web" class="btn btn-primary">新增 Web 隧道</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -203,31 +186,75 @@
             <thead><tr>
               <th>名称</th><th>类型</th><th>目标</th><th>状态</th><th>流入</th><th>流出</th><th>操作</th>
             </tr></thead>
-            <tbody id="tunnels-tbody"></tbody>
+            <tbody id="web-tbody"></tbody>
           </table>
         </div>
       </div>
     </div>
+  </section>
 
-    <div id="tunnels-actions" class="subview" data-panel="tunnels">
-      <div class="card action-card">
+  <!-- 透明隧道 (TCP/UDP) -->
+  <section id="panel-stream" class="panel">
+    <div class="subnav">
+      <button class="subnav-item active" data-panel="stream" data-target="stream-overview">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 6h7v5H4zM13 6h7v8h-7zM4 13h7v5H4zM13 16h7v2h-7z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">总览</span>
+      </button>
+      <button class="subnav-item" data-panel="stream" data-target="stream-list-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M5 6h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">隧道列表</span>
+      </button>
+    </div>
+
+    <div id="stream-overview" class="subview active" data-panel="stream">
+      <div class="card overview-card">
         <div class="card-header">
-          <h2>操作中心</h2>
-          <button class="btn btn-primary" id="btn-add-tunnel-secondary">新增隧道</button>
+          <div>
+            <div class="section-kicker">Stream Tunnel Overview</div>
+            <h2>透明转发概览</h2>
+          </div>
+          <span class="section-note">TCP / UDP 直通，强调稳定与吞吐。</span>
         </div>
-        <div class="action-grid">
-          <div class="action-tile">
-            <div class="feature-title">创建新映射</div>
-            <div class="feature-desc">先创建，再回到列表核对目标地址、协议类型和在线状态。</div>
+        <div class="overview-metrics">
+          <div class="metric-card"><span class="metric-label">透明隧道</span><span id="stream-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">在线</span><span id="stream-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">TCP</span><span id="stream-tcp" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">UDP</span><span id="stream-udp" class="metric-value">0</span></div>
+        </div>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <div class="viz-title">协议分布</div>
+            <div id="stream-type-chart" class="viz-list"></div>
           </div>
-          <div class="action-tile">
-            <div class="feature-title">刷新当前状态</div>
-            <div class="feature-desc">获取服务端最新分配和运行时流量，避免看到过期数据。</div>
+          <div class="viz-card viz-card-center">
+            <div class="viz-title">在线率</div>
+            <div id="stream-health-ring" class="viz-ring">0%</div>
+            <div id="stream-health-note" class="viz-note">等待隧道数据</div>
           </div>
-          <div class="action-tile">
-            <div class="feature-title">删除闲置隧道</div>
-            <div class="feature-desc">只保留正在用的映射，减少误操作和界面噪音。</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="stream-list-view" class="subview" data-panel="stream">
+      <div class="card">
+        <div class="card-header">
+          <h2>透明隧道列表</h2>
+          <div class="actions">
+            <button id="btn-refresh-stream" class="btn">刷新</button>
+            <button id="btn-add-stream" class="btn btn-primary">新增透明隧道</button>
           </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>名称</th><th>类型</th><th>目标</th><th>状态</th><th>流入</th><th>流出</th><th>操作</th>
+            </tr></thead>
+            <tbody id="stream-tbody"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -314,7 +341,7 @@
         </div>
         <table class="table">
           <thead><tr>
-            <th>名称</th><th>Broker</th><th>串口</th><th>启用</th><th>状态</th><th>流入/流出</th><th>操作</th>
+            <th>名称</th><th>Broker</th><th>串口</th><th>启用</th><th>状态</th><th>连接</th><th>流入/流出</th><th>操作</th>
           </tr></thead>
           <tbody id="ser2mq-tbody"></tbody>
         </table>
@@ -381,6 +408,10 @@
           <div class="form-row">
             <label>校验位</label>
             <select id="sf-parity"><option value="N" selected>无</option><option value="E">偶</option><option value="O">奇</option></select>
+          </div>
+          <div class="form-row">
+            <label>读超时 (ms)</label>
+            <input id="sf-timeout" type="number" min="100" max="30000" step="100" value="3000" placeholder="默认 3000">
           </div>
         </div>
         <div class="form-check"><input type="checkbox" id="sf-enable" checked> 启用</div>
