@@ -290,10 +290,45 @@ func (c *Client) processTunnelUpdates(ctx context.Context) {
 				c.mu.Lock()
 				c.tunnels = append([]Tunnel(nil), next...)
 				c.mu.Unlock()
+				c.notifyManagers(next)
 				c.events.Emit(Event{Type: EventTunnelSynced, Data: map[string]any{"count": len(next)}})
 			}
 			req.resp <- err
 		}
+	}
+}
+
+// notifyManagers 提取 ser2mq/vpn-manager 配置并通知各管理器
+func (c *Client) notifyManagers(tunnels []Tunnel) {
+	ser2mqConfigs := make(map[string]ser2mq.Ser2MQConfig)
+	vpnConfigs := make(map[string]vpn.Config)
+	for _, t := range tunnels {
+		if !t.IsEnabled() {
+			continue
+		}
+		if t.Type == TunnelTypeSer2MQ && t.Para != nil {
+			var cfg ser2mq.Ser2MQConfig
+			if json.Unmarshal(t.Para, &cfg) == nil {
+				ser2mqConfigs[t.Name] = cfg
+			}
+		}
+		if t.Type == TunnelTypeVPNMgr && t.Para != nil {
+			var cfg vpn.Config
+			if json.Unmarshal(t.Para, &cfg) == nil {
+				vpnConfigs[t.Name] = cfg
+			}
+		}
+	}
+
+	if c.ser2mqMgr != nil {
+		c.ser2mqMgr.OnTunnelUpdate(ser2mqConfigs)
+	}
+	if c.vpnMgr != nil {
+		vpnTypes := make([]string, 0, len(vpnConfigs))
+		for name := range vpnConfigs {
+			vpnTypes = append(vpnTypes, name)
+		}
+		c.vpnMgr.OnTunnelUpdate(vpnTypes, vpnConfigs)
 	}
 }
 
@@ -604,41 +639,9 @@ func (c *Client) handlePossiblePush(stream *smux.Stream, br *bufio.Reader) bool 
 	c.mu.Lock()
 	c.tunnels = make([]Tunnel, len(tunnels))
 	copy(c.tunnels, tunnels)
-
-	// 提取 ser2mq 和 vpn-manager 配置，通知管理器
-	ser2mqConfigs := make(map[string]ser2mq.Ser2MQConfig)
-	vpnConfigs := make(map[string]vpn.Config)
-	for _, t := range tunnels {
-		if !t.IsEnabled() {
-			continue
-		}
-		if t.Type == TunnelTypeSer2MQ && t.Para != nil {
-			var cfg ser2mq.Ser2MQConfig
-			if json.Unmarshal(t.Para, &cfg) == nil {
-				ser2mqConfigs[t.Name] = cfg
-			}
-		}
-		if t.Type == TunnelTypeVPNMgr && t.Para != nil {
-			var cfg vpn.Config
-			if json.Unmarshal(t.Para, &cfg) == nil {
-				vpnConfigs[t.Name] = cfg
-			}
-		}
-	}
 	c.mu.Unlock()
 
-	// 通知各管理器处理隧道更新
-	if c.ser2mqMgr != nil {
-		c.ser2mqMgr.OnTunnelUpdate(ser2mqConfigs)
-	}
-	if c.vpnMgr != nil {
-		// 构造 vpn-manager 配置映射
-		vpnTypes := make([]string, 0, len(vpnConfigs))
-		for name := range vpnConfigs {
-			vpnTypes = append(vpnTypes, name)
-		}
-		c.vpnMgr.OnTunnelUpdate(vpnTypes, vpnConfigs)
-	}
+	c.notifyManagers(tunnels)
 
 	log.Printf("Received tunnel_push from server: %d tunnel(s)", len(tunnels))
 	c.events.Emit(Event{Type: EventTunnelUpdated, Data: map[string]any{"tunnels": len(tunnels)}})
