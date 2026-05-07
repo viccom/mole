@@ -110,7 +110,7 @@ function renderWeb() {
 
   const tbody = document.getElementById('web-tbody');
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty-cell">${emptyStateMarkup('暂无 Web 隧道', '创建 HTTP 或 HTTPS 映射，将外部请求转发到本地 Web 服务。', 'W')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty-cell">${emptyStateMarkup('暂无 Web 隧道', '创建 HTTP 或 HTTPS 映射，将外部请求转发到本地 Web 服务。', 'W')}</td></tr>`;
     return;
   }
   tbody.innerHTML = list.map(t => rowHtml(t)).join('');
@@ -135,10 +135,18 @@ function renderStream() {
 
   const tbody = document.getElementById('stream-tbody');
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="table-empty-cell">${emptyStateMarkup('暂无透明隧道', '创建 TCP 或 UDP 映射，实现原始流量的直通转发。', 'S')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty-cell">${emptyStateMarkup('暂无透明隧道', '创建 TCP 或 UDP 映射，实现原始流量的直通转发。', 'S')}</td></tr>`;
     return;
   }
   tbody.innerHTML = list.map(t => rowHtml(t)).join('');
+}
+
+function accessUrl(t) {
+  const sa = window.__tunnelServerAddr || '';
+  const host = sa.split(':')[0];
+  if (t.domain) return t.type === 'https' ? `https://${t.domain}` : `http://${t.domain}`;
+  if (t.listen_port) return `${host}:${t.listen_port}`;
+  return '-';
 }
 
 function rowHtml(t) {
@@ -152,6 +160,7 @@ function rowHtml(t) {
     <td><strong>${esc(t.name)}</strong></td>
     <td><span class="badge badge-${t.type}">${esc(String(t.type || '')).toUpperCase()}</span></td>
     <td style="font-size:12px;color:#667085">${esc(t.target)}</td>
+    <td style="font-size:12px;color:#4f46e5">${esc(accessUrl(t))}</td>
     <td>${statusHtml}</td>
     <td>${fmtBytes(t.bytes_in)}</td>
     <td>${fmtBytes(t.bytes_out)}</td>

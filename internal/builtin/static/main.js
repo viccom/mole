@@ -175,6 +175,7 @@ async function refreshData() {
     if (window.__ser2mqNodeID && status.node_id) window.__ser2mqNodeID(status.node_id);
 
     // 分发给各模块
+    window.__tunnelServerAddr = status.server_addr || '';
     if (window.__tunnelsRefresh) window.__tunnelsRefresh(tunnelList);
     if (window.__ser2mqRefresh) window.__ser2mqRefresh(tunnelList);
     if (window.__vpnRefresh) window.__vpnRefresh(tunnelList);
