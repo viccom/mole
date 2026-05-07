@@ -51,7 +51,7 @@ function handleAction(e) {
   } else if (action === 'toggle') {
     const t = tunnels.find(t => t.name === name);
     if (!t) return;
-    api.addTunnel({ name: t.name, type: t.type, target: t.target, enabled: !t.enabled })
+    api.addTunnel({ name: t.name, type: t.type, target: t.target, domain: t.domain, listen_port: t.listen_port, enabled: !t.enabled })
       .then(() => toast(t.enabled ? '已禁用' : '已启用', 'success'))
       .catch(err => toast(err.message, 'error'));
   }
