@@ -107,3 +107,36 @@ func DefaultConfig() Config {
 }
 
 const DefaultRestPort = 59871
+
+// BuildArgs 根据 VNT 配置动态构建启动参数，优先于静态 Args
+func (c *Config) BuildArgs() []string {
+	if c.VNT != nil && c.VNT.Enabled {
+		var args []string
+		if c.VNT.Token != "" {
+			args = append(args, "-k", c.VNT.Token)
+		}
+		if c.VNT.Server != "" {
+			args = append(args, "-s", c.VNT.Server)
+		}
+		if c.VNT.DeviceID != "" {
+			args = append(args, "-d", c.VNT.DeviceID)
+		}
+		if c.VNT.Name != "" {
+			args = append(args, "-n", c.VNT.Name)
+		}
+		if c.VNT.Password != "" {
+			args = append(args, "-w", c.VNT.Password)
+		}
+		if c.VNT.InIP != "" {
+			args = append(args, "-i", c.VNT.InIP)
+		}
+		if c.VNT.OutIP != "" {
+			args = append(args, "-o", c.VNT.OutIP)
+		}
+		if c.VNT.IP != "" {
+			args = append(args, "--ip", c.VNT.IP)
+		}
+		return args
+	}
+	return c.Args
+}

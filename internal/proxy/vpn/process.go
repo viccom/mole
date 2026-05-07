@@ -118,7 +118,7 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 	}
 
 	// 创建命令
-	cmd := exec.Command(binPath, pm.cfg.Args...)
+	cmd := exec.Command(binPath, pm.cfg.BuildArgs()...)
 	cmd.SysProcAttr = getSysProcAttr()
 
 	// 设置工作目录
