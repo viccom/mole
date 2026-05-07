@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { api } from '../api/client'
-import type { Node, Tunnel, TunnelPara, SerialConfig, BinaryConfig, LifecycleConfig, WatchdogConfig, LogConfig } from '../types/api'
+import type { Node, Tunnel, TunnelPara, SerialConfig, BinaryConfig, VNTConfig, LifecycleConfig, WatchdogConfig, LogConfig } from '../types/api'
 import { Modal } from './Modal'
 import { FormField } from './FormField'
 import { useToast } from '../hooks/useToast'
@@ -32,13 +32,27 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
   const [ser2mqSerialPort, setSer2mqSerialPort] = useState(tunnel?.para?.serial?.port || '/dev/ttyS0')
   const [ser2mqBaudrate, setSer2mqBaudrate] = useState(tunnel?.para?.serial?.baudrate?.toString() || '9600')
   const [ser2mqDatabits, setSer2mqDatabits] = useState(tunnel?.para?.serial?.databits?.toString() || '8')
+  const [ser2mqStopbits, setSer2mqStopbits] = useState(tunnel?.para?.serial?.stopbits?.toString() || '1')
   const [ser2mqParity, setSer2mqParity] = useState(tunnel?.para?.serial?.parity || 'N')
+  const [ser2mqTimeout, setSer2mqTimeout] = useState(tunnel?.para?.serial?.timeout?.toString() || '3000')
   const [ser2mqSecret, setSer2mqSecret] = useState(tunnel?.para?.secret || '')
+  const [ser2mqQoS, setSer2mqQoS] = useState(tunnel?.para?.qos?.toString() || '1')
 
   // vpn-manager 配置
   const [vpnBinaryName, setVpnBinaryName] = useState(tunnel?.para?.binary?.name || '')
   const [vpnBinaryPath, setVpnBinaryPath] = useState(tunnel?.para?.binary?.path || '')
   const [vpnArgs, setVpnArgs] = useState(tunnel?.para?.args?.join(' ') || '')
+  // vnt-cli 专用配置
+  const [vntEnabled, setVntEnabled] = useState(tunnel?.para?.vnt?.enabled ?? true)
+  const [vntToken, setVntToken] = useState(tunnel?.para?.vnt?.token || '')
+  const [vntServer, setVntServer] = useState(tunnel?.para?.vnt?.server || '')
+  const [vntDeviceID, setVntDeviceID] = useState(tunnel?.para?.vnt?.device_id || '')
+  const [vntDeviceName, setVntDeviceName] = useState(tunnel?.para?.vnt?.name || '')
+  const [vntPassword, setVntPassword] = useState(tunnel?.para?.vnt?.password || '')
+  const [vntInIP, setVntInIP] = useState(tunnel?.para?.vnt?.in_ip || '')
+  const [vntOutIP, setVntOutIP] = useState(tunnel?.para?.vnt?.out_ip || '')
+  const [vntVirtualIP, setVntVirtualIP] = useState(tunnel?.para?.vnt?.ip || '')
+  const [vntRestPort, setVntRestPort] = useState(tunnel?.para?.vnt?.rest_port?.toString() || '59871')
   const [vpnAutostart, setVpnAutostart] = useState(tunnel?.para?.lifecycle?.autostart || false)
   const [vpnRestartOnCrash, setVpnRestartOnCrash] = useState(tunnel?.para?.lifecycle?.restart_on_crash ?? true)
   const [vpnMaxRestarts, setVpnMaxRestarts] = useState(tunnel?.para?.lifecycle?.max_restarts?.toString() || '3')
@@ -61,24 +75,40 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
   const buildPara = (): TunnelPara | undefined => {
     if (type === 'ser2mq') {
       return {
+        enable: enabled,
         broker: ser2mqBroker,
         serial: {
           port: ser2mqSerialPort,
           baudrate: Number(ser2mqBaudrate),
           databits: Number(ser2mqDatabits),
+          stopbits: Number(ser2mqStopbits),
           parity: ser2mqParity,
-          timeout: 3000,
+          timeout: Number(ser2mqTimeout) || 3000,
         },
         secret: ser2mqSecret,
+        qos: Number(ser2mqQoS) || 1,
       }
     }
     if (type === 'vpn-manager') {
+      const vnt: VNTConfig = {
+        enabled: vntEnabled,
+        token: vntToken,
+        server: vntServer,
+        device_id: vntDeviceID,
+        name: vntDeviceName,
+        password: vntPassword,
+        in_ip: vntInIP,
+        out_ip: vntOutIP,
+        ip: vntVirtualIP,
+        rest_port: Number(vntRestPort) || 59871,
+      }
       return {
         binary: {
           name: vpnBinaryName,
           path: vpnBinaryPath,
         },
         args: vpnArgs.split(' ').filter(s => s.trim()),
+        vnt: vntEnabled ? vnt : undefined,
         lifecycle: {
           autostart: vpnAutostart,
           restart_on_crash: vpnRestartOnCrash,
@@ -310,17 +340,38 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
                 </select>
               </FormField>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
+              <FormField label="停止位">
+                <select
+                  value={ser2mqStopbits}
+                  onChange={e => setSer2mqStopbits(e.target.value)}
+                  className={selectClass}
+                >
+                  <option value="1">1</option>
+                  <option value="1.5">1.5</option>
+                  <option value="2">2</option>
+                </select>
+              </FormField>
               <FormField label="校验位">
                 <select
                   value={ser2mqParity}
                   onChange={e => setSer2mqParity(e.target.value)}
                   className={selectClass}
                 >
-                  <option value="N">无校验 (N)</option>
-                  <option value="E">偶校验 (E)</option>
-                  <option value="O">奇校验 (O)</option>
+                  <option value="N">无 (N)</option>
+                  <option value="E">偶 (E)</option>
+                  <option value="O">奇 (O)</option>
                 </select>
+              </FormField>
+              <FormField label="超时(ms)">
+                <input
+                  type="number"
+                  value={ser2mqTimeout}
+                  onChange={e => setSer2mqTimeout(e.target.value)}
+                  min="100"
+                  max="30000"
+                  className={inputClass}
+                />
               </FormField>
             </div>
             <FormField label="加密密钥（64 字符 hex）">
@@ -332,6 +383,17 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
                 className={inputClass}
               />
               <p className="mt-1 text-xs text-gray-500">用于 ChaCha20-Poly1305 加密，长度必须为 64 字符</p>
+            </FormField>
+            <FormField label="QoS">
+              <select
+                value={ser2mqQoS}
+                onChange={e => setSer2mqQoS(e.target.value)}
+                className={selectClass}
+              >
+                <option value="0">0 — 最多一次</option>
+                <option value="1">1 — 至少一次</option>
+                <option value="2">2 — 恰好一次</option>
+              </select>
             </FormField>
           </>
         )}
@@ -358,7 +420,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
                 className={inputClass}
               />
             </FormField>
-            <FormField label="启动参数">
+            <FormField label="启动参数（非 vnt-cli 程序使用）">
               <input
                 type="text"
                 value={vpnArgs}
@@ -367,70 +429,169 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
                 className={inputClass}
               />
             </FormField>
-            <div className="grid grid-cols-2 gap-4">
-              <FormField label="最大重启次数">
-                <input
-                  type="number"
-                  value={vpnMaxRestarts}
-                  onChange={e => setVpnMaxRestarts(e.target.value)}
-                  min="0"
-                  max="10"
-                  className={inputClass}
-                />
-              </FormField>
-              <FormField label="重启延迟（秒）">
-                <input
-                  type="number"
-                  value={vpnRestartDelay}
-                  onChange={e => setVpnRestartDelay(e.target.value)}
-                  min="1"
-                  max="60"
-                  className={inputClass}
-                />
-              </FormField>
+
+            <div className="border-t border-gray-200 pt-4 mt-2">
+              <h4 className="text-sm font-medium text-gray-700 mb-3">vnt-cli 配置</h4>
+              <div className="space-y-4">
+                <FormField label="连接令牌 (-k)">
+                  <input
+                    type="text"
+                    value={vntToken}
+                    onChange={e => setVntToken(e.target.value)}
+                    placeholder="vnt组网令牌"
+                    className={inputClass}
+                  />
+                </FormField>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField label="服务器地址 (-s)">
+                    <input
+                      type="text"
+                      value={vntServer}
+                      onChange={e => setVntServer(e.target.value)}
+                      placeholder="vpn.example.com"
+                      className={inputClass}
+                    />
+                  </FormField>
+                  <FormField label="虚拟 IP (--ip)">
+                    <input
+                      type="text"
+                      value={vntVirtualIP}
+                      onChange={e => setVntVirtualIP(e.target.value)}
+                      placeholder="10.99.0.15"
+                      className={inputClass}
+                    />
+                  </FormField>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField label="设备 ID (-d)">
+                    <input
+                      type="text"
+                      value={vntDeviceID}
+                      onChange={e => setVntDeviceID(e.target.value)}
+                      placeholder="设备标识"
+                      className={inputClass}
+                    />
+                  </FormField>
+                  <FormField label="设备名称 (-n)">
+                    <input
+                      type="text"
+                      value={vntDeviceName}
+                      onChange={e => setVntDeviceName(e.target.value)}
+                      placeholder="home-device"
+                      className={inputClass}
+                    />
+                  </FormField>
+                </div>
+                <div className="grid grid-cols-3 gap-4">
+                  <FormField label="密码 (-w)">
+                    <input
+                      type="text"
+                      value={vntPassword}
+                      onChange={e => setVntPassword(e.target.value)}
+                      placeholder="可选"
+                      className={inputClass}
+                    />
+                  </FormField>
+                  <FormField label="输入代理 (-i)">
+                    <input
+                      type="text"
+                      value={vntInIP}
+                      onChange={e => setVntInIP(e.target.value)}
+                      placeholder="可选"
+                      className={inputClass}
+                    />
+                  </FormField>
+                  <FormField label="输出代理 (-o)">
+                    <input
+                      type="text"
+                      value={vntOutIP}
+                      onChange={e => setVntOutIP(e.target.value)}
+                      placeholder="可选"
+                      className={inputClass}
+                    />
+                  </FormField>
+                </div>
+                <FormField label="REST API 端口">
+                  <input
+                    type="number"
+                    value={vntRestPort}
+                    onChange={e => setVntRestPort(e.target.value)}
+                    min="1"
+                    max="65535"
+                    className={inputClass}
+                  />
+                  <p className="mt-1 text-xs text-gray-500">vnt-cli REST API 监听端口，默认 59871</p>
+                </FormField>
+              </div>
             </div>
-            <div className="space-y-2">
-              <FormField label="选项">
-                <label className="flex items-center gap-2 cursor-pointer">
+
+            <div className="border-t border-gray-200 pt-4 mt-2">
+              <h4 className="text-sm font-medium text-gray-700 mb-3">生命周期</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <FormField label="最大重启次数">
                   <input
-                    type="checkbox"
-                    checked={vpnAutostart}
-                    onChange={e => setVpnAutostart(e.target.checked)}
-                    className="w-4 h-4 text-primary rounded border-gray-300 focus:ring-primary"
+                    type="number"
+                    value={vpnMaxRestarts}
+                    onChange={e => setVpnMaxRestarts(e.target.value)}
+                    min="0"
+                    max="10"
+                    className={inputClass}
                   />
-                  <span className="text-sm text-gray-600">启动时自动运行</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                </FormField>
+                <FormField label="重启延迟（秒）">
                   <input
-                    type="checkbox"
-                    checked={vpnRestartOnCrash}
-                    onChange={e => setVpnRestartOnCrash(e.target.checked)}
-                    className="w-4 h-4 text-primary rounded border-gray-300 focus:ring-primary"
+                    type="number"
+                    value={vpnRestartDelay}
+                    onChange={e => setVpnRestartDelay(e.target.value)}
+                    min="1"
+                    max="60"
+                    className={inputClass}
                   />
-                  <span className="text-sm text-gray-600">崩溃后自动重启</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                </FormField>
+              </div>
+              <div className="space-y-2 mt-3">
+                <FormField label="选项">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={vpnAutostart}
+                      onChange={e => setVpnAutostart(e.target.checked)}
+                      className="w-4 h-4 text-primary rounded border-gray-300 focus:ring-primary"
+                    />
+                    <span className="text-sm text-gray-600">启动时自动运行</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={vpnRestartOnCrash}
+                      onChange={e => setVpnRestartOnCrash(e.target.checked)}
+                      className="w-4 h-4 text-primary rounded border-gray-300 focus:ring-primary"
+                    />
+                    <span className="text-sm text-gray-600">崩溃后自动重启</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={vpnLogCapture}
+                      onChange={e => setVpnLogCapture(e.target.checked)}
+                      className="w-4 h-4 text-primary rounded border-gray-300 focus:ring-primary"
+                    />
+                    <span className="text-sm text-gray-600">捕获日志输出</span>
+                  </label>
+                </FormField>
+              </div>
+              {vpnLogCapture && (
+                <FormField label="日志文件路径（可选）">
                   <input
-                    type="checkbox"
-                    checked={vpnLogCapture}
-                    onChange={e => setVpnLogCapture(e.target.checked)}
-                    className="w-4 h-4 text-primary rounded border-gray-300 focus:ring-primary"
+                    type="text"
+                    value={vpnLogPath}
+                    onChange={e => setVpnLogPath(e.target.value)}
+                    placeholder="./vnet/logs/vpn.log"
+                    className={inputClass}
                   />
-                  <span className="text-sm text-gray-600">捕获日志输出</span>
-                </label>
-              </FormField>
+                </FormField>
+              )}
             </div>
-            {vpnLogCapture && (
-              <FormField label="日志文件路径（可选）">
-                <input
-                  type="text"
-                  value={vpnLogPath}
-                  onChange={e => setVpnLogPath(e.target.value)}
-                  placeholder="./vnet/logs/vpn.log"
-                  className={inputClass}
-                />
-              </FormField>
-            )}
           </>
         )}
 

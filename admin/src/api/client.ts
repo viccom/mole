@@ -1,4 +1,4 @@
-import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, VersionInfo } from '../types/api'
+import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, VersionInfo, VNTConfig } from '../types/api'
 
 const API = '/api/v1'
 let token = localStorage.getItem('ma_tk')
@@ -75,11 +75,14 @@ interface TunnelPayload {
   enabled?: boolean
   node_id: string
   para?: {
+    enable?: boolean
     broker?: string
-    serial?: { port?: string; baudrate?: number; databits?: number; parity?: string; timeout?: number }
+    serial?: { port?: string; baudrate?: number; databits?: number; stopbits?: number; parity?: string; timeout?: number }
     secret?: string
+    qos?: number
     binary?: { name?: string; path?: string }
     args?: string[]
+    vnt?: VNTConfig
     lifecycle?: { autostart?: boolean; restart_on_crash?: boolean; max_restarts?: number; restart_delay?: number }
     watchdog?: { enabled?: boolean; interval?: number; quit_grace?: number }
     log?: { capture?: boolean; max_size?: number; output_path?: string }

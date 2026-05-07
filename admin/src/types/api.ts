@@ -49,12 +49,15 @@ export interface Tunnel {
 
 export interface TunnelPara {
   // ser2mq 配置
+  enable?: boolean
   broker?: string
   serial?: SerialConfig
   secret?: string
+  qos?: number
   // vpn-manager 配置
   binary?: BinaryConfig
   args?: string[]
+  vnt?: VNTConfig
   lifecycle?: LifecycleConfig
   watchdog?: WatchdogConfig
   log?: LogConfig
@@ -72,6 +75,19 @@ export interface SerialConfig {
 export interface BinaryConfig {
   name?: string
   path?: string
+}
+
+export interface VNTConfig {
+  enabled?: boolean
+  token?: string
+  server?: string
+  device_id?: string
+  name?: string
+  password?: string
+  in_ip?: string
+  out_ip?: string
+  ip?: string
+  rest_port?: number
 }
 
 export interface LifecycleConfig {
