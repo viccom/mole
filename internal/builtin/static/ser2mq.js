@@ -1,7 +1,7 @@
 // ser2mq.js — 串口转 MQTT 隧道管理（移植自 mole-cgui，适配 REST API + SSE）
 import { api } from './api.js';
 import { openSer2MQStream, closeSer2MQStream } from './ser2mq-stream.js';
-import { setText, fmtBytes, esc, toast, activateTopTab, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
+import { setText, fmtBytes, esc, toast, activateTopTab, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing, showSerialFormTemplate } from './main.js';
 
 let tunnels = [];
 let nodeID = '';
@@ -65,7 +65,7 @@ export function initSer2MQ() {
     if (name) openStream(name);
     else {
       flowTunnel = null;
-      setText('serial-streaming', '未选择');
+      setText('ser2mq-streaming', '未选择');
       closeSer2MQStream();
       renderFlow();
     }
@@ -98,19 +98,13 @@ function render() {
   const enabledCount = tunnels.filter(t => t.enabled).length;
   const firstBroker = tunnels.find(t => (t.status || {}).broker || t.target);
   const firstPort = tunnels.find(t => (t.status || {}).serial_port);
-  setText('serial-total', String(tunnels.length));
-  setText('serial-online', String(onlineCount));
-  setText('serial-enabled', String(enabledCount));
-  setText('serial-streaming', flowTunnel || '未选择');
-  setText('serial-broker-summary', firstBroker ? ((firstBroker.status || {}).broker || firstBroker.target || '-') : '暂无 Broker');
-  setText('serial-port-summary', firstPort ? ((firstPort.status || {}).serial_port || '-') : '暂无端口');
-  setText('serial-health-note', tunnels.length ? `当前 ${onlineCount}/${tunnels.length} 条链路在线` : '创建串口桥接后可查看可用率');
-  renderVizBars('serial-state-chart', [
-    { label: '运行中', value: onlineCount, color: '#10b981' },
-    { label: '已启用', value: Math.max(enabledCount - onlineCount, 0), color: '#3b82f6' },
-    { label: '未启用', value: Math.max(tunnels.length - enabledCount, 0), color: '#94a3b8' }
-  ], '暂无运行分布', '新增 Ser2MQ 隧道后这里会显示运行状态。');
-  renderVizRing('serial-health-ring', onlineCount, tunnels.length, '#06b6d4');
+  setText('ser2mq-total', String(tunnels.length));
+  setText('ser2mq-online', String(onlineCount));
+  setText('ser2mq-enabled', String(enabledCount));
+  setText('ser2mq-streaming', flowTunnel || '未选择');
+  setText('ser2mq-broker-summary', firstBroker ? ((firstBroker.status || {}).broker || firstBroker.target || '-') : '暂无 Broker');
+  setText('ser2mq-port-summary', firstPort ? ((firstPort.status || {}).serial_port || '-') : '暂无端口');
+  setText('ser2mq-health-note', tunnels.length ? `当前 ${onlineCount}/${tunnels.length} 条链路在线` : '创建串口桥接后可查看链路状态');
 
   if (!tunnels.length) {
     tbody.innerHTML = `<tr><td colspan="8" class="table-empty-cell">${emptyStateMarkup('暂无 Ser2MQ 隧道', '建议先创建串口桥接，配置好 Broker、密钥和串口参数后，再进入实时数据查看收发内容。', 'S')}</td></tr>`;
@@ -171,7 +165,7 @@ function showAddForm() {
   document.getElementById('sf-parity').value = 'N';
   document.getElementById('sf-enable').checked = true;
   document.getElementById('topic-preview').style.display = 'none';
-  document.getElementById('ser2mq-form').style.display = 'block';
+  showSerialFormTemplate('ser2mq');
 }
 
 function showEditForm(t) {
@@ -193,12 +187,12 @@ function showEditForm(t) {
   if (serial.parity) document.getElementById('sf-parity').value = serial.parity;
   document.getElementById('sf-timeout').value = serial.timeout || 3000;
 
-  document.getElementById('ser2mq-form').style.display = 'block';
+  showSerialFormTemplate('ser2mq');
   updateTopicPreview();
 }
 
 function hideForm() {
-  document.getElementById('ser2mq-form').style.display = 'none';
+  showSerialFormTemplate('');
   editingName = null;
   activateSubpanel('serial', 'serial-list-view');
 }
@@ -274,7 +268,7 @@ function openStream(name) {
   flowTunnel = name;
   flowPaused = false;
   updatePauseBtn();
-  setText('serial-streaming', name);
+  setText('ser2mq-streaming', name);
   document.getElementById('df-select-tunnel').value = name;
   renderFlow();
 

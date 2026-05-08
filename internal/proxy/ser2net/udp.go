@@ -27,7 +27,9 @@ func (h *Handler) runUDPServer() {
 		log.Printf("ser2net: %s udp server listen error: %v", h.name, err)
 		return
 	}
+	h.setListener(conn)
 	defer conn.Close()
+	defer h.setListener(nil)
 	log.Printf("ser2net: %s udp server listening on %s", h.name, h.cfg.Address)
 
 	peers := &peerSet{m: make(map[string]*peerEntry)}
@@ -99,7 +101,10 @@ func (h *Handler) relayUDPClient(conn *net.UDPConn) {
 				return
 			}
 			if n > 0 {
-				h.writeSerial(buf[:n])
+				if _, err := h.writeSerial(buf[:n]); err != nil {
+					log.Printf("ser2net: %s write serial from udp client failed: %v", h.name, err)
+					return
+				}
 			}
 		}
 	}()
@@ -175,7 +180,10 @@ func (h *Handler) udpToSerial(conn *net.UDPConn, peers *peerSet) {
 		if n > 0 {
 			peers.track(remoteAddr)
 			h.clients.Store(int32(peers.count()))
-			h.writeSerial(buf[:n])
+			if _, err := h.writeSerial(buf[:n]); err != nil {
+				log.Printf("ser2net: %s write serial from udp server failed: %v", h.name, err)
+				return
+			}
 		}
 	}
 }

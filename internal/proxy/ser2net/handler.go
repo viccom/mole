@@ -3,6 +3,7 @@ package ser2net
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -19,6 +20,9 @@ type Handler struct {
 
 	serial  SerialConn
 	writeMu sync.Mutex
+
+	listener   io.Closer
+	listenerMu sync.Mutex
 
 	bytesIn  atomic.Uint64
 	bytesOut atomic.Uint64
@@ -65,9 +69,8 @@ func (h *Handler) Stop() {
 	if h.cancel != nil {
 		h.cancel()
 	}
-	if h.serial != nil {
-		h.serial.Close()
-	}
+	h.closeListener()
+	h.closeSerial()
 }
 
 func (h *Handler) IsRunning() bool {
@@ -80,6 +83,7 @@ type Stats struct {
 	Mode       string `json:"mode"`
 	Running    bool   `json:"running"`
 	SerialOpen bool   `json:"serial_open"`
+	SerialPort string `json:"serial_port"`
 	Address    string `json:"address"`
 	Clients    int    `json:"clients"`
 	BytesIn    uint64 `json:"bytes_in"`
@@ -94,6 +98,7 @@ func (h *Handler) Stats() Stats {
 		Mode:       h.cfg.Mode,
 		Running:    h.running.Load(),
 		SerialOpen: h.serial != nil,
+		SerialPort: h.cfg.Serial.Port,
 		Address:    h.cfg.Address,
 		Clients:    int(h.clients.Load()),
 		BytesIn:    h.bytesIn.Load(),
@@ -117,9 +122,8 @@ func (h *Handler) writeSerial(data []byte) (int, error) {
 
 func (h *Handler) cleanup() {
 	h.running.Store(false)
-	if h.serial != nil {
-		h.serial.Close()
-	}
+	h.closeListener()
+	h.closeSerial()
 }
 
 func (h *Handler) maxConn() int {
@@ -127,6 +131,32 @@ func (h *Handler) maxConn() int {
 		return 1
 	}
 	return h.cfg.MaxConn
+}
+
+func (h *Handler) setListener(closer io.Closer) {
+	h.listenerMu.Lock()
+	h.listener = closer
+	h.listenerMu.Unlock()
+}
+
+func (h *Handler) closeListener() {
+	h.listenerMu.Lock()
+	listener := h.listener
+	h.listener = nil
+	h.listenerMu.Unlock()
+	if listener != nil {
+		_ = listener.Close()
+	}
+}
+
+func (h *Handler) closeSerial() {
+	h.writeMu.Lock()
+	serial := h.serial
+	h.serial = nil
+	h.writeMu.Unlock()
+	if serial != nil {
+		_ = serial.Close()
+	}
 }
 
 // connSet manages TCP server client connections

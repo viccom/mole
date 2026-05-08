@@ -94,6 +94,23 @@ export function activateSubpanel(panelName, targetId) {
   });
 }
 
+export function showSerialFormTemplate(template) {
+  const mqForm = document.getElementById('ser2mq-form');
+  const netForm = document.getElementById('ser2net-form');
+  const empty = document.getElementById('serial-form-empty');
+
+  const isMQ = template === 'ser2mq';
+  const isNet = template === 'ser2net';
+
+  if (mqForm) mqForm.style.display = isMQ ? 'block' : 'none';
+  if (netForm) netForm.style.display = isNet ? 'block' : 'none';
+  if (empty) empty.style.display = isMQ || isNet ? 'none' : 'block';
+
+  document.querySelectorAll('.template-switch-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.template === template);
+  });
+}
+
 // ===== Tab 切换 =====
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {

@@ -32,7 +32,7 @@ func main() {
 	nameFlag := flag.String("name", "", "节点名称")
 	tlsFlag := flag.Bool("tls", false, "启用 TLS")
 	transportFlag := flag.String("transport", "", "传输协议: tcp, ws, kcp")
-	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:18080, off 关闭)")
+	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)")
 	tunnelsFlag := flag.Bool("tunnels", false, "隧道管理子命令 (见: moleagent-client -tunnels -h)")
 	flag.CommandLine.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: moleagent-client [options]
@@ -45,7 +45,7 @@ Options:
   -name <name>         节点名称
   -tls                 启用 TLS
   -transport <proto>   传输协议 (tcp, ws, kcp)
-  -http <port>         内置 HTTP 端口 (默认 127.0.0.1:18080, off 关闭)
+  -http <port>         内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)
   -tunnels             隧道管理子命令 (见: moleagent-client -tunnels -h)
 
 Examples:
@@ -140,7 +140,7 @@ func handleTunnelsCmd(args []string) int {
 	delFlag := tunFlag.String("del", "", "删除隧道 (按名称)")
 	domainFlag := tunFlag.String("domain", "", "HTTP 隧道域名 (配合 --add 使用)")
 	portFlag := tunFlag.Int("port", 0, "TCP/UDP 隧道监听端口 (配合 --add 使用)")
-	addrFlag := tunFlag.String("addr", "127.0.0.1:18080", "客户端 HTTP API 地址")
+	addrFlag := tunFlag.String("addr", "127.0.0.1:59870", "客户端 HTTP API 地址")
 	tunFlag.SetOutput(os.Stdout)
 	tunFlag.Usage = func() {
 		fmt.Fprintf(os.Stdout, `Usage: moleagent-client -tunnels [options]
@@ -151,7 +151,7 @@ Options:
   --list              列出所有隧道
   --add name:type:target   添加隧道 (例: fnlist:http:127.0.0.1:8080)
   --del <name>        删除隧道
-  --addr <host:port>  API 地址 (默认 127.0.0.1:18080)
+  --addr <host:port>  API 地址 (默认 127.0.0.1:59870)
   --domain <domain>   HTTP 隧道域名 (配合 --add 使用)
   --port <port>       TCP/UDP 隧道监听端口 (配合 --add 使用)
 

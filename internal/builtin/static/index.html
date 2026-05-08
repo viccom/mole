@@ -290,99 +290,147 @@
     </div>
 
     <div id="serial-overview" class="subview active" data-panel="serial">
-      <div class="card overview-card">
-        <div class="card-header">
+      <div class="card overview-card serial-overview-shell">
+        <div class="card-header serial-page-header">
           <div>
-            <div class="section-kicker">Ser2MQ Overview</div>
-            <h2>串口桥接概览</h2>
+            <div class="section-kicker">Serial Workspace</div>
+            <h2>串口工作台</h2>
+            <p class="section-desc">总览页只做两类串口桥接的并排概览，进入隧道列表后就专注看清单，进入配置表单后就专注编辑。</p>
           </div>
-          <span class="section-note">围绕“配置正确、链路在线、数据可观测”组织操作。</span>
+          <span class="section-note">左侧 Ser2MQ，右侧 Ser2Net。</span>
         </div>
-        <div class="overview-metrics">
-          <div class="metric-card"><span class="metric-label">隧道总数</span><span id="serial-total" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">运行中</span><span id="serial-online" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">已启用</span><span id="serial-enabled" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">当前流</span><span id="serial-streaming" class="metric-value">未选择</span></div>
-        </div>
-        <div class="feature-grid">
-          <div class="feature-card">
-            <div class="feature-title">MQTT 链路</div>
-            <div id="serial-broker-summary" class="feature-value">暂无 Broker</div>
-            <div class="feature-desc">建议优先检查 Broker 地址、密钥和 QoS 是否一致。</div>
+        <div class="serial-overview-grid">
+          <div class="serial-overview-pane">
+            <div class="serial-overview-head">
+              <div>
+                <div class="section-kicker">Ser2MQ</div>
+                <h3>MQTT 串口桥接</h3>
+              </div>
+              <span class="section-note">面向 MQTT Broker</span>
+            </div>
+            <div class="overview-metrics serial-pane-metrics">
+              <div class="metric-card"><span class="metric-label">隧道总数</span><span id="ser2mq-total" class="metric-value">0</span></div>
+              <div class="metric-card"><span class="metric-label">运行中</span><span id="ser2mq-online" class="metric-value">0</span></div>
+              <div class="metric-card"><span class="metric-label">已启用</span><span id="ser2mq-enabled" class="metric-value">0</span></div>
+              <div class="metric-card"><span class="metric-label">当前流</span><span id="ser2mq-streaming" class="metric-value">未选择</span></div>
+            </div>
+            <div class="feature-grid serial-pane-feature-grid">
+              <div class="feature-card">
+                <div class="feature-title">MQTT 链路</div>
+                <div id="ser2mq-broker-summary" class="feature-value">暂无 Broker</div>
+                <div class="feature-desc">优先确认 Broker 地址、密钥和 QoS 是否一致。</div>
+              </div>
+              <div class="feature-card">
+                <div class="feature-title">串口入口</div>
+                <div id="ser2mq-port-summary" class="feature-value">暂无端口</div>
+                <div class="feature-desc">常用端口与波特率建议固定规范命名。</div>
+              </div>
+            </div>
+            <div class="serial-overview-foot">
+              <span class="serial-overview-note">链路状态</span>
+              <strong id="ser2mq-health-note">等待串口数据</strong>
+            </div>
           </div>
-          <div class="feature-card">
-            <div class="feature-title">串口入口</div>
-            <div id="serial-port-summary" class="feature-value">暂无端口</div>
-            <div class="feature-desc">常用端口与波特率会影响调试效率，建议固定规范命名。</div>
-          </div>
-        </div>
-        <div class="viz-grid">
-          <div class="viz-card">
-            <div class="viz-title">运行分布</div>
-            <div id="serial-state-chart" class="viz-list"></div>
-          </div>
-          <div class="viz-card viz-card-center">
-            <div class="viz-title">链路可用率</div>
-            <div id="serial-health-ring" class="viz-ring">0%</div>
-            <div id="serial-health-note" class="viz-note">等待串口数据</div>
+
+          <div class="serial-overview-pane">
+            <div class="serial-overview-head">
+              <div>
+                <div class="section-kicker">Ser2Net</div>
+                <h3>网络串口桥接</h3>
+              </div>
+              <span class="section-note">面向 TCP / UDP</span>
+            </div>
+            <div class="overview-metrics serial-pane-metrics">
+              <div class="metric-card"><span class="metric-label">隧道总数</span><span id="ser2net-total" class="metric-value">0</span></div>
+              <div class="metric-card"><span class="metric-label">运行中</span><span id="ser2net-online" class="metric-value">0</span></div>
+              <div class="metric-card"><span class="metric-label">异常</span><span id="ser2net-alerts" class="metric-value">0</span></div>
+              <div class="metric-card"><span class="metric-label">连接</span><span id="ser2net-peers" class="metric-value">0</span></div>
+            </div>
+            <div class="feature-grid serial-pane-feature-grid">
+              <div class="feature-card">
+                <div class="feature-title">协议概况</div>
+                <div id="ser2net-type-summary" class="feature-value">暂无隧道</div>
+                <div class="feature-desc">查看当前 TCP / UDP 分布与模式变化。</div>
+              </div>
+              <div class="feature-card">
+                <div class="feature-title">链路状态</div>
+                <div id="ser2net-status-summary" class="feature-value">等待配置</div>
+                <div class="feature-desc">优先关注运行错误、待接入和活跃连接数量。</div>
+              </div>
+            </div>
+            <div class="serial-overview-foot">
+              <span class="serial-overview-note">运行摘要</span>
+              <strong id="ser2net-toolbar-summary">全部视图 · 显示 0 / 0</strong>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
     <div id="serial-list-view" class="subview" data-panel="serial">
-      <div class="card">
-        <div class="card-header">
-          <h2>Ser2MQ 隧道</h2>
+      <div class="card serial-section-card">
+        <div class="card-header serial-section-head">
+          <div>
+            <div class="section-kicker">Ser2MQ</div>
+            <h2>MQTT 串口桥接</h2>
+          </div>
           <div class="actions">
             <button id="btn-refresh-ser2mq" class="btn">刷新</button>
             <button id="btn-add-ser2mq" class="btn btn-primary">新增隧道</button>
           </div>
         </div>
-        <table class="table">
-          <thead><tr>
-            <th>名称</th><th>Broker</th><th>串口</th><th>启用</th><th>状态</th><th>连接</th><th>流入/流出</th><th>操作</th>
-          </tr></thead>
-          <tbody id="ser2mq-tbody"></tbody>
-        </table>
+        <p class="section-desc serial-section-desc">面向 MQTT Broker 的串口桥接列表，适合快速确认 Broker、串口和收发状态是否正常。</p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>名称</th><th>Broker</th><th>串口</th><th>启用</th><th>状态</th><th>连接</th><th>流入/流出</th><th>操作</th>
+            </tr></thead>
+            <tbody id="ser2mq-tbody"></tbody>
+          </table>
+        </div>
       </div>
-      <div class="card" style="margin-top:16px">
-        <div class="card-header">
-          <h2>Ser2Net 隧道 <span style="font-size:12px;color:#667085">(串口 ↔ TCP/UDP)</span></h2>
+      <div class="card serial-section-card serial-section-card-compact">
+        <div class="card-header serial-section-head">
+          <div>
+            <div class="section-kicker">Ser2Net</div>
+            <h2>网络串口桥接</h2>
+          </div>
           <div class="actions">
             <button id="btn-refresh-ser2net" class="btn">刷新</button>
             <button id="btn-add-ser2net" class="btn btn-primary">新增隧道</button>
           </div>
         </div>
-        <div class="overview-metrics" style="margin-bottom:12px">
-          <div class="metric-card"><span class="metric-label">总数</span><span id="ser2net-total" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">运行中</span><span id="ser2net-online" class="metric-value">0</span></div>
-          <div class="metric-card"><span class="metric-label">已启用</span><span id="ser2net-enabled" class="metric-value">0</span></div>
+        <p class="section-desc serial-section-desc">与 Ser2MQ 一样按列表清单查看，只保留新增、刷新和表格，不再混入概览型模块。</p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>名称</th><th>类型</th><th>串口</th><th>模式</th><th>地址</th><th>状态</th><th>连接 / 流量</th><th>操作</th>
+            </tr></thead>
+            <tbody id="ser2net-tbody"></tbody>
+          </table>
         </div>
-        <div class="viz-grid">
-          <div class="viz-card"><div class="viz-title">类型分布</div><div id="ser2net-type-chart" class="viz-list"></div></div>
-          <div class="viz-card viz-card-center"><div class="viz-title">在线率</div><div id="ser2net-health-ring" class="viz-ring">0%</div></div>
-        </div>
-        <table class="table">
-          <thead><tr>
-            <th>名称</th><th>类型</th><th>串口</th><th>模式</th><th>地址</th><th>状态</th><th>连接 / 流量</th><th>操作</th>
-          </tr></thead>
-          <tbody id="ser2net-tbody"></tbody>
-        </table>
       </div>
     </div>
 
     <div id="serial-form-view" class="subview" data-panel="serial">
-      <div class="card helper-card">
-        <div class="card-header">
-          <h2>配置入口</h2>
-          <button id="btn-add-ser2mq-secondary" class="btn btn-primary">新增 Ser2MQ</button>
-          <button id="btn-add-ser2net-secondary" class="btn btn-primary">新增 Ser2Net</button>
+      <div class="card helper-card serial-form-intro">
+        <div class="card-header serial-page-header">
+          <div>
+            <div class="section-kicker">Serial Config</div>
+            <h2>配置入口</h2>
+            <p class="section-desc">先选桥接类型，再补齐串口与网络参数。完成保存后，回到隧道列表确认监听、连接与流量是否符合预期。</p>
+          </div>
+          <div class="serial-template-switch" role="tablist" aria-label="串口配置模板">
+            <button id="btn-add-ser2mq-secondary" class="template-switch-btn" data-template="ser2mq" type="button">Ser2MQ 模板</button>
+            <button id="btn-add-ser2net-secondary" class="template-switch-btn" data-template="ser2net" type="button">Ser2Net 模板</button>
+          </div>
         </div>
-        <p class="section-desc">新建或编辑串口桥接时，先完成 Broker、密钥和串口参数，再到实时数据页验证收发是否正常。</p>
+        <div id="serial-form-empty" class="serial-form-empty">
+          请选择一种配置模板开始编辑。当前页面一次只展示一个模板，避免不同桥接类型混在一起。
+        </div>
       </div>
 
-      <div id="ser2mq-form" class="card" style="display:none">
+      <div id="ser2mq-form" class="card form-shell" style="display:none">
         <h2 id="ser2mq-form-title">新增 Ser2MQ 隧道</h2>
         <div class="form-hint-box">模式: <strong>Acceptor</strong> — 将本地串口通过 MQTT 桥接暴露，等待远端 mole-cgui 连接。Topic: <code>/mole/{nodeID}/serial/{port}/out</code> (串口→MQTT) 和 <code>/mole/{nodeID}/serial/{port}/in</code> (MQTT→串口)。</div>
         <div class="form-section-title">基本信息</div>
@@ -444,13 +492,24 @@
           <button id="btn-save-ser2mq" class="btn btn-primary">保存</button>
           <button id="btn-cancel-ser2mq" class="btn">取消</button>
         </div>
+      </div>
 
-      <div id="ser2net-form" class="card" style="display:none">
-        <h2 id="ser2net-form-title">新增串口网络隧道</h2>
-        <div class="form-hint-box" id="snf-mode-hint">TCP Server 模式：监听指定端口，接受客户端连接，串口数据广播给所有客户端。</div>
+      <div id="ser2net-form" class="card form-shell" style="display:none">
+        <h2 id="ser2net-form-title">新增 Ser2Net 隧道</h2>
+        <div class="form-hint-box" id="snf-mode-hint">TCP Server：监听本地端口，网络侧多个客户端可接入，串口数据会广播到当前在线客户端。</div>
+        <div class="ser2net-summary-grid">
+          <div class="ser2net-summary-item">
+            <span class="ser2net-summary-label">当前链路</span>
+            <strong id="snf-route-summary">串口 <-> 多 TCP 客户端</strong>
+          </div>
+          <div class="ser2net-summary-item">
+            <span class="ser2net-summary-label">适用场景</span>
+            <strong id="snf-scenario-summary">适合设备挂在本机，由远端 TCP 客户端接入采集。</strong>
+          </div>
+        </div>
         <div class="form-section-title">基本信息</div>
         <div class="form-grid">
-          <div class="form-row"><label>名称</label><input id="snf-name" type="text" placeholder="如: plc-tcp" style="max-width:200px"></div>
+          <div class="form-row"><label>名称</label><input id="snf-name" type="text" placeholder="如: plc-bridge" style="max-width:200px"></div>
           <div class="form-row">
             <label>隧道类型</label>
             <select id="snf-type">
@@ -469,11 +528,12 @@
             </select>
           </div>
           <div class="form-row"><label id="snf-address-label">监听地址</label><input id="snf-address" type="text" placeholder=":5000"></div>
+          <div class="field-note" id="snf-address-note">Server 模式填写本地监听地址，例如 :5000 或 0.0.0.0:5000。</div>
           <div class="form-row" id="snf-max-conn-row"><label>最大连接数</label><input id="snf-max-conn" type="number" min="1" max="100" value="1" placeholder="默认 1"></div>
         </div>
         <div class="form-section-title">串口配置</div>
         <div class="form-grid">
-          <div class="form-row"><label>串口端口</label><input id="snf-port" type="text" placeholder="/dev/ttyUSB0"></div>
+          <div class="form-row"><label>串口端口</label><input id="snf-port" type="text" placeholder="COM3 或 /dev/ttyUSB0"></div>
           <div class="form-row">
             <label>波特率</label>
             <select id="snf-baudrate">
@@ -498,13 +558,13 @@
             <label>读超时 (ms)</label>
             <input id="snf-timeout" type="number" min="100" max="30000" step="100" value="3000" placeholder="默认 3000">
           </div>
+          <div class="field-note">Windows 常见端口示例：COM3、COM4；Linux 常见端口示例：/dev/ttyUSB0、/dev/ttyS1。</div>
         </div>
         <div class="form-check"><input type="checkbox" id="snf-enable" checked> 启用</div>
         <div class="form-actions">
           <button id="btn-save-ser2net" class="btn btn-primary">保存</button>
           <button id="btn-cancel-ser2net" class="btn">取消</button>
         </div>
-      </div>
       </div>
     </div>
 

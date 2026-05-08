@@ -63,7 +63,7 @@ func DefaultConfig() *Config {
 		ServerAddr:        "127.0.0.1:9981",
 		Transport:         "tcp",
 		Token:             "default-node-token-change-me",
-		BuiltinHTTP:       "127.0.0.1:18080",
+		BuiltinHTTP:       "127.0.0.1:59870",
 		HeartbeatInterval: 10 * time.Second,
 		HeartbeatTimeout:  5 * time.Second,
 		ReconnectInterval: 5 * time.Second,
@@ -97,7 +97,7 @@ func (c *Config) ApplyDefaults() {
 		c.ReconnectInterval = 5 * time.Second
 	}
 	if c.BuiltinHTTP == "" {
-		c.BuiltinHTTP = "127.0.0.1:18080"
+		c.BuiltinHTTP = "127.0.0.1:59870"
 	}
 }
 

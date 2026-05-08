@@ -16,7 +16,9 @@ func (h *Handler) runTCPServer() {
 		log.Printf("ser2net: %s tcp server listen error: %v", h.name, err)
 		return
 	}
+	h.setListener(ln)
 	defer ln.Close()
+	defer h.setListener(nil)
 	log.Printf("ser2net: %s tcp server listening on %s", h.name, h.cfg.Address)
 
 	clients := newConnSet(h.maxConn())
@@ -106,7 +108,10 @@ func (h *Handler) relayTCPClient(conn net.Conn) {
 				return
 			}
 			if n > 0 {
-				h.writeSerial(buf[:n])
+				if _, err := h.writeSerial(buf[:n]); err != nil {
+					log.Printf("ser2net: %s write serial from tcp client failed: %v", h.name, err)
+					return
+				}
 			}
 		}
 	}()
@@ -181,7 +186,10 @@ func (h *Handler) tcpClientToSerial(conn net.Conn, clients *connSet) {
 			return
 		}
 		if n > 0 {
-			h.writeSerial(buf[:n])
+			if _, err := h.writeSerial(buf[:n]); err != nil {
+				log.Printf("ser2net: %s write serial from tcp server failed: %v", h.name, err)
+				return
+			}
 		}
 	}
 }

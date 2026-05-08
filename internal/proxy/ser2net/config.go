@@ -30,6 +30,24 @@ func (c *Ser2NetConfig) Validate() error {
 	if c.Serial.BaudRate <= 0 {
 		return fmt.Errorf("invalid baudrate: %d", c.Serial.BaudRate)
 	}
+	switch c.Serial.DataBits {
+	case 5, 6, 7, 8:
+	default:
+		return fmt.Errorf("invalid databits: %d", c.Serial.DataBits)
+	}
+	switch c.Serial.StopBits {
+	case 1, 1.5, 2:
+	default:
+		return fmt.Errorf("invalid stopbits: %v", c.Serial.StopBits)
+	}
+	switch c.Serial.Parity {
+	case "", "N", "E", "O", "M", "S":
+	default:
+		return fmt.Errorf("invalid parity: %q", c.Serial.Parity)
+	}
+	if c.Serial.Timeout <= 0 {
+		return fmt.Errorf("invalid timeout: %d", c.Serial.Timeout)
+	}
 	switch c.Mode {
 	case "server", "client":
 	default:
@@ -37,6 +55,9 @@ func (c *Ser2NetConfig) Validate() error {
 	}
 	if c.Address == "" {
 		return fmt.Errorf("address is required")
+	}
+	if c.MaxConn < 0 {
+		return fmt.Errorf("invalid max_conn: %d", c.MaxConn)
 	}
 	return nil
 }
