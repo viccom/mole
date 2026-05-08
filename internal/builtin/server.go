@@ -26,6 +26,12 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 	if host, port, err := net.SplitHostPort(addr); err == nil && host != "" && host != "0.0.0.0" {
 		addr = "0.0.0.0:" + port
 	}
+	log.Printf("Built-in HTTP server listening on %s", addr)
+	return http.ListenAndServe(addr, NewHandler(func() *moleAgent_client.Client { return client }))
+}
+
+// NewHandler 创建内置 HTTP 服务 handler，允许调用方延迟提供当前 client。
+func NewHandler(clientProvider func() *moleAgent_client.Client) http.Handler {
 	mux := http.NewServeMux()
 
 	// 静态文件（模块化前端）
@@ -70,45 +76,62 @@ func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 	})
 
 	// API
-	registerTunnelAPI(mux, client)
+	registerTunnelAPI(mux, clientProvider)
 
-	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/version", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
 		json.NewEncoder(w).Encode(version.GetSystemInfo())
-	})
+	}))
 
-	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/status", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
+		client := currentClient(clientProvider)
+		if client == nil {
+			json.NewEncoder(w).Encode(map[string]any{
+				"connected":   false,
+				"node_id":     "",
+				"server_addr": "",
+				"tunnels":     []any{},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(client.Stats())
-	})
-
-	log.Printf("Built-in HTTP server listening on %s", addr)
-	return http.ListenAndServe(addr, mux)
+	}))
+	return mux
 }
 
-func registerTunnelAPI(mux *http.ServeMux, c *moleAgent_client.Client) {
+func registerTunnelAPI(mux *http.ServeMux, clientProvider func() *moleAgent_client.Client) {
 	// GET /api/tunnels — 所有隧道（含运行时状态）
 	// POST /api/tunnels — 添加/更新隧道
-	mux.HandleFunc("/api/tunnels", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/tunnels", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		client := currentClient(clientProvider)
 		switch r.Method {
 		case http.MethodGet:
-			json.NewEncoder(w).Encode(c.AllTunnelStatus())
+			if client == nil {
+				json.NewEncoder(w).Encode([]any{})
+				return
+			}
+			json.NewEncoder(w).Encode(client.AllTunnelStatus())
 		case http.MethodPost:
+			if client == nil {
+				writeClientUnavailable(w)
+				return
+			}
 			var t moleAgent_client.Tunnel
 			if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 				http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			if err := c.AddTunnel(t); err != nil {
+			if err := client.AddTunnel(t); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 				return
 			}
@@ -116,16 +139,21 @@ func registerTunnelAPI(mux *http.ServeMux, c *moleAgent_client.Client) {
 		default:
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		}
-	})
+	}))
 
 	// /api/tunnels/{name} — 单隧道查询/删除
 	// /api/tunnels/{name}/{action} — 类型特定操作（start/stop/logs）
-	mux.HandleFunc("/api/tunnels/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/tunnels/", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		path := strings.TrimPrefix(r.URL.Path, "/api/tunnels/")
 		if path == "" {
+			client := currentClient(clientProvider)
 			if r.Method == http.MethodGet {
-				json.NewEncoder(w).Encode(c.AllTunnelStatus())
+				if client == nil {
+					json.NewEncoder(w).Encode([]any{})
+					return
+				}
+				json.NewEncoder(w).Encode(client.AllTunnelStatus())
 				return
 			}
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -136,25 +164,34 @@ func registerTunnelAPI(mux *http.ServeMux, c *moleAgent_client.Client) {
 		if idx := strings.Index(path, "/"); idx >= 0 {
 			name := path[:idx]
 			action := path[idx+1:]
-			handleTunnelAction(w, r, c, name, action)
+			handleTunnelAction(w, r, clientProvider, name, action)
 			return
 		}
 
 		// 单隧道: GET 查询 / DELETE 删除
+		client := currentClient(clientProvider)
 		switch r.Method {
 		case http.MethodGet:
-			status, err := c.TunnelStatusByName(path)
+			if client == nil {
+				writeClientUnavailable(w)
+				return
+			}
+			status, err := client.TunnelStatusByName(path)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 				return
 			}
 			json.NewEncoder(w).Encode(status)
 		case http.MethodDelete:
-			if _, err := c.TunnelStatusByName(path); err != nil {
+			if client == nil {
+				writeClientUnavailable(w)
+				return
+			}
+			if _, err := client.TunnelStatusByName(path); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 				return
 			}
-			if err := c.RemoveTunnel(path); err != nil {
+			if err := client.RemoveTunnel(path); err != nil {
 				code := http.StatusInternalServerError
 				if strings.Contains(err.Error(), "not found") {
 					code = http.StatusNotFound
@@ -166,18 +203,23 @@ func registerTunnelAPI(mux *http.ServeMux, c *moleAgent_client.Client) {
 		default:
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		}
-	})
+	}))
 }
 
 // handleTunnelAction 处理隧道类型特定操作
-func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_client.Client, name, action string) {
+func handleTunnelAction(w http.ResponseWriter, r *http.Request, clientProvider func() *moleAgent_client.Client, name, action string) {
+	client := currentClient(clientProvider)
+	if client == nil {
+		writeClientUnavailable(w)
+		return
+	}
 	switch action {
 	case "start":
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if err := c.VPNStart(name); err != nil {
+		if err := client.VPNStart(name); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 			return
 		}
@@ -187,7 +229,7 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if err := c.VPNStop(name); err != nil {
+		if err := client.VPNStop(name); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 			return
 		}
@@ -197,7 +239,7 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		logs, err := c.VPNCrashLogs(name)
+		logs, err := client.VPNCrashLogs(name)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 			return
@@ -208,7 +250,7 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		_, peers, _, _, err := c.VPNVNTData(name)
+		_, peers, _, _, err := client.VPNVNTData(name)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 			return
@@ -219,7 +261,7 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		_, _, routes, _, err := c.VPNVNTData(name)
+		_, _, routes, _, err := client.VPNVNTData(name)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 			return
@@ -230,14 +272,14 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		chart, err := c.VPNVNTChart(name)
+		chart, err := client.VPNVNTChart(name)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 			return
 		}
 		json.NewEncoder(w).Encode(chart)
 	case "stream":
-		handleTunnelStream(w, r, c, name)
+		handleTunnelStream(w, r, client, name)
 	default:
 		http.Error(w, fmt.Sprintf(`{"error":"unknown action: %s"}`, action), http.StatusBadRequest)
 	}
@@ -303,4 +345,28 @@ func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			encode(evt)
 		}
 	}
+}
+
+func currentClient(provider func() *moleAgent_client.Client) *moleAgent_client.Client {
+	if provider == nil {
+		return nil
+	}
+	return provider()
+}
+
+func withCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func writeClientUnavailable(w http.ResponseWriter) {
+	http.Error(w, `{"error":"client not connected"}`, http.StatusServiceUnavailable)
 }

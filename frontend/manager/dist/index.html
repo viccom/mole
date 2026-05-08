@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>moleAgent Manager</title>
+<link rel="stylesheet" href="/style.css">
+<!-- 引入 Wails 运行时 -->
+<script src="/wailsjs/runtime/runtime.js"></script>
+<!-- 引入 Wails 绑定 -->
+<script src="/wailsjs/go/main/App.js"></script>
+</head>
+<body>
+<div id="app">
+  <!-- 顶部栏 -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" width="32" height="32">
+          <path d="M12 2L2 7v10l10 5 10-5V7L12 2z" fill="#4f46e5"/>
+          <path d="M12 22V12M12 12L2 7M12 12l10-5" stroke="#fff" stroke-width="2"/>
+        </svg>
+        <div class="logo-text">
+          <h1>moleAgent Manager</h1>
+          <span class="logo-subtitle">多实例管理</span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="header-center">
+      <!-- 当前节点信息 -->
+      <div class="current-node">
+        <span class="current-node-label">当前节点:</span>
+        <span id="current-node-name" class="current-node-name">未连接</span>
+        <span id="current-node-status" class="current-node-status offline">●</span>
+      </div>
+    </div>
+    
+    <div class="header-right">
+      <!-- 刷新按钮 -->
+      <button id="btn-refresh" class="btn btn-icon" title="刷新">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 12a8 8 0 0 1 14-5.3l1.4 1.4M20 12a8 8 0 0 1-14 5.3l-1.4-1.4M12 4v4m0 12v-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      
+      <!-- 节点面板切换 -->
+      <button id="btn-node-panel" class="btn btn-primary" title="节点管理 (Ctrl+N)">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 5a3 3 0 1 1-3 3 3 3 0 0 1 3-3zm0 14a8 8 0 0 1-6.33-3.55l1.42-1.42A6 6 0 0 0 12 19a6 6 0 0 0 5.91-4.97l1.42 1.42A8 8 0 0 1 12 21z" fill="currentColor"/></svg>
+        <span>节点</span>
+      </button>
+    </div>
+  </header>
+  
+  <!-- 主内容区 - WebView -->
+  <main class="main">
+    <div id="webview-container" class="webview-container">
+      <iframe id="webview" src="about:blank" allow="fullscreen"></iframe>
+      
+      <!-- 加载提示 -->
+      <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">正在加载...</div>
+      </div>
+      
+      <!-- 离线提示 -->
+      <div id="offline-overlay" class="offline-overlay" style="display: none;">
+        <div class="offline-icon">⚠️</div>
+        <div class="offline-text">当前节点离线</div>
+        <div class="offline-hint">请检查后端服务是否运行</div>
+        <button id="btn-retry" class="btn btn-primary">重试连接</button>
+      </div>
+    </div>
+  </main>
+  
+  <!-- 节点管理抽屉面板 -->
+  <div id="node-drawer" class="node-drawer">
+    <div class="node-drawer-header">
+      <h3>节点管理</h3>
+      <button id="btn-close-drawer" class="btn-close">&times;</button>
+    </div>
+    <div class="node-drawer-content">
+      <!-- 节点列表 -->
+      <div class="node-section">
+        <div class="section-title">已配置的节点</div>
+        <div id="node-list" class="node-list">
+          <!-- 动态填充 -->
+        </div>
+      </div>
+      
+      <!-- 新增/编辑节点表单 -->
+      <div class="node-form-section">
+        <div class="section-title" id="form-title">新增节点</div>
+        <form id="node-form" class="node-form">
+          <input type="hidden" id="edit-name" value="">
+          
+          <div class="form-group">
+            <label for="nf-name">节点名称</label>
+            <input type="text" id="nf-name" placeholder="如: 本地测试" required>
+          </div>
+          
+          <div class="form-row">
+            <div class="form-group">
+              <label for="nf-addr">地址</label>
+              <input type="text" id="nf-addr" placeholder="127.0.0.1" required>
+            </div>
+            <div class="form-group" style="width: 100px;">
+              <label for="nf-port">端口</label>
+              <input type="number" id="nf-port" value="18080" required>
+            </div>
+          </div>
+          
+          <div class="form-check">
+            <input type="checkbox" id="nf-default">
+            <label for="nf-default">设为默认节点</label>
+          </div>
+          
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">保存</button>
+            <button type="button" id="btn-cancel-form" class="btn">取消</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  
+  <!-- 背景遮罩 -->
+  <div id="drawer-backdrop" class="drawer-backdrop"></div>
+</div>
+
+<!-- Toast 容器 -->
+<div id="toast-container"></div>
+
+<script src="/main.js"></script>
+</body>
+</html>

@@ -26,7 +26,7 @@ func newTestClient(t *testing.T, tunnels []moleAgent_client.Tunnel) *moleAgent_c
 
 func newTestMux(client *moleAgent_client.Client) *http.ServeMux {
 	mux := http.NewServeMux()
-	registerTunnelAPI(mux, client)
+	registerTunnelAPI(mux, func() *moleAgent_client.Client { return client })
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet {
@@ -115,5 +115,33 @@ func TestTunnelActionRejectsWrongMethod(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestNewHandlerStatusAPIIncludesCORSHeaders(t *testing.T) {
+	client := newTestClient(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set("Origin", "wails://wails")
+	rec := httptest.NewRecorder()
+
+	NewHandler(func() *moleAgent_client.Client { return client }).ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+	}
+}
+
+func TestNewHandlerTunnelsAPIIncludesCORSHeaders(t *testing.T) {
+	client := newTestClient(t, []moleAgent_client.Tunnel{
+		{Name: "alpha", Type: moleAgent_client.TunnelTypeHTTP, Target: "127.0.0.1:8080"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/tunnels", nil)
+	req.Header.Set("Origin", "wails://wails")
+	rec := httptest.NewRecorder()
+
+	NewHandler(func() *moleAgent_client.Client { return client }).ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, "*")
 	}
 }
