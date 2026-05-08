@@ -2,6 +2,7 @@ import { api } from './api.js';
 import { setText, fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing } from './main.js';
 
 let tunnels = [];
+const MANAGED_VNT_FLAGS = new Set(['-k', '-s', '-d', '-n', '-w', '-i', '-o', '--ip', '--rest-port']);
 
 export function initVPN() {
   const tbody = document.getElementById('vpn-tbody');
@@ -156,9 +157,23 @@ function pushArg(args, id, flag) {
   return val;
 }
 
+function filterUnmanagedArgs(args) {
+  const result = [];
+  for (let i = 0; i < (args || []).length; i++) {
+    const arg = args[i];
+    if (MANAGED_VNT_FLAGS.has(arg)) {
+      if (i + 1 < args.length) i++;
+      continue;
+    }
+    result.push(arg);
+  }
+  return result;
+}
+
 function showAddForm() {
   activateSubpanel('vpn', 'vpn-form-view');
   editingName = null;
+  editingExtraArgs = [];
   $('vpn-form-title').textContent = '新增 VPN 隧道';
   $('vf-name').value = '';
   $('vf-name').disabled = false;
@@ -187,6 +202,7 @@ function showEditForm(t) {
 
   const para = t.para || {};
   const vnt = para.vnt || {};
+  editingExtraArgs = filterUnmanagedArgs(para.args || []);
 
   $('vf-binary').value = (para.binary && para.binary.name) || 'vnt-cli';
   $('vf-token').value = vnt.token || '';
@@ -206,12 +222,14 @@ function showEditForm(t) {
 function hideForm() {
   $('vpn-form').style.display = 'none';
   editingName = null;
+  editingExtraArgs = [];
   activateSubpanel('vpn', 'vpn-list-view');
 }
 
 let editingName = null;
 let currentDetailName = null;
 let currentVpnTab = 'info';
+let editingExtraArgs = [];
 
 function saveForm() {
   const name = readInput('vf-name');
@@ -222,16 +240,18 @@ function saveForm() {
   if (!binary) { toast('程序名不能为空', 'error'); return; }
   if (!token) { toast('Token 不能为空', 'error'); return; }
 
-  const args = ['-k', token];
-  const server = pushArg(args, 'vf-server', '-s');
-  const deviceID = pushArg(args, 'vf-device-id', '-d');
-  const deviceName = pushArg(args, 'vf-device-name', '-n');
-  const password = pushArg(args, 'vf-password', '-w');
-  const inIP = pushArg(args, 'vf-in-ip', '-i');
-  const outIP = pushArg(args, 'vf-out-ip', '-o');
-  const virtualIP = pushArg(args, 'vf-virtual-ip', '--ip');
+  const managedArgs = ['-k', token];
+  const server = pushArg(managedArgs, 'vf-server', '-s');
+  const deviceID = pushArg(managedArgs, 'vf-device-id', '-d');
+  const deviceName = pushArg(managedArgs, 'vf-device-name', '-n');
+  const password = pushArg(managedArgs, 'vf-password', '-w');
+  const inIP = pushArg(managedArgs, 'vf-in-ip', '-i');
+  const outIP = pushArg(managedArgs, 'vf-out-ip', '-o');
+  const virtualIP = pushArg(managedArgs, 'vf-virtual-ip', '--ip');
 
   const restPort = parseInt($('vf-rest-port').value) || 59871;
+  if (restPort > 0) managedArgs.push('--rest-port', String(restPort));
+  const args = editingExtraArgs.concat(managedArgs);
 
   const payload = {
     name,

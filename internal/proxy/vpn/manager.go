@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
 	"sync"
 )
 
@@ -193,6 +194,34 @@ func (m *Manager) OnTunnelUpdate(tunnelTypes []string, tunnelConfigs map[string]
 			pm.Stop()
 			delete(m.procs, name)
 		}
+	}
+
+	// 对配置发生变化的实例应用新配置
+	for name, pm := range m.procs {
+		cfg, ok := tunnelConfigs[name]
+		if !ok || reflect.DeepEqual(pm.cfg, cfg) {
+			continue
+		}
+
+		if pm.IsRunning() {
+			log.Printf("vpn-manager: restarting tunnel %s to apply updated config", name)
+			pm.Stop()
+			delete(m.procs, name)
+
+			restarted, err := NewProcessMgr(name, cfg)
+			if err != nil {
+				log.Printf("vpn-manager: recreate %s failed: %v", name, err)
+				continue
+			}
+			if err := restarted.Start(m.ctx); err != nil {
+				log.Printf("vpn-manager: restart %s failed: %v", name, err)
+				continue
+			}
+			m.procs[name] = restarted
+			continue
+		}
+
+		pm.cfg = cfg
 	}
 
 	// 启动新增的进程（如果配置了 autostart）

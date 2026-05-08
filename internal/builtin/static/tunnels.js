@@ -145,15 +145,25 @@ function accessUrl(t) {
   if (t.domain) return t.type === 'https' ? `https://${t.domain}` : `http://${t.domain}`;
   if (t.listen_port) {
     const host = (window.__tunnelServerAddr || '').split(':')[0];
-    return host ? `${host}:${t.listen_port}` : '-';
+    if (!host) return '-';
+    if (t.type === 'http' || t.type === 'https') {
+      const scheme = t.type === 'https' ? 'https' : 'http';
+      return `${scheme}://${host}:${t.listen_port}`;
+    }
+    return `${host}:${t.listen_port}`;
   }
   const sa = window.__tunnelServerAddr || '';
   const host = sa.split(':')[0];
   if (!host || /^(\d{1,3}\.){3}\d{1,3}$/.test(host)) return '-';
   const nodeId = window.__tunnelNodeID || '';
   if (!nodeId) return '-';
+  if (!isSafeSubdomainLabel(t.name)) return '-';
   const scheme = t.type === 'https' ? 'https' : 'http';
   return `${scheme}://${t.name}-${nodeId}.${host}`;
+}
+
+function isSafeSubdomainLabel(name) {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(name || '');
 }
 
 function rowHtml(t) {

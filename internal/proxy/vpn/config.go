@@ -1,5 +1,7 @@
 package vpn
 
+import "strconv"
+
 // Config vpn-manager 隧道配置
 type Config struct {
 	Binary BinaryConfig `json:"binary"`
@@ -111,7 +113,7 @@ const DefaultRestPort = 59871
 // BuildArgs 根据 VNT 配置动态构建启动参数，优先于静态 Args
 func (c *Config) BuildArgs() []string {
 	if c.VNT != nil && c.VNT.Enabled {
-		var args []string
+		args := filterUnmanagedArgs(c.Args)
 		if c.VNT.Token != "" {
 			args = append(args, "-k", c.VNT.Token)
 		}
@@ -136,7 +138,36 @@ func (c *Config) BuildArgs() []string {
 		if c.VNT.IP != "" {
 			args = append(args, "--ip", c.VNT.IP)
 		}
+		if c.VNT.RestPort > 0 {
+			args = append(args, "--rest-port", strconv.Itoa(c.VNT.RestPort))
+		}
 		return args
 	}
 	return c.Args
+}
+
+func filterUnmanagedArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if isManagedVNTFlag(args[i]) {
+			if i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		result = append(result, args[i])
+	}
+	return result
+}
+
+func isManagedVNTFlag(arg string) bool {
+	switch arg {
+	case "-k", "-s", "-d", "-n", "-w", "-i", "-o", "--ip", "--rest-port":
+		return true
+	default:
+		return false
+	}
 }

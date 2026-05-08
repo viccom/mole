@@ -304,8 +304,8 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 	vpnConfigs := make(map[string]vpn.Config)
 	for _, t := range tunnels {
 		if t.Type == TunnelTypeSer2MQ || t.Type == TunnelTypeVPNMgr {
-			log.Printf("notifyManagers: tunnel %q type=%s enabled=%v para=%s",
-				t.Name, t.Type, t.IsEnabled(), string(t.Para))
+			log.Printf("notifyManagers: tunnel %q type=%s enabled=%v para_bytes=%d",
+				t.Name, t.Type, t.IsEnabled(), len(t.Para))
 		}
 		if !t.IsEnabled() {
 			continue
