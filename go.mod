@@ -1,12 +1,12 @@
 module moleAgent_client
 
-go 1.21
+go 1.24.0
 
 require (
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/xtaci/smux v1.5.19
 	go.bug.st/serial v1.6.4
-	golang.org/x/crypto v0.22.0
+	golang.org/x/crypto v0.45.0
 )
 
 require (
@@ -25,8 +25,8 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/xtaci/kcp-go/v5 v5.6.72 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/net v0.24.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.19.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )

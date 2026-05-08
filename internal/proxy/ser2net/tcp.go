@@ -1,0 +1,197 @@
+package ser2net
+
+import (
+	"io"
+	"log"
+	"net"
+	"sync"
+	"time"
+)
+
+func (h *Handler) runTCPServer() {
+	defer h.cleanup()
+
+	ln, err := net.Listen("tcp", h.cfg.Address)
+	if err != nil {
+		log.Printf("ser2net: %s tcp server listen error: %v", h.name, err)
+		return
+	}
+	defer ln.Close()
+	log.Printf("ser2net: %s tcp server listening on %s", h.name, h.cfg.Address)
+
+	clients := newConnSet(h.maxConn())
+
+	// Serial → all TCP clients
+	go h.serialToTCPClients(clients)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-h.ctx.Done():
+				return
+			default:
+				log.Printf("ser2net: %s accept error: %v", h.name, err)
+				return
+			}
+		}
+		clients.add(conn)
+		h.clients.Store(int32(clients.len()))
+		log.Printf("ser2net: %s client connected %s (total %d)", h.name, conn.RemoteAddr(), clients.len())
+
+		go func(c net.Conn) {
+			h.tcpClientToSerial(c, clients)
+			clients.remove(c)
+			c.Close()
+			h.clients.Store(int32(clients.len()))
+		}(conn)
+	}
+}
+
+func (h *Handler) runTCPClient() {
+	defer h.cleanup()
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		default:
+		}
+
+		conn, err := net.DialTimeout("tcp", h.cfg.Address, 10*time.Second)
+		if err != nil {
+			log.Printf("ser2net: %s tcp client connect error: %v", h.name, err)
+			select {
+			case <-h.ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+				continue
+			}
+		}
+
+		log.Printf("ser2net: %s tcp client connected to %s", h.name, h.cfg.Address)
+		h.relayTCPClient(conn)
+		conn.Close()
+		log.Printf("ser2net: %s tcp client disconnected, reconnecting...", h.name)
+
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+func (h *Handler) relayTCPClient(conn net.Conn) {
+	done := make(chan struct{})
+	var once sync.Once
+	closeDone := func() { once.Do(func() { close(done) }) }
+
+	// TCP → Serial
+	go func() {
+		defer closeDone()
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, err := conn.Read(buf)
+			if err != nil {
+				if isNetTimeout(err) {
+					continue
+				}
+				return
+			}
+			if n > 0 {
+				h.writeSerial(buf[:n])
+			}
+		}
+	}()
+
+	// Serial → TCP
+	func() {
+		defer closeDone()
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			n, err := h.serial.Read(buf)
+			if err != nil {
+				if isTimeout(err) {
+					continue
+				}
+				return
+			}
+			if n > 0 {
+				h.bytesOut.Add(uint64(n))
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if _, err := conn.Write(buf[:n]); err != nil {
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (h *Handler) serialToTCPClients(clients *connSet) {
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		default:
+		}
+		n, err := h.serial.Read(buf)
+		if err != nil {
+			if isTimeout(err) {
+				continue
+			}
+			return
+		}
+		if n > 0 {
+			h.bytesOut.Add(uint64(n))
+			clients.broadcast(buf[:n])
+		}
+	}
+}
+
+func (h *Handler) tcpClientToSerial(conn net.Conn, clients *connSet) {
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		default:
+		}
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, err := conn.Read(buf)
+		if err != nil {
+			if isNetTimeout(err) {
+				continue
+			}
+			if err != io.EOF {
+				log.Printf("ser2net: %s client %s read error: %v", h.name, conn.RemoteAddr(), err)
+			}
+			return
+		}
+		if n > 0 {
+			h.writeSerial(buf[:n])
+		}
+	}
+}
+
+func isNetTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if ne, ok := err.(interface{ Timeout() bool }); ok && ne.Timeout() {
+		return true
+	}
+	return false
+}

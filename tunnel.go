@@ -16,6 +16,8 @@ const (
 	TunnelTypeTCP     TunnelType = "tcp"
 	TunnelTypeUDP     TunnelType = "udp"
 	TunnelTypeSer2MQ  TunnelType = "ser2mq"      // 串口转 MQTT
+	TunnelTypeSer2TCP TunnelType = "ser2tcp"     // 串口转 TCP
+	TunnelTypeSer2UDP TunnelType = "ser2udp"     // 串口转 UDP
 	TunnelTypeVPNMgr  TunnelType = "vpn-manager"  // VPN 程序管理
 )
 
@@ -46,7 +48,7 @@ func (t Tunnel) Validate() error {
 		return fmt.Errorf("tunnel name is required")
 	}
 	switch t.Type {
-	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeVPNMgr:
+	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeSer2TCP, TunnelTypeSer2UDP, TunnelTypeVPNMgr:
 	default:
 		return fmt.Errorf("invalid tunnel type: %s", t.Type)
 	}

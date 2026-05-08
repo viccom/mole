@@ -346,13 +346,38 @@
           <tbody id="ser2mq-tbody"></tbody>
         </table>
       </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-header">
+          <h2>Ser2Net 隧道 <span style="font-size:12px;color:#667085">(串口 ↔ TCP/UDP)</span></h2>
+          <div class="actions">
+            <button id="btn-refresh-ser2net" class="btn">刷新</button>
+            <button id="btn-add-ser2net" class="btn btn-primary">新增隧道</button>
+          </div>
+        </div>
+        <div class="overview-metrics" style="margin-bottom:12px">
+          <div class="metric-card"><span class="metric-label">总数</span><span id="ser2net-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">运行中</span><span id="ser2net-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">已启用</span><span id="ser2net-enabled" class="metric-value">0</span></div>
+        </div>
+        <div class="viz-grid">
+          <div class="viz-card"><div class="viz-title">类型分布</div><div id="ser2net-type-chart" class="viz-list"></div></div>
+          <div class="viz-card viz-card-center"><div class="viz-title">在线率</div><div id="ser2net-health-ring" class="viz-ring">0%</div></div>
+        </div>
+        <table class="table">
+          <thead><tr>
+            <th>名称</th><th>类型</th><th>串口</th><th>模式</th><th>地址</th><th>状态</th><th>连接 / 流量</th><th>操作</th>
+          </tr></thead>
+          <tbody id="ser2net-tbody"></tbody>
+        </table>
+      </div>
     </div>
 
     <div id="serial-form-view" class="subview" data-panel="serial">
       <div class="card helper-card">
         <div class="card-header">
           <h2>配置入口</h2>
-          <button id="btn-add-ser2mq-secondary" class="btn btn-primary">新增隧道</button>
+          <button id="btn-add-ser2mq-secondary" class="btn btn-primary">新增 Ser2MQ</button>
+          <button id="btn-add-ser2net-secondary" class="btn btn-primary">新增 Ser2Net</button>
         </div>
         <p class="section-desc">新建或编辑串口桥接时，先完成 Broker、密钥和串口参数，再到实时数据页验证收发是否正常。</p>
       </div>
@@ -419,6 +444,67 @@
           <button id="btn-save-ser2mq" class="btn btn-primary">保存</button>
           <button id="btn-cancel-ser2mq" class="btn">取消</button>
         </div>
+
+      <div id="ser2net-form" class="card" style="display:none">
+        <h2 id="ser2net-form-title">新增串口网络隧道</h2>
+        <div class="form-hint-box" id="snf-mode-hint">TCP Server 模式：监听指定端口，接受客户端连接，串口数据广播给所有客户端。</div>
+        <div class="form-section-title">基本信息</div>
+        <div class="form-grid">
+          <div class="form-row"><label>名称</label><input id="snf-name" type="text" placeholder="如: plc-tcp" style="max-width:200px"></div>
+          <div class="form-row">
+            <label>隧道类型</label>
+            <select id="snf-type">
+              <option value="ser2tcp">串口转 TCP (ser2tcp)</option>
+              <option value="ser2udp">串口转 UDP (ser2udp)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-section-title">网络配置</div>
+        <div class="form-grid">
+          <div class="form-row">
+            <label>工作模式</label>
+            <select id="snf-mode">
+              <option value="server">Server（监听）</option>
+              <option value="client">Client（主动连接）</option>
+            </select>
+          </div>
+          <div class="form-row"><label id="snf-address-label">监听地址</label><input id="snf-address" type="text" placeholder=":5000"></div>
+          <div class="form-row" id="snf-max-conn-row"><label>最大连接数</label><input id="snf-max-conn" type="number" min="1" max="100" value="1" placeholder="默认 1"></div>
+        </div>
+        <div class="form-section-title">串口配置</div>
+        <div class="form-grid">
+          <div class="form-row"><label>串口端口</label><input id="snf-port" type="text" placeholder="/dev/ttyUSB0"></div>
+          <div class="form-row">
+            <label>波特率</label>
+            <select id="snf-baudrate">
+              <option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option>
+              <option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option>
+              <option value="57600">57600</option><option value="115200">115200</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>数据位</label>
+            <select id="snf-databits"><option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option></select>
+          </div>
+          <div class="form-row">
+            <label>停止位</label>
+            <select id="snf-stopbits"><option value="1" selected>1</option><option value="1.5">1.5</option><option value="2">2</option></select>
+          </div>
+          <div class="form-row">
+            <label>校验位</label>
+            <select id="snf-parity"><option value="N" selected>无</option><option value="E">偶</option><option value="O">奇</option></select>
+          </div>
+          <div class="form-row">
+            <label>读超时 (ms)</label>
+            <input id="snf-timeout" type="number" min="100" max="30000" step="100" value="3000" placeholder="默认 3000">
+          </div>
+        </div>
+        <div class="form-check"><input type="checkbox" id="snf-enable" checked> 启用</div>
+        <div class="form-actions">
+          <button id="btn-save-ser2net" class="btn btn-primary">保存</button>
+          <button id="btn-cancel-ser2net" class="btn">取消</button>
+        </div>
+      </div>
       </div>
     </div>
 

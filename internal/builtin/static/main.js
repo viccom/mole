@@ -2,6 +2,7 @@
 import { api } from './api.js';
 import { initTunnels } from './tunnels.js';
 import { initSer2MQ } from './ser2mq.js';
+import { initSer2Net } from './ser2net.js';
 import { initVPN } from './vpn.js';
 
 // ===== 工具函数 =====
@@ -179,6 +180,7 @@ async function refreshData() {
     window.__tunnelNodeID = status.node_id || '';
     if (window.__tunnelsRefresh) window.__tunnelsRefresh(tunnelList);
     if (window.__ser2mqRefresh) window.__ser2mqRefresh(tunnelList);
+    if (window.__ser2netRefresh) window.__ser2netRefresh(tunnelList);
     if (window.__vpnRefresh) window.__vpnRefresh(tunnelList);
 
     setText('refresh-info', '最近刷新: ' + new Date().toLocaleTimeString('zh-CN'));
@@ -210,5 +212,6 @@ function scheduleRefresh() {
 // ===== 初始化 =====
 initTunnels();
 initSer2MQ();
+initSer2Net();
 initVPN();
 refreshData().then(scheduleRefresh);

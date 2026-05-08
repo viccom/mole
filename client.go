@@ -18,6 +18,7 @@ import (
 	"moleAgent_client/internal/protocol"
 	"moleAgent_client/internal/proxy"
 	"moleAgent_client/internal/proxy/ser2mq"
+	"moleAgent_client/internal/proxy/ser2net"
 	"moleAgent_client/internal/proxy/vpn"
 	"moleAgent_client/internal/transport"
 )
@@ -40,6 +41,9 @@ type Client struct {
 
 	// ser2mq 隧道管理器
 	ser2mqMgr *ser2mq.Manager
+
+	// ser2net 隧道管理器（ser2tcp/ser2udp）
+	ser2netMgr *ser2net.Manager
 
 	// vpn-manager 进程管理器
 	vpnMgr *vpn.Manager
@@ -100,6 +104,7 @@ func New(cfg *Config) (*Client, error) {
 	// 创建管理器（使用背景 context，生命周期由 Client 统一管理）
 	// nodeID 在 ApplyDefaults 中已生成
 	ser2mqMgr := ser2mq.NewManager(context.Background(), cfg.NodeID)
+	ser2netMgr := ser2net.NewManager(context.Background())
 	vpnMgr := vpn.NewManager(context.Background())
 
 	return &Client{
@@ -109,6 +114,7 @@ func New(cfg *Config) (*Client, error) {
 		tunnels:    append([]Tunnel{}, cfg.Tunnels...),
 		tunReqs:    make(chan tunnelReq, 16),
 		ser2mqMgr:  ser2mqMgr,
+		ser2netMgr: ser2netMgr,
 		vpnMgr:     vpnMgr,
 	}, nil
 }
@@ -184,6 +190,9 @@ func (c *Client) Close() {
 	// 关闭管理器
 	if c.ser2mqMgr != nil {
 		c.ser2mqMgr.Close()
+	}
+	if c.ser2netMgr != nil {
+		c.ser2netMgr.Close()
 	}
 	if c.vpnMgr != nil {
 		c.vpnMgr.Close()
@@ -298,15 +307,12 @@ func (c *Client) processTunnelUpdates(ctx context.Context) {
 	}
 }
 
-// notifyManagers 提取 ser2mq/vpn-manager 配置并通知各管理器
+// notifyManagers 提取 ser2mq/ser2net/vpn-manager 配置并通知各管理器
 func (c *Client) notifyManagers(tunnels []Tunnel) {
 	ser2mqConfigs := make(map[string]ser2mq.Ser2MQConfig)
+	ser2netConfigs := make(map[string]ser2net.TunnelConfig)
 	vpnConfigs := make(map[string]vpn.Config)
 	for _, t := range tunnels {
-		if t.Type == TunnelTypeSer2MQ || t.Type == TunnelTypeVPNMgr {
-			log.Printf("notifyManagers: tunnel %q type=%s enabled=%v para_bytes=%d",
-				t.Name, t.Type, t.IsEnabled(), len(t.Para))
-		}
 		if !t.IsEnabled() {
 			continue
 		}
@@ -317,6 +323,15 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 			} else {
 				cfg.Enable = t.IsEnabled()
 				ser2mqConfigs[t.Name] = cfg
+			}
+		}
+		if (t.Type == TunnelTypeSer2TCP || t.Type == TunnelTypeSer2UDP) && t.Para != nil {
+			var cfg ser2net.Ser2NetConfig
+			if err := json.Unmarshal(t.Para, &cfg); err != nil {
+				log.Printf("notifyManagers: unmarshal ser2net %q failed: %v", t.Name, err)
+			} else {
+				cfg.Enable = t.IsEnabled()
+				ser2netConfigs[t.Name] = ser2net.TunnelConfig{Type: string(t.Type), Config: cfg}
 			}
 		}
 		if t.Type == TunnelTypeVPNMgr && t.Para != nil {
@@ -331,6 +346,9 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 
 	if c.ser2mqMgr != nil {
 		c.ser2mqMgr.OnTunnelUpdate(ser2mqConfigs)
+	}
+	if c.ser2netMgr != nil {
+		c.ser2netMgr.OnTunnelUpdate(ser2netConfigs)
 	}
 	if c.vpnMgr != nil {
 		vpnTypes := make([]string, 0, len(vpnConfigs))
@@ -784,6 +802,13 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 		ts.BytesIn = stats.BytesIn
 		ts.BytesOut = stats.BytesOut
 		ts.Status = stats
+	case TunnelTypeSer2TCP, TunnelTypeSer2UDP:
+		if stats, err := c.ser2netMgr.Status(t.Name); err == nil {
+			ts.Connected = stats.Running
+			ts.BytesIn = stats.BytesIn
+			ts.BytesOut = stats.BytesOut
+			ts.Status = stats
+		}
 	case TunnelTypeVPNMgr:
 		if status, err := c.vpnMgr.Status(t.Name); err == nil {
 			ts.Connected = status.Running
@@ -889,4 +914,18 @@ func (c *Client) Ser2MQStatus(name string) (ser2mq.Ser2MQStats, error) {
 
 func (c *Client) Ser2MQStreamHub() *ser2mq.StreamHub {
 	return c.ser2mqMgr.StreamHub()
+}
+
+// ===== Ser2Net Manager API =====
+
+func (c *Client) Ser2NetManager() *ser2net.Manager {
+	return c.ser2netMgr
+}
+
+func (c *Client) Ser2NetList() []ser2net.Stats {
+	return c.ser2netMgr.List()
+}
+
+func (c *Client) Ser2NetStatus(name string) (ser2net.Stats, error) {
+	return c.ser2netMgr.Status(name)
 }
