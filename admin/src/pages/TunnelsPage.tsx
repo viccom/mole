@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users } from 'lucide-react'
+import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -12,6 +12,32 @@ import { TunnelFormModal } from '../components/TunnelFormModal'
 import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
 import { tunnelAccessUrl, formatBytes, formatTimeAgo } from '../lib/utils'
+
+type TabKey = 'all' | 'web' | 'stream' | 'serial' | 'vpn'
+type FilterKey = 'all' | 'enabled' | 'disabled' | 'active'
+
+const tabFilters: Record<TabKey, (t: Tunnel) => boolean> = {
+  all: () => true,
+  web: (t: Tunnel) => t.type === 'http' || t.type === 'https',
+  stream: (t: Tunnel) => t.type === 'tcp' || t.type === 'udp',
+  serial: (t: Tunnel) => ['ser2mq', 'ser2tcp', 'ser2udp'].includes(t.type),
+  vpn: (t: Tunnel) => t.type === 'vpn-manager',
+}
+
+const tabs: { key: TabKey; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'web', label: 'Web 隧道' },
+  { key: 'stream', label: '透明隧道' },
+  { key: 'serial', label: '串口' },
+  { key: 'vpn', label: 'VPN' },
+]
+
+const filterOptions: { key: FilterKey; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'enabled', label: '启用' },
+  { key: 'disabled', label: '禁用' },
+  { key: 'active', label: '活跃' },
+]
 
 type TunnelPageData = {
   tunnels: Tunnel[]
@@ -27,6 +53,9 @@ export function TunnelsPage() {
     presetNodeId?: string
   } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Tunnel | null>(null)
+  const [activeTab, setActiveTab] = useState<TabKey>('all')
+  const [filterStatus, setFilterStatus] = useState<FilterKey>('all')
+  const [searchKeyword, setSearchKeyword] = useState('')
 
   const { data, loading, run: fetchData } = useRequest<TunnelPageData>(
     async () => {
@@ -65,6 +94,57 @@ export function TunnelsPage() {
     () => Object.fromEntries(nodes.map(node => [node.id, node])),
     [nodes],
   )
+
+  const allTabCounts = useMemo(() => {
+    const counts: Record<TabKey, number> = { all: tunnels.length, web: 0, stream: 0, serial: 0, vpn: 0 }
+    for (const t of tunnels) {
+      if (t.type === 'http' || t.type === 'https') counts.web++
+      if (t.type === 'tcp' || t.type === 'udp') counts.stream++
+      if (['ser2mq', 'ser2tcp', 'ser2udp'].includes(t.type)) counts.serial++
+      if (t.type === 'vpn-manager') counts.vpn++
+    }
+    return counts
+  }, [tunnels])
+
+  const filteredTunnels = useMemo(() => {
+    let result = tunnels
+    if (activeTab !== 'all') {
+      result = result.filter(tabFilters[activeTab])
+    }
+    if (filterStatus === 'enabled') result = result.filter(t => t.enabled)
+    else if (filterStatus === 'disabled') result = result.filter(t => !t.enabled)
+    else if (filterStatus === 'active') {
+      result = result.filter(t => {
+        const usage = usageMap[`${t.node_id}:${t.name}`]
+        return usage && usage.active_connections > 0
+      })
+    }
+    if (searchKeyword) {
+      const kw = searchKeyword.toLowerCase()
+      result = result.filter(t =>
+        t.name.toLowerCase().includes(kw) ||
+        t.type.toLowerCase().includes(kw) ||
+        t.target.toLowerCase().includes(kw) ||
+        (t.domain || '').toLowerCase().includes(kw) ||
+        (t.para?.broker || '').toLowerCase().includes(kw) ||
+        (t.para?.binary?.name || '').toLowerCase().includes(kw)
+      )
+    }
+    return result
+  }, [tunnels, activeTab, filterStatus, searchKeyword, usageMap])
+
+  const tabStats = useMemo(() => {
+    const tabTunnels = activeTab === 'all' ? tunnels : tunnels.filter(tabFilters[activeTab])
+    return {
+      total: tabTunnels.length,
+      enabled: tabTunnels.filter(t => t.enabled).length,
+      active: tabTunnels.filter(t => {
+        const usage = usageMap[`${t.node_id}:${t.name}`]
+        return usage && usage.active_connections > 0
+      }).length,
+      count: tabTunnels.length,
+    }
+  }, [tunnels, activeTab, usageMap])
 
   const handleDelete = async () => {
     if (!deleteTarget) return
@@ -112,13 +192,28 @@ export function TunnelsPage() {
     if (type === 'udp') return 'warning'
     if (type === 'ser2mq') return 'cyan'
     if (type === 'vpn-manager') return 'pink'
+    if (type === 'ser2tcp') return 'cyan'
+    if (type === 'ser2udp') return 'purple'
     return 'warning'
   }
 
   const typeLabel = (type: string): string => {
     if (type === 'ser2mq') return 'Ser2MQ'
     if (type === 'vpn-manager') return 'VPN'
+    if (type === 'ser2tcp') return 'Ser2TCP'
+    if (type === 'ser2udp') return 'Ser2UDP'
     return type.toUpperCase()
+  }
+
+  const targetDisplay = (tunnel: Tunnel): string => {
+    if (tunnel.type === 'ser2mq') return tunnel.para?.broker || tunnel.target
+    if (tunnel.type === 'vpn-manager') return tunnel.para?.binary?.name || tunnel.target
+    if (tunnel.type === 'ser2tcp' || tunnel.type === 'ser2udp') {
+      const mode = tunnel.para?.mode || 'server'
+      const addr = tunnel.para?.address || '-'
+      return `${mode} ${addr}`
+    }
+    return tunnel.target
   }
 
   return (
@@ -146,44 +241,91 @@ export function TunnelsPage() {
       />
 
       <div className="flex-1 overflow-auto">
+        {/* Tab navigation */}
+        <div className="flex items-center gap-1 px-6 pt-4 pb-2">
+          {tabs.map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => { setActiveTab(tab.key); setFilterStatus('all'); setSearchKeyword('') }}
+              className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                activeTab === tab.key
+                  ? 'bg-primary text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {tab.label}
+              <span className={`ml-1.5 text-xs ${activeTab === tab.key ? 'text-white/70' : 'text-gray-400'}`}>
+                {allTabCounts[tab.key]}
+              </span>
+            </button>
+          ))}
+        </div>
+
         {/* Stats cards */}
-        {stats && (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 p-6">
-            <StatCard
-              icon={Network}
-              iconBg="bg-blue-100"
-              iconColor="text-blue-600"
-              value={String(stats.total_tunnels)}
-              label="隧道总数"
-            />
-            <StatCard
-              icon={Zap}
-              iconBg="bg-emerald-100"
-              iconColor="text-emerald-600"
-              value={String(stats.enabled_tunnels)}
-              label="启用中"
-            />
-            <StatCard
-              icon={Activity}
-              iconBg="bg-amber-100"
-              iconColor="text-amber-600"
-              value={String(stats.active_tunnels)}
-              label="活跃中"
-            />
-            <StatCard
-              icon={Globe}
-              iconBg="bg-purple-100"
-              iconColor="text-purple-600"
-              value={String((stats.http_tunnels || 0) + (stats.https_tunnels || 0))}
-              label="HTTP(S)隧道"
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 px-6 py-3">
+          <StatCard
+            icon={Network}
+            iconBg="bg-blue-100"
+            iconColor="text-blue-600"
+            value={String(tabStats.total)}
+            label="隧道总数"
+          />
+          <StatCard
+            icon={Zap}
+            iconBg="bg-emerald-100"
+            iconColor="text-emerald-600"
+            value={String(tabStats.enabled)}
+            label="启用中"
+          />
+          <StatCard
+            icon={Activity}
+            iconBg="bg-amber-100"
+            iconColor="text-amber-600"
+            value={String(tabStats.active)}
+            label="活跃中"
+          />
+          <StatCard
+            icon={Globe}
+            iconBg="bg-purple-100"
+            iconColor="text-purple-600"
+            value={String(tabStats.count - tabStats.enabled)}
+            label="未启用"
+          />
+        </div>
+
+        {/* Filter bar */}
+        <div className="flex items-center justify-between px-6 py-2 gap-4 border-b border-gray-200">
+          <div className="flex items-center gap-1">
+            {filterOptions.map(f => (
+              <button
+                key={f.key}
+                onClick={() => setFilterStatus(f.key)}
+                className={`px-2.5 py-1 text-xs rounded-full transition-colors ${
+                  filterStatus === f.key
+                    ? 'bg-gray-800 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              value={searchKeyword}
+              onChange={e => setSearchKeyword(e.target.value)}
+              placeholder="搜索名称/类型/目标..."
+              className="pl-9 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30"
             />
           </div>
-        )}
+        </div>
 
         {loading ? (
           <Loading />
-        ) : tunnels.length === 0 ? (
-          <Empty message="暂无隧道" />
+        ) : filteredTunnels.length === 0 ? (
+          <Empty message={tunnels.length === 0 ? '暂无隧道' : '当前筛选条件下没有隧道'} />
         ) : (
           <table className="w-full">
             <thead>
@@ -201,7 +343,7 @@ export function TunnelsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {tunnels.map(tunnel => {
+              {filteredTunnels.map(tunnel => {
                 const url = tunnelAccessUrl(tunnel)
                 const ownerNode = tunnel.node_id ? nodeMap[tunnel.node_id] : undefined
                 const usage = usageMap[`${tunnel.node_id}:${tunnel.name}`]
@@ -219,9 +361,7 @@ export function TunnelsPage() {
                       </Badge>
                     </td>
                     <td className="px-6 py-3 text-sm text-gray-600 font-mono">
-                      {tunnel.type === 'ser2mq' || tunnel.type === 'vpn-manager'
-                        ? tunnel.para?.broker || tunnel.para?.binary?.name || tunnel.target
-                        : tunnel.target}
+                      {targetDisplay(tunnel)}
                     </td>
                     <td className="px-6 py-3 text-sm">
                       {(tunnel.type === 'http' || tunnel.type === 'https') && url !== '-' ? (

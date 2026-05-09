@@ -13,7 +13,16 @@ interface TunnelFormModalProps {
   onSuccess: () => void
 }
 
-type TunnelType = 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager'
+type TunnelType = 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp'
+
+const BAUDRATE_OPTIONS = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]
+const DATABITS_OPTIONS = [5, 6, 7, 8]
+const STOPBITS_OPTIONS = ['1', '1.5', '2']
+const PARITY_OPTIONS = [
+  { value: 'N', label: '无 (N)' },
+  { value: 'E', label: '偶 (E)' },
+  { value: 'O', label: '奇 (O)' },
+]
 
 export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: TunnelFormModalProps) {
   const { toast } = useToast()
@@ -60,6 +69,17 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
   const [vpnLogCapture, setVpnLogCapture] = useState(tunnel?.para?.log?.capture ?? true)
   const [vpnLogMaxSize, setVpnLogMaxSize] = useState(tunnel?.para?.log?.max_size?.toString() || '65536')
   const [vpnLogPath, setVpnLogPath] = useState(tunnel?.para?.log?.output_path || '')
+
+  // ser2net 配置 (ser2tcp/ser2udp)
+  const [snMode, setSnMode] = useState(tunnel?.para?.mode || 'server')
+  const [snAddress, setSnAddress] = useState(tunnel?.para?.address || ':5000')
+  const [snMaxConn, setSnMaxConn] = useState(tunnel?.para?.max_conn?.toString() || '1')
+  const [snSerialPort, setSnSerialPort] = useState(tunnel?.para?.serial?.port || '/dev/ttyS0')
+  const [snBaudrate, setSnBaudrate] = useState(tunnel?.para?.serial?.baudrate?.toString() || '9600')
+  const [snDatabits, setSnDatabits] = useState(tunnel?.para?.serial?.databits?.toString() || '8')
+  const [snStopbits, setSnStopbits] = useState(tunnel?.para?.serial?.stopbits?.toString() || '1')
+  const [snParity, setSnParity] = useState(tunnel?.para?.serial?.parity || 'N')
+  const [snTimeout, setSnTimeout] = useState(tunnel?.para?.serial?.timeout?.toString() || '3000')
 
   const [submitting, setSubmitting] = useState(false)
 
@@ -127,6 +147,22 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         },
       }
     }
+    if (type === 'ser2tcp' || type === 'ser2udp') {
+      return {
+        enable: enabled,
+        mode: snMode,
+        address: snAddress,
+        max_conn: Number(snMaxConn) || 1,
+        serial: {
+          port: snSerialPort,
+          baudrate: Number(snBaudrate),
+          databits: Number(snDatabits),
+          stopbits: Number(snStopbits),
+          parity: snParity,
+          timeout: Number(snTimeout) || 3000,
+        },
+      }
+    }
     return undefined
   }
 
@@ -169,6 +205,16 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         return
       }
     }
+    if (type === 'ser2tcp' || type === 'ser2udp') {
+      if (!snSerialPort.trim()) {
+        toast('请输入串口端口', 'error')
+        return
+      }
+      if (!snAddress.trim()) {
+        toast('请输入地址', 'error')
+        return
+      }
+    }
     if (!isEdit && !nodeId) {
       toast('请选择节点', 'error')
       return
@@ -182,14 +228,19 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         type,
         enabled,
         node_id: nodeId,
-        target: (type === 'http' || type === 'https') ? target.trim()
-            : (type === 'tcp' || type === 'udp') ? (target.trim() || '127.0.0.1:0')
-            : (type === 'ser2mq') ? ser2mqSerialPort
-            : (type === 'vpn-manager') ? vpnBinaryName
-            : target.trim(),
+        target: (() => {
+          switch (type) {
+            case 'http': case 'https': return target.trim()
+            case 'tcp': case 'udp': return target.trim() || '127.0.0.1:0'
+            case 'ser2mq': return ser2mqSerialPort
+            case 'vpn-manager': return vpnBinaryName
+            case 'ser2tcp': case 'ser2udp': return snSerialPort
+            default: return target.trim()
+          }
+        })(),
         domain: (type === 'http' || type === 'https') && domain.trim() ? domain.trim() : undefined,
         listen_port: (type === 'tcp' || type === 'udp') ? Number(listenPort) : undefined,
-        para: (type === 'ser2mq' || type === 'vpn-manager') ? buildPara() : undefined,
+        para: (type === 'ser2mq' || type === 'vpn-manager' || type === 'ser2tcp' || type === 'ser2udp') ? buildPara() : undefined,
       }
 
       if (isEdit) {
@@ -210,7 +261,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
   const selectClass = inputClass
 
   return (
-    <Modal title={isEdit ? '编辑隧道' : '创建隧道'} onClose={onClose}>
+    <Modal title={isEdit ? '编辑隧道' : '创建隧道'} onClose={onClose} size={type === 'vpn-manager' || type === 'ser2tcp' || type === 'ser2udp' ? 'lg' : undefined}>
       <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto">
         <FormField label="隧道名称">
           <input
@@ -238,6 +289,8 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
             <option value="udp">UDP</option>
             <option value="ser2mq">Ser2MQ（串口转 MQTT）</option>
             <option value="vpn-manager">VPN Manager（程序管理）</option>
+            <option value="ser2tcp">Ser2TCP（串口转 TCP）</option>
+            <option value="ser2udp">Ser2UDP（串口转 UDP）</option>
           </select>
         </FormField>
 
@@ -312,55 +365,25 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
             </FormField>
             <div className="grid grid-cols-2 gap-4">
               <FormField label="波特率">
-                <select
-                  value={ser2mqBaudrate}
-                  onChange={e => setSer2mqBaudrate(e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="1200">1200</option>
-                  <option value="2400">2400</option>
-                  <option value="4800">4800</option>
-                  <option value="9600">9600</option>
-                  <option value="19200">19200</option>
-                  <option value="38400">38400</option>
-                  <option value="57600">57600</option>
-                  <option value="115200">115200</option>
+                <select value={ser2mqBaudrate} onChange={e => setSer2mqBaudrate(e.target.value)} className={selectClass}>
+                  {BAUDRATE_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
                 </select>
               </FormField>
               <FormField label="数据位">
-                <select
-                  value={ser2mqDatabits}
-                  onChange={e => setSer2mqDatabits(e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="5">5</option>
-                  <option value="6">6</option>
-                  <option value="7">7</option>
-                  <option value="8">8</option>
+                <select value={ser2mqDatabits} onChange={e => setSer2mqDatabits(e.target.value)} className={selectClass}>
+                  {DATABITS_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
                 </select>
               </FormField>
             </div>
             <div className="grid grid-cols-3 gap-4">
               <FormField label="停止位">
-                <select
-                  value={ser2mqStopbits}
-                  onChange={e => setSer2mqStopbits(e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="1">1</option>
-                  <option value="1.5">1.5</option>
-                  <option value="2">2</option>
+                <select value={ser2mqStopbits} onChange={e => setSer2mqStopbits(e.target.value)} className={selectClass}>
+                  {STOPBITS_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
                 </select>
               </FormField>
               <FormField label="校验位">
-                <select
-                  value={ser2mqParity}
-                  onChange={e => setSer2mqParity(e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="N">无 (N)</option>
-                  <option value="E">偶 (E)</option>
-                  <option value="O">奇 (O)</option>
+                <select value={ser2mqParity} onChange={e => setSer2mqParity(e.target.value)} className={selectClass}>
+                  {PARITY_OPTIONS.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
                 </select>
               </FormField>
               <FormField label="超时(ms)">
@@ -591,6 +614,94 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
                   />
                 </FormField>
               )}
+            </div>
+          </>
+        )}
+
+        {/* Ser2Net 配置 (ser2tcp/ser2udp) */}
+        {(type === 'ser2tcp' || type === 'ser2udp') && (
+          <>
+            <div className="bg-blue-50 rounded-lg p-3 text-sm text-blue-700">
+              {snMode === 'server'
+                ? `${type === 'ser2tcp' ? 'TCP Server' : 'UDP Server'}：监听本地端口，网络侧客户端可接入，串口数据双向转发。`
+                : `${type === 'ser2tcp' ? 'TCP Client' : 'UDP Client'}：主动连接远端服务，适合把本地串口桥接到现有采集平台。`
+              }
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <FormField label="模式">
+                <select value={snMode} onChange={e => setSnMode(e.target.value)} className={selectClass}>
+                  <option value="server">Server（本地监听）</option>
+                  <option value="client">Client（主动连接）</option>
+                </select>
+              </FormField>
+              <FormField label={snMode === 'server' ? '监听地址' : '远端地址'}>
+                <input
+                  type="text"
+                  value={snAddress}
+                  onChange={e => setSnAddress(e.target.value)}
+                  placeholder={snMode === 'server' ? ':5000' : '192.168.1.100:5000'}
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            {type === 'ser2tcp' && snMode === 'server' && (
+              <FormField label="最大连接数">
+                <input
+                  type="number"
+                  value={snMaxConn}
+                  onChange={e => setSnMaxConn(e.target.value)}
+                  min="1"
+                  max="100"
+                  className={inputClass}
+                />
+              </FormField>
+            )}
+
+            <div className="border-t border-gray-200 pt-4 mt-2">
+              <h4 className="text-sm font-medium text-gray-700 mb-3">串口参数</h4>
+              <FormField label="串口端口">
+                <input
+                  type="text"
+                  value={snSerialPort}
+                  onChange={e => setSnSerialPort(e.target.value)}
+                  placeholder="/dev/ttyS0"
+                  className={inputClass}
+                />
+              </FormField>
+              <div className="grid grid-cols-2 gap-4">
+                <FormField label="波特率">
+                  <select value={snBaudrate} onChange={e => setSnBaudrate(e.target.value)} className={selectClass}>
+                    {BAUDRATE_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </FormField>
+                <FormField label="数据位">
+                  <select value={snDatabits} onChange={e => setSnDatabits(e.target.value)} className={selectClass}>
+                    {DATABITS_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </FormField>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <FormField label="停止位">
+                  <select value={snStopbits} onChange={e => setSnStopbits(e.target.value)} className={selectClass}>
+                    {STOPBITS_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </FormField>
+                <FormField label="校验位">
+                  <select value={snParity} onChange={e => setSnParity(e.target.value)} className={selectClass}>
+                    {PARITY_OPTIONS.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                  </select>
+                </FormField>
+                <FormField label="超时(ms)">
+                  <input
+                    type="number"
+                    value={snTimeout}
+                    onChange={e => setSnTimeout(e.target.value)}
+                    min="100"
+                    max="30000"
+                    className={inputClass}
+                  />
+                </FormField>
+              </div>
             </div>
           </>
         )}

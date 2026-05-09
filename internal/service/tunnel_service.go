@@ -68,7 +68,7 @@ func validateTunnel(t core.Tunnel) error {
 		}
 
 	// 客户端本地类型：服务端不验证 target 格式，只做基本校验
-	case "ser2mq", "vpn-manager":
+	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp":
 		// 这些类型的配置在 Para 字段中，客户端自己处理
 		// 服务端只需要确保 Name 不为空即可
 

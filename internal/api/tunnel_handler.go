@@ -94,6 +94,8 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	httpsCount := 0
 	ser2mqCount := 0
 	vpnMgrCount := 0
+	ser2tcpCount := 0
+	ser2udpCount := 0
 
 	for _, n := range nodes {
 		totalTunnels += len(n.Tunnels)
@@ -114,6 +116,10 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 				ser2mqCount++
 			case "vpn-manager":
 				vpnMgrCount++
+			case "ser2tcp":
+				ser2tcpCount++
+			case "ser2udp":
+				ser2udpCount++
 			}
 		}
 	}
@@ -137,6 +143,8 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		"https_tunnels":  httpsCount,
 		"ser2mq_tunnels":  ser2mqCount,
 		"vpn_mgr_tunnels": vpnMgrCount,
+		"ser2tcp_tunnels": ser2tcpCount,
+		"ser2udp_tunnels": ser2udpCount,
 	})
 }
 
@@ -175,7 +183,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	switch tunnelType {
 	case core.TunnelTypeHTTP, core.TunnelTypeHTTPS, core.TunnelTypeTCP, core.TunnelTypeUDP:
 		// 标准隧道类型
-	case "ser2mq", "vpn-manager":
+	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp":
 		// 客户端本地类型，配置在 Para 字段中
 	default:
 		ResponseError(w, http.StatusBadRequest, 400, "unsupported tunnel type: "+req.Type)

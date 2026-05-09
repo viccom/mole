@@ -86,6 +86,10 @@ interface TunnelPayload {
     lifecycle?: { autostart?: boolean; restart_on_crash?: boolean; max_restarts?: number; restart_delay?: number }
     watchdog?: { enabled?: boolean; interval?: number; quit_grace?: number }
     log?: { capture?: boolean; max_size?: number; output_path?: string }
+    // ser2net
+    mode?: string
+    address?: string
+    max_conn?: number
   }
 }
 

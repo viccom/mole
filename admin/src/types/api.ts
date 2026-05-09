@@ -38,7 +38,7 @@ export interface Node {
 
 export interface Tunnel {
   name: string
-  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager'
+  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp'
   target: string
   domain?: string
   listen_port?: number
@@ -61,6 +61,10 @@ export interface TunnelPara {
   lifecycle?: LifecycleConfig
   watchdog?: WatchdogConfig
   log?: LogConfig
+  // ser2net 配置
+  mode?: string
+  address?: string
+  max_conn?: number
 }
 
 export interface SerialConfig {
@@ -117,11 +121,13 @@ export interface TunnelStats {
   tcp_tunnels: number
   udp_tunnels: number
   https_tunnels: number
+  ser2tcp_tunnels?: number
+  ser2udp_tunnels?: number
 }
 
 export interface TunnelUsageItem {
   name: string
-  type: 'http' | 'https' | 'tcp' | 'udp'
+  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'ser2tcp' | 'ser2udp' | 'vpn-manager'
   target: string
   domain?: string
   listen_port?: number
