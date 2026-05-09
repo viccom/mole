@@ -23,24 +23,38 @@ type Handler struct {
 
 	listener   io.Closer
 	listenerMu sync.Mutex
+	tcpClients *connSet
+	tcpMu      sync.Mutex
 
 	bytesIn  atomic.Uint64
 	bytesOut atomic.Uint64
 	clients  atomic.Int32
 	running  atomic.Bool
+	lastErr  atomic.Value // string
+
+	recentErr       atomic.Value // string
+	recentErrAtMs   atomic.Int64
+	lastRxUnixMs    atomic.Int64
+	lastTxUnixMs    atomic.Int64
+	onPacket        func(PacketInfo)
+	cleanupOnce     sync.Once
 }
 
 func NewHandler(name, typ string, cfg Ser2NetConfig) (*Handler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Handler{name: name, typ: typ, cfg: cfg}, nil
+	h := &Handler{name: name, typ: typ, cfg: cfg}
+	h.lastErr.Store("")
+	h.recentErr.Store("")
+	return h, nil
 }
 
 func (h *Handler) Start(ctx context.Context) error {
 	if h.running.Load() {
 		return nil
 	}
+	h.cleanupOnce = sync.Once{}
 	h.ctx, h.cancel = context.WithCancel(ctx)
 
 	serial, err := OpenSerial(h.cfg.Serial)
@@ -48,6 +62,8 @@ func (h *Handler) Start(ctx context.Context) error {
 		return err
 	}
 	h.serial = serial
+	h.clearError()
+	h.clearRecentError()
 	h.running.Store(true)
 
 	switch {
@@ -68,12 +84,7 @@ func (h *Handler) Start(ctx context.Context) error {
 }
 
 func (h *Handler) Stop() {
-	h.running.Store(false)
-	if h.cancel != nil {
-		h.cancel()
-	}
-	h.closeListener()
-	h.closeSerial()
+	h.cleanup()
 }
 
 func (h *Handler) IsRunning() bool {
@@ -91,21 +102,48 @@ type Stats struct {
 	Clients    int    `json:"clients"`
 	BytesIn    uint64 `json:"bytes_in"`
 	BytesOut   uint64 `json:"bytes_out"`
+	ServerListening  bool   `json:"server_listening,omitempty"`
+	ClientConnected  bool   `json:"client_connected,omitempty"`
+	LastRxUnixMs     int64  `json:"last_rx_unix_ms,omitempty"`
+	LastTxUnixMs     int64  `json:"last_tx_unix_ms,omitempty"`
+	RecentError      string `json:"recent_error,omitempty"`
+	RecentErrorAtUnixMs int64 `json:"recent_error_at_unix_ms,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
 func (h *Handler) Stats() Stats {
+	errText := ""
+	if v := h.lastErr.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			errText = s
+		}
+	}
+	recent := ""
+	if v := h.recentErr.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			recent = s
+		}
+	}
+	clients := int(h.clients.Load())
+	running := h.running.Load()
 	return Stats{
 		Name:       h.name,
 		Type:       h.typ,
 		Mode:       h.cfg.Mode,
-		Running:    h.running.Load(),
+		Running:    running,
 		SerialOpen: h.serial != nil,
 		SerialPort: h.cfg.Serial.Port,
 		Address:    h.cfg.Address,
-		Clients:    int(h.clients.Load()),
+		Clients:    clients,
 		BytesIn:    h.bytesIn.Load(),
 		BytesOut:   h.bytesOut.Load(),
+		ServerListening: h.cfg.Mode == "server" && running && h.getListener() != nil,
+		ClientConnected: h.cfg.Mode == "client" && clients > 0,
+		LastRxUnixMs: h.lastRxUnixMs.Load(),
+		LastTxUnixMs: h.lastTxUnixMs.Load(),
+		RecentError: recent,
+		RecentErrorAtUnixMs: h.recentErrAtMs.Load(),
+		Error:      errText,
 	}
 }
 
@@ -117,16 +155,25 @@ func (h *Handler) writeSerial(data []byte) (int, error) {
 	}
 	n, err := h.serial.Write(data)
 	if err != nil {
+		h.setRecentError(err)
 		return n, err
 	}
 	h.bytesIn.Add(uint64(n))
+	h.lastRxUnixMs.Store(time.Now().UnixMilli())
+	h.emitPacket("SERIAL_IN", data[:n])
 	return n, nil
 }
 
 func (h *Handler) cleanup() {
-	h.running.Store(false)
-	h.closeListener()
-	h.closeSerial()
+	h.cleanupOnce.Do(func() {
+		h.running.Store(false)
+		if h.cancel != nil {
+			h.cancel()
+		}
+		h.closeTCPClients()
+		h.closeListener()
+		h.closeSerial()
+	})
 }
 
 func (h *Handler) maxConn() int {
@@ -140,6 +187,12 @@ func (h *Handler) setListener(closer io.Closer) {
 	h.listenerMu.Lock()
 	h.listener = closer
 	h.listenerMu.Unlock()
+}
+
+func (h *Handler) getListener() io.Closer {
+	h.listenerMu.Lock()
+	defer h.listenerMu.Unlock()
+	return h.listener
 }
 
 func (h *Handler) closeListener() {
@@ -160,6 +213,76 @@ func (h *Handler) closeSerial() {
 	if serial != nil {
 		_ = serial.Close()
 	}
+}
+
+func (h *Handler) setTCPClients(cs *connSet) {
+	h.tcpMu.Lock()
+	h.tcpClients = cs
+	h.tcpMu.Unlock()
+}
+
+func (h *Handler) closeTCPClients() {
+	h.tcpMu.Lock()
+	cs := h.tcpClients
+	h.tcpClients = nil
+	h.tcpMu.Unlock()
+	if cs != nil {
+		cs.closeAll()
+		h.clients.Store(0)
+	}
+}
+
+func (h *Handler) setError(err error) {
+	if err == nil {
+		return
+	}
+	h.lastErr.Store(err.Error())
+	h.running.Store(false)
+}
+
+func (h *Handler) setTransientError(err error) {
+	if err == nil {
+		return
+	}
+	h.lastErr.Store(err.Error())
+}
+
+func (h *Handler) clearError() {
+	h.lastErr.Store("")
+}
+
+func (h *Handler) setRecentError(err error) {
+	if err == nil {
+		return
+	}
+	h.recentErr.Store(err.Error())
+	h.recentErrAtMs.Store(time.Now().UnixMilli())
+}
+
+func (h *Handler) clearRecentError() {
+	h.recentErr.Store("")
+	h.recentErrAtMs.Store(0)
+}
+
+func (h *Handler) SetPacketHook(onPacket func(PacketInfo)) {
+	h.onPacket = onPacket
+}
+
+func (h *Handler) emitPacket(dir string, data []byte) {
+	if h.onPacket == nil {
+		return
+	}
+	hexStr := fmt.Sprintf("%x", data)
+	if len(hexStr) > 200 {
+		hexStr = hexStr[:200] + "..."
+	}
+	h.onPacket(PacketInfo{
+		Time:    time.Now().Format("15:04:05.000"),
+		Dir:     dir,
+		Tunnel:  h.name,
+		DataHex: hexStr,
+		DataLen: len(data),
+	})
 }
 
 // connSet manages TCP server client connections
@@ -213,4 +336,13 @@ func (cs *connSet) len() int {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 	return len(cs.conns)
+}
+
+func (cs *connSet) closeAll() {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	for conn := range cs.conns {
+		_ = conn.Close()
+	}
+	cs.conns = make(map[net.Conn]struct{})
 }

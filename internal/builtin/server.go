@@ -285,21 +285,23 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, clientProvider f
 	}
 }
 
-// handleTunnelStream SSE 实时事件流（仅 ser2mq）
+// handleTunnelStream SSE 实时事件流（ser2mq / ser2net）
 func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_client.Client, name string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	// 校验隧道存在且类型为 ser2mq
+	// 校验隧道存在且类型支持 stream
 	status, err := c.TunnelStatusByName(name)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 		return
 	}
-	if status.Type != moleAgent_client.TunnelTypeSer2MQ {
-		http.Error(w, `{"error":"stream only supported for ser2mq tunnels"}`, http.StatusBadRequest)
+	if status.Type != moleAgent_client.TunnelTypeSer2MQ &&
+		status.Type != moleAgent_client.TunnelTypeSer2TCP &&
+		status.Type != moleAgent_client.TunnelTypeSer2UDP {
+		http.Error(w, `{"error":"stream only supported for ser2mq/ser2net tunnels"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -320,10 +322,6 @@ func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	hub := c.Ser2MQStreamHub()
-	ch, unsub := hub.Subscribe(name, tail)
-	defer unsub()
-
 	flusher, canFlush := w.(http.Flusher)
 
 	encode := func(evt any) {
@@ -336,6 +334,29 @@ func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 			flusher.Flush()
 		}
 	}
+
+	if status.Type == moleAgent_client.TunnelTypeSer2MQ {
+		hub := c.Ser2MQStreamHub()
+		ch, unsub := hub.Subscribe(name, tail)
+		defer unsub()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case evt := <-ch:
+				encode(evt)
+			}
+		}
+	}
+
+	hub := c.Ser2NetStreamHub()
+	if hub == nil {
+		http.Error(w, `{"error":"ser2net stream hub unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	ch, unsub := hub.Subscribe(name, tail)
+	defer unsub()
 
 	for {
 		select {

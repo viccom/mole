@@ -14,6 +14,7 @@ func (h *Handler) runTCPServer() {
 	ln, err := net.Listen("tcp", h.cfg.Address)
 	if err != nil {
 		log.Printf("ser2net: %s tcp server listen error: %v", h.name, err)
+		h.setError(err)
 		return
 	}
 	h.setListener(ln)
@@ -22,6 +23,8 @@ func (h *Handler) runTCPServer() {
 	log.Printf("ser2net: %s tcp server listening on %s", h.name, h.cfg.Address)
 
 	clients := newConnSet(h.maxConn())
+	h.setTCPClients(clients)
+	defer h.setTCPClients(nil)
 
 	// Serial → all TCP clients
 	go h.serialToTCPClients(clients)
@@ -34,6 +37,7 @@ func (h *Handler) runTCPServer() {
 				return
 			default:
 				log.Printf("ser2net: %s accept error: %v", h.name, err)
+				h.setError(err)
 				return
 			}
 		}
@@ -63,6 +67,7 @@ func (h *Handler) runTCPClient() {
 		conn, err := net.DialTimeout("tcp", h.cfg.Address, 10*time.Second)
 		if err != nil {
 			log.Printf("ser2net: %s tcp client connect error: %v", h.name, err)
+			h.setTransientError(err)
 			select {
 			case <-h.ctx.Done():
 				return
@@ -72,6 +77,8 @@ func (h *Handler) runTCPClient() {
 		}
 
 		log.Printf("ser2net: %s tcp client connected to %s", h.name, h.cfg.Address)
+		h.clearError()
+		h.running.Store(true)
 		h.clients.Store(1)
 		h.relayTCPClient(conn)
 		h.clients.Store(0)
@@ -113,6 +120,7 @@ func (h *Handler) relayTCPClient(conn net.Conn) {
 				return
 			}
 			if n > 0 {
+				h.emitPacket("TCP_IN", buf[:n])
 				if _, err := h.writeSerial(buf[:n]); err != nil {
 					log.Printf("ser2net: %s write serial from tcp client failed: %v", h.name, err)
 					return
@@ -131,21 +139,36 @@ func (h *Handler) relayTCPClient(conn net.Conn) {
 				return
 			default:
 			}
-			n, err := h.serial.Read(buf)
+			h.writeMu.Lock()
+			serial := h.serial
+			h.writeMu.Unlock()
+			if serial == nil {
+				return
+			}
+			n, err := serial.Read(buf)
 			if err != nil {
+				if err == io.EOF {
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
 				if isTimeout(err) {
 					continue
 				}
 				log.Printf("ser2net: %s read serial error in tcp client: %v", h.name, err)
-				return
+				h.setRecentError(err)
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 			if n > 0 {
 				h.bytesOut.Add(uint64(n))
+				h.lastTxUnixMs.Store(time.Now().UnixMilli())
+				h.emitPacket("SERIAL_OUT", buf[:n])
 				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 				if _, err := conn.Write(buf[:n]); err != nil {
 					log.Printf("ser2net: %s write to tcp client failed: %v", h.name, err)
 					return
 				}
+				h.emitPacket("TCP_OUT", buf[:n])
 			}
 		}
 	}()
@@ -159,16 +182,31 @@ func (h *Handler) serialToTCPClients(clients *connSet) {
 			return
 		default:
 		}
-		n, err := h.serial.Read(buf)
+		h.writeMu.Lock()
+		serial := h.serial
+		h.writeMu.Unlock()
+		if serial == nil {
+			return
+		}
+		n, err := serial.Read(buf)
 		if err != nil {
+			if err == io.EOF {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
 			if isTimeout(err) {
 				continue
 			}
 			log.Printf("ser2net: %s read serial error in tcp server: %v", h.name, err)
-			return
+			h.setRecentError(err)
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 		if n > 0 {
 			h.bytesOut.Add(uint64(n))
+			h.lastTxUnixMs.Store(time.Now().UnixMilli())
+			h.emitPacket("SERIAL_OUT", buf[:n])
+			h.emitPacket("TCP_OUT", buf[:n])
 			clients.broadcast(buf[:n])
 		}
 	}
@@ -194,6 +232,7 @@ func (h *Handler) tcpClientToSerial(conn net.Conn, clients *connSet) {
 			return
 		}
 		if n > 0 {
+			h.emitPacket("TCP_IN", buf[:n])
 			if _, err := h.writeSerial(buf[:n]); err != nil {
 				log.Printf("ser2net: %s write serial from tcp server failed: %v", h.name, err)
 				return

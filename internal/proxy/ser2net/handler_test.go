@@ -1,7 +1,9 @@
 package ser2net
 
 import (
+	"fmt"
 	"io"
+	"net"
 	"testing"
 )
 
@@ -96,11 +98,63 @@ func TestHandlerStatsIncludesSerialPort(t *testing.T) {
 	}
 }
 
+func TestHandlerStatsIncludesEnhancedSer2NetFields(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		name: "serial-enhanced",
+		typ:  "ser2tcp",
+		cfg: Ser2NetConfig{
+			Mode:    "server",
+			Address: "127.0.0.1:5000",
+			Serial:  SerialConfig{Port: "COM9"},
+		},
+	}
+	h.running.Store(true)
+	h.setError(fmt.Errorf("fatal error"))
+	h.setRecentError(fmt.Errorf("recent transient error"))
+
+	stats := h.Stats()
+	if stats.ServerListening {
+		t.Fatal("Stats().ServerListening should be false when listener is not ready")
+	}
+	if stats.ClientConnected {
+		t.Fatal("Stats().ClientConnected should be false in server mode without clients")
+	}
+	if stats.RecentError == "" {
+		t.Fatal("Stats().RecentError should include transient error text")
+	}
+	if stats.RecentErrorAtUnixMs <= 0 {
+		t.Fatal("Stats().RecentErrorAtUnixMs should be recorded")
+	}
+}
+
 func TestHandlerWriteSerialFailsWhenSerialClosed(t *testing.T) {
 	t.Parallel()
 
 	h := &Handler{}
 	if _, err := h.writeSerial([]byte("abc")); err == nil {
 		t.Fatal("writeSerial() error = nil, want closed serial error")
+	}
+}
+
+func TestStopClosesTCPClientsImmediately(t *testing.T) {
+	t.Parallel()
+
+	serverConn, _ := net.Pipe()
+	h := &Handler{
+		typ: "ser2tcp",
+		cfg: Ser2NetConfig{Mode: "server"},
+	}
+	cs := newConnSet(4)
+	cs.add(serverConn)
+	h.setTCPClients(cs)
+	h.clients.Store(1)
+	h.running.Store(true)
+
+	h.Stop()
+
+	if got := h.clients.Load(); got != 0 {
+		t.Fatalf("clients = %d, want 0 after Stop()", got)
 	}
 }

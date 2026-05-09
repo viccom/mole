@@ -1,12 +1,16 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	moleAgent_client "moleAgent_client"
+	"moleAgent_client/internal/proxy/ser2net"
 )
 
 func newTestClient(t *testing.T, tunnels []moleAgent_client.Tunnel) *moleAgent_client.Client {
@@ -143,5 +147,50 @@ func TestNewHandlerTunnelsAPIIncludesCORSHeaders(t *testing.T) {
 
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+	}
+}
+
+func TestTunnelStreamSupportsSer2Net(t *testing.T) {
+	client := newTestClient(t, []moleAgent_client.Tunnel{
+		{
+			Name: "s2n",
+			Type: moleAgent_client.TunnelTypeSer2TCP,
+			Target: "COM1",
+			Para: json.RawMessage(`{"enable":true,"mode":"server","address":"127.0.0.1:0","serial":{"port":"COM1","baudrate":9600,"databits":8,"stopbits":1,"parity":"N","timeout":1000}}`),
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tunnels/s2n/stream?tail=0", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		newTestMux(client).ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	client.Ser2NetStreamHub().Publish(ser2net.PacketInfo{
+		Tunnel:  "s2n",
+		Dir:     "TCP_IN",
+		DataHex: "616263",
+		DataLen: 3,
+	})
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content-type = %q, want %q", got, "text/event-stream")
+	}
+	if !strings.Contains(body, `"tunnel":"s2n"`) {
+		t.Fatalf("stream body missing ser2net event, body=%q", body)
 	}
 }

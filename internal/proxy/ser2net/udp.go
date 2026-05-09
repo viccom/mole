@@ -1,6 +1,8 @@
 package ser2net
 
 import (
+	"bytes"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -8,6 +10,7 @@ import (
 )
 
 const udpPeerTimeout = 5 * time.Minute
+var udpProbePayload = []byte("__MOLE_UDP_PROBE__")
 
 type peerEntry struct {
 	addr     *net.UDPAddr
@@ -20,11 +23,13 @@ func (h *Handler) runUDPServer() {
 	addr, err := net.ResolveUDPAddr("udp", h.cfg.Address)
 	if err != nil {
 		log.Printf("ser2net: %s udp server resolve error: %v", h.name, err)
+		h.setError(err)
 		return
 	}
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		log.Printf("ser2net: %s udp server listen error: %v", h.name, err)
+		h.setError(err)
 		return
 	}
 	h.setListener(conn)
@@ -44,6 +49,7 @@ func (h *Handler) runUDPClient() {
 	raddr, err := net.ResolveUDPAddr("udp", h.cfg.Address)
 	if err != nil {
 		log.Printf("ser2net: %s udp client resolve error: %v", h.name, err)
+		h.setError(err)
 		return
 	}
 
@@ -57,6 +63,7 @@ func (h *Handler) runUDPClient() {
 		conn, err := net.DialUDP("udp", nil, raddr)
 		if err != nil {
 			log.Printf("ser2net: %s udp client dial error: %v", h.name, err)
+			h.setTransientError(err)
 			select {
 			case <-h.ctx.Done():
 				return
@@ -66,7 +73,13 @@ func (h *Handler) runUDPClient() {
 		}
 
 		log.Printf("ser2net: %s udp client connected to %s", h.name, h.cfg.Address)
+		h.clearError()
+		h.running.Store(true)
 		h.clients.Store(1)
+		if _, err := conn.Write(udpProbePayload); err != nil {
+			log.Printf("ser2net: %s udp client probe failed: %v", h.name, err)
+			h.setRecentError(err)
+		}
 		h.relayUDPClient(conn)
 		h.clients.Store(0)
 		conn.Close()
@@ -104,6 +117,7 @@ func (h *Handler) relayUDPClient(conn *net.UDPConn) {
 				return
 			}
 			if n > 0 {
+				h.emitPacket("UDP_IN", buf[:n])
 				if _, err := h.writeSerial(buf[:n]); err != nil {
 					log.Printf("ser2net: %s write serial from udp client failed: %v", h.name, err)
 					return
@@ -122,19 +136,35 @@ func (h *Handler) relayUDPClient(conn *net.UDPConn) {
 				return
 			default:
 			}
-			n, err := h.serial.Read(buf)
+			h.writeMu.Lock()
+			serial := h.serial
+			h.writeMu.Unlock()
+			if serial == nil {
+				return
+			}
+			n, err := serial.Read(buf)
 			if err != nil {
+				if err == io.EOF {
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
 				if isTimeout(err) {
 					continue
 				}
 				log.Printf("ser2net: %s read serial error in udp client: %v", h.name, err)
-				return
+				h.setRecentError(err)
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 			if n > 0 {
 				h.bytesOut.Add(uint64(n))
+				h.lastTxUnixMs.Store(time.Now().UnixMilli())
+				h.emitPacket("SERIAL_OUT", buf[:n])
 				if _, err := conn.Write(buf[:n]); err != nil {
 					log.Printf("ser2net: %s write to udp client failed: %v", h.name, err)
+					h.setRecentError(err)
 				}
+				h.emitPacket("UDP_OUT", buf[:n])
 			}
 		}
 	}()
@@ -148,16 +178,30 @@ func (h *Handler) serialToUDPPeers(conn *net.UDPConn, peers *peerSet) {
 			return
 		default:
 		}
-		n, err := h.serial.Read(buf)
+		h.writeMu.Lock()
+		serial := h.serial
+		h.writeMu.Unlock()
+		if serial == nil {
+			return
+		}
+		n, err := serial.Read(buf)
 		if err != nil {
+			if err == io.EOF {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
 			if isTimeout(err) {
 				continue
 			}
 			log.Printf("ser2net: %s read serial error in udp server: %v", h.name, err)
-			return
+			h.setRecentError(err)
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 		if n > 0 {
 			h.bytesOut.Add(uint64(n))
+			h.lastTxUnixMs.Store(time.Now().UnixMilli())
+			h.emitPacket("SERIAL_OUT", buf[:n])
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			activePeers := peers.active()
@@ -165,8 +209,10 @@ func (h *Handler) serialToUDPPeers(conn *net.UDPConn, peers *peerSet) {
 			for _, addr := range activePeers {
 				if _, err := conn.WriteToUDP(data, addr); err != nil {
 					log.Printf("ser2net: %s write to udp peer %s failed: %v", h.name, addr, err)
+					h.setRecentError(err)
 				}
 			}
+			h.emitPacket("UDP_OUT", buf[:n])
 		}
 	}
 }
@@ -191,6 +237,10 @@ func (h *Handler) udpToSerial(conn *net.UDPConn, peers *peerSet) {
 		if n > 0 {
 			peers.track(remoteAddr)
 			h.clients.Store(int32(peers.count()))
+			if bytes.Equal(buf[:n], udpProbePayload) {
+				continue
+			}
+			h.emitPacket("UDP_IN", buf[:n])
 			if _, err := h.writeSerial(buf[:n]); err != nil {
 				log.Printf("ser2net: %s write serial from udp server failed: %v", h.name, err)
 				return

@@ -922,6 +922,13 @@ func (c *Client) Ser2NetManager() *ser2net.Manager {
 	return c.ser2netMgr
 }
 
+func (c *Client) Ser2NetStreamHub() *ser2net.StreamHub {
+	if c.ser2netMgr == nil {
+		return nil
+	}
+	return c.ser2netMgr.StreamHub()
+}
+
 func (c *Client) Ser2NetList() []ser2net.Stats {
 	return c.ser2netMgr.List()
 }

@@ -18,6 +18,7 @@ type Manager struct {
 	errors  map[string]Stats
 	ctx     context.Context
 	cancel  context.CancelFunc
+	streamHub *StreamHub
 }
 
 func NewManager(ctx context.Context) *Manager {
@@ -27,7 +28,12 @@ func NewManager(ctx context.Context) *Manager {
 		errors:  make(map[string]Stats),
 		ctx:     ctx,
 		cancel:  cancel,
+		streamHub: NewStreamHub(200),
 	}
+}
+
+func (m *Manager) StreamHub() *StreamHub {
+	return m.streamHub
 }
 
 func (m *Manager) Close() {
@@ -107,6 +113,9 @@ func (m *Manager) OnTunnelUpdate(configs map[string]TunnelConfig) {
 			log.Printf("ser2net: create handler %s error: %v", name, err)
 			m.errors[name] = Stats{Name: name, Type: tc.Type, Mode: cfg.Mode, Address: cfg.Address, Error: err.Error()}
 			continue
+		}
+		if m.streamHub != nil {
+			handler.SetPacketHook(m.streamHub.Publish)
 		}
 
 		if err := handler.Start(m.ctx); err != nil {

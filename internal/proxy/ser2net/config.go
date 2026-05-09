@@ -23,6 +23,15 @@ type Ser2NetConfig struct {
 	MaxConn int          `json:"max_conn"`
 }
 
+// PacketInfo 数据流事件（用于 SSE 与调试）
+type PacketInfo struct {
+	Time    string `json:"time"`
+	Dir     string `json:"dir"`
+	Tunnel  string `json:"tunnel"`
+	DataHex string `json:"dataHex"`
+	DataLen int    `json:"dataLen"`
+}
+
 func (c *Ser2NetConfig) Validate() error {
 	if c.Serial.Port == "" {
 		return fmt.Errorf("serial port is required")
