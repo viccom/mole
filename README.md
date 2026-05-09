@@ -11,6 +11,8 @@
 - [REST API](#rest-api)
 - [节点连接协议](#节点连接协议)
 - [隧道启停控制](#隧道启停控制)
+- [隧道运行时统计](#隧道运行时统计)
+- [隧道配置推送](#隧道配置推送)
 - [MQTT Broker](#mqtt-broker)
 - [管理页面](#管理页面)
 - [日志](#日志)
@@ -636,6 +638,7 @@ curl -X POST http://localhost:9983/api/v1/nodes \
 |------|------|------|------|
 | GET | `/tunnels` | 活跃隧道列表 | `tunnels:read` |
 | GET | `/tunnels/stats` | 隧道统计 | `tunnels:read` |
+| GET | `/tunnels/usage` | 隧道运行时用量 | `tunnels:read` |
 | POST | `/tunnels` | 创建动态隧道 | `tunnels:write` |
 | DELETE | `/tunnels/{name}` | 删除隧道 | `tunnels:delete` |
 
@@ -655,7 +658,13 @@ curl http://localhost:9983/api/v1/tunnels/stats \
   "data": {
     "total_tunnels": 10,
     "enabled_tunnels": 8,
-    "active_tunnels": 5
+    "active_tunnels": 5,
+    "tcp_tunnels": 3,
+    "udp_tunnels": 1,
+    "http_tunnels": 4,
+    "https_tunnels": 0,
+    "ser2mq_tunnels": 1,
+    "vpn_mgr_tunnels": 1
   }
 }
 ```
@@ -663,6 +672,7 @@ curl http://localhost:9983/api/v1/tunnels/stats \
 - `total_tunnels`：所有隧道总数（含禁用）
 - `enabled_tunnels`：`enabled=true` 或未设置的隧道数
 - `active_tunnels`：在线节点上 `enabled=true` 的隧道数（正在服务中）
+- `*_tunnels`：各类型隧道计数
 
 > **可见性**：管理员可查看全部隧道；普通用户只能看到自己节点上的隧道。
 
@@ -728,10 +738,12 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
 
 ### 节点注册消息
 
+节点 ID 格式要求：**固定 8 字符，首字符字母，其余字母或数字**（如 `abc12345`、`prodSv01`）。
+
 ```json
 {
   "cmd": "register",
-  "node_id": "prod-server-01",
+  "node_id": "abc12345",
   "name": "生产服务器 01",
   "token": "mat_a1b2c3d4...",
   "tunnels": [
@@ -766,11 +778,19 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
 
 ### 隧道类型说明
 
-| 类型 | 用途 | 配置字段 |
-|------|------|---------|
-| `http` | HTTP 反向代理 | `domain`（按 Host 匹配） |
-| `tcp` | TCP 端口映射 | `listen_port` |
-| `udp` | UDP 端口映射 | `listen_port` |
+| 类型 | 分类 | 用途 | 配置字段 |
+|------|------|------|---------|
+| `http` | 服务端路由 | HTTP/WebSocket 反向代理 | `domain`（按 Host 匹配） |
+| `tcp` | 服务端路由 | TCP 端口映射 | `listen_port` |
+| `udp` | 服务端路由 | UDP 端口映射 | `listen_port` |
+| `ser2mq` | 客户端本地 | 串口 ↔ MQTT 加密桥接 | `para`（扩展配置） |
+| `vpn-manager` | 客户端本地 | VPN 程序启停监视 | `para`（扩展配置） |
+| `ser2tcp` | 客户端本地 | 串口 ↔ TCP 透传 | `para`（扩展配置） |
+| `ser2udp` | 客户端本地 | 串口 ↔ UDP 透传 | `para`（扩展配置） |
+
+**服务端路由类型**（http/tcp/udp）：服务端在网关端口监听并转发请求到客户端。REST API 创建时校验 `target` 格式为 `host:port`。
+
+**客户端本地类型**（ser2mq/vpn-manager/ser2tcp/ser2udp）：仅客户端注册时通过，服务端不校验 `target` 格式，配置存储在 `para`（json.RawMessage）字段中。REST API 仅接受标准四种类型，客户端本地类型由节点自行注册。
 
 ---
 
@@ -816,6 +836,113 @@ curl -X POST http://localhost:9983/api/v1/mqtt/publish \
 - **TCP 转发**：`findNodeForTunnel` 查找 + 运行时二次检查
 - **UDP 转发**：同 TCP 模式
 - **统计 API**：`active_tunnels` 仅统计 online + enabled 的隧道
+
+---
+
+## 隧道运行时统计
+
+服务端通过 `StatsTracker`（`tunnel/stats.go`）实时采集每条隧道的流量和连接数据，使用原子操作保证并发安全。
+
+### 查询用量
+
+```bash
+# 全部隧道的运行时用量
+curl http://localhost:9983/api/v1/tunnels/usage \
+  -H 'Authorization: Bearer <token>'
+
+# 按节点过滤
+curl "http://localhost:9983/api/v1/tunnels/usage?node_id=abc12345" \
+  -H 'Authorization: Bearer <token>'
+
+# 按类型过滤（http/tcp/udp/ser2mq/vpn-manager）
+curl "http://localhost:9983/api/v1/tunnels/usage?type=tcp" \
+  -H 'Authorization: Bearer <token>'
+
+# 仅显示活跃隧道（有连接的）
+curl "http://localhost:9983/api/v1/tunnels/usage?status=active" \
+  -H 'Authorization: Bearer <token>'
+```
+
+响应示例：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "items": [
+      {
+        "name": "db",
+        "type": "tcp",
+        "target": "127.0.0.1:3306",
+        "listen_port": 20001,
+        "enabled": true,
+        "node_id": "abc12345",
+        "node_status": "online",
+        "bytes_in": 1048576,
+        "bytes_out": 2097152,
+        "total_connections": 42,
+        "active_connections": 3,
+        "last_activity": "2026-05-08T14:30:00Z"
+      }
+    ],
+    "total": 1
+  }
+}
+```
+
+### 统计 Key 格式
+
+统计使用复合键 `nodeID/tunnelName`，不同节点同名隧道的统计不会串台。节点断开时通过 `ReleaseNodeResources` 清理统计条目。
+
+### 统计原理
+
+- `countingConn`（`tunnel/counting.go`）包装连接，在 Read/Write 时回调上报
+- TCP：外→隧道 = bytesIn，隧道→外 = bytesOut
+- UDP：每个源地址视为一个"连接"，60s 超时自动清理
+- HTTP/WS：请求写入 = bytesIn，响应读出 = bytesOut
+
+---
+
+## 隧道配置推送
+
+服务端可通过 `tunnel_push` 命令主动向在线节点推送隧道配置更新。
+
+### 推送流程
+
+```
+[REST API] → TunnelConfigService.ApplyTunnel()
+  → 1. 持久化到 Redka
+  → 2. PushTunnelUpdate() → smux.OpenStream() → tunnel_push
+  → 3. applyRuntimeTunnels() → 更新内存态 + 路由索引 + TCP/UDP 监听器
+```
+
+### tunnel_push 协议
+
+服务端通过 smux stream 发送：
+
+```json
+{"cmd": "tunnel_push", "tunnels": [...]}
+```
+
+客户端响应：
+
+```json
+{"cmd": "ok"}
+```
+
+### 推送策略
+
+- **在线节点**：先推送配置到客户端，客户端确认后再更新服务端运行态索引（避免路由先切流导致业务异常）
+- **离线节点**：仅持久化，节点下次注册时自动加载
+- **推送失败**：返回 `synced_server_only` 状态和 warning 信息，服务端不更新运行态索引
+
+### 配置优先级
+
+节点注册时的配置加载顺序：
+
+1. 服务端持久化配置（优先）— 通过 `LoadPersisted()` 加载并推送
+2. 客户端上报的配置（备选）— 无持久化时通过 `SyncFromClient()` 落库
 
 ---
 

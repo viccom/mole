@@ -61,6 +61,31 @@ admin/                  前端 React SPA（构建产物部署在 admin/dist/）
   → TunnelConfigService.LoadPersisted() 下发持久化隧道配置
 ```
 
+## 依赖注入流程
+
+`cmd/moleagent-serv/main.go` 按以下顺序初始化组件（后面的依赖前面的）：
+
+```
+config.Load() → logging.Init() → storage.Init()
+  → userRepo, roleRepo, nodeRepo, accessTokenRepo (仓储层)
+  → jwtMgr → rbacEngine → authSvc → authMW (认证链)
+  → nodeMgr (分片节点管理器)
+  → gateway (TunnelGateway) — 引用 nodeMgr
+  → transport (TCP/WS/KCP) → controlSrv — 引用 nodeMgr, nodeRepo
+  → controlSrv.AddTransport() (额外 WS/KCP listener)
+  → tunnelSvc (TunnelConfigService) — 引用 nodeMgr, nodeRepo, gateway, controlSrv
+  → controlSrv.SetTunnelConfigManager(tunnelSvc)
+  → disconnectHandler → controlSrv.SetOnNodeDisconnect + health check
+  → nodeAccessAuth → controlSrv.SetAuthenticator
+  → mqttBroker (可选)
+  → apiRouter → buildAPIRouter(所有 handler) — 引用上述所有依赖
+```
+
+新增组件时注意：
+- 在 `main.go` 中按依赖顺序创建
+- 通过构造函数注入依赖，不要在包内使用全局变量
+- 回调函数（`onNodeChange`, `onNodeDisconnect`）在组件创建后、启动前设置
+
 ## 关键约定
 
 - `UserStatus` / `NodeStatus` / `AccessTokenStatus` 是类型化常量，不使用原始字符串
@@ -162,8 +187,8 @@ admin/                  前端 React SPA（构建产物部署在 admin/dist/）
 ### 隧道类型扩展
 
 - 标准类型 `http/https/tcp/udp`：REST API 和客户端注册均支持，服务端校验 target 格式为 `host:port`
-- 客户端本地类型 `ser2mq/vpn-manager`：仅客户端注册时通过，服务端不校验 target 格式，配置在 `Tunnel.Para` (json.RawMessage) 中
-- REST API (`TunnelHandler.Create`) 仅接受标准四种类型，客户端本地类型由节点自行注册
+- 客户端本地类型 `ser2mq/vpn-manager/ser2tcp/ser2udp`：仅客户端注册时通过，服务端不校验 target 格式，配置在 `Tunnel.Para` (json.RawMessage) 中
+- REST API (`TunnelHandler.Create`) 接受标准四种类型 + 客户端本地类型，客户端本地类型由节点自行注册
 
 ### 隧道运行时统计
 
@@ -202,10 +227,10 @@ cd admin && npm run dev
 | `MA_DB_PATH` | SQLite 数据库路径 |
 | `MA_CONTROL_PORT` / `MA_GATEWAY_PORT` / `MA_API_PORT` | 端口覆盖 |
 | `MA_TRANSPORT` | 传输协议（tcp, ws, kcp） |
-| `MA_WS_PORT` | `server.ws_port` | WebSocket 额外监听端口 |
-| `MA_KCP_PORT` | `server.kcp_port` | KCP/UDP 额外监听端口 |
 | `MA_LOG_LEVEL` | 日志级别 |
 | `MA_TLS_ENABLED` / `MA_TLS_CERT` / `MA_TLS_KEY` | TLS 配置 |
+
+> **注意**：`ws_port` 和 `kcp_port` 仅支持 YAML 配置文件设置，暂无对应环境变量。
 
 ## 测试
 
@@ -224,3 +249,25 @@ cd admin && npm test
 ```
 
 测试辅助：`auth.SetClaims(ctx, claims)` 用于 handler 测试注入认证上下文。
+
+## 注意事项（AI 编码陷阱）
+
+1. **隧道配置变更必须走 TunnelConfigService**：不要直接调用 nodeMgr.Update 或 nodeRepo.Update 修改隧道，必须通过 `TunnelConfigService.ApplyTunnel/RemoveTunnel/ReplaceTunnels` 统一处理持久化、路由刷新和客户端同步。直接修改会导致持久化与运行态不一致。
+
+2. **在线节点先推后更新**：`ApplyTunnel` 对在线节点先推送配置到客户端（`pushToClient`），客户端确认后再更新服务端运行态索引。不要颠倒顺序——如果先更新服务端索引，路由会把流量切到新隧道，但客户端可能还未准备好。
+
+3. **smux Session 不在 Node 结构体中**：Session 存储在 `ShardedNodeManager.sessions` map 中，与 `core.Node` 分离。获取 Session 必须调用 `nodeMgr.GetSession()`，不要尝试从 Node 结构体获取。
+
+4. **Tunnel.Enabled 是 `*bool`**：使用 `tunnel.IsEnabled()` 判断，不要直接解引用 `Enabled` 字段（nil 表示启用）。新增隧道时，默认不设置 `Enabled` 字段（nil = 启用），而不是显式设为 `true`。
+
+5. **节点 ID 格式**：固定 8 字符，首字符字母，其余字母或数字。由 `isValidNodeID()` 校验。修改校验规则时需同步更新客户端。
+
+6. **TCP 代理头格式**：服务端通过 smux stream 转发 TCP/UDP 流量时，先发送 `\x00<tunnel-name>\n` 标识头，客户端据此路由到正确目标。新增隧道转发逻辑时必须保留此协议。
+
+7. **资源归属过滤在 Handler 层**：不要在 Repo 层做归属过滤。Handler 通过 `resource_scope.go` 的 `IsAdmin/CanAccessNode/FilterNodes/checkNodeOwnership` 过滤，Repo 层保持纯粹的数据读写。
+
+8. **ReleaseNodeResources 不修改持久化**：节点断开时只清理运行态资源（监听器、路由索引、统计条目），不修改 Redka 持久化配置。节点重连时通过 `applyRuntimeTunnels` 重新激活。
+
+9. **RebuildIndex 触发时机**：每次节点变更（注册、断开、隧道更新）都会调用 `gateway.RebuildIndex`，这是全量重建。如果未来节点数很大，需考虑增量索引。
+
+10. **validateTunnel 的类型分支**：服务端校验中，`ser2mq/vpn-manager/ser2tcp/ser2udp` 走 `default` 分支直接返回错误（未知类型）。这些客户端本地类型仅在客户端注册时通过 `SyncFromClient` 入口接受，REST API 的 `ApplyTunnel` 会拒绝它们。新增客户端本地类型时需同步更新 `service/tunnel_service.go` 的 `validateTunnel`。
