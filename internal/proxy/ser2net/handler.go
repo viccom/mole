@@ -38,6 +38,9 @@ func NewHandler(name, typ string, cfg Ser2NetConfig) (*Handler, error) {
 }
 
 func (h *Handler) Start(ctx context.Context) error {
+	if h.running.Load() {
+		return nil
+	}
 	h.ctx, h.cancel = context.WithCancel(ctx)
 
 	serial, err := OpenSerial(h.cfg.Serial)
@@ -192,8 +195,13 @@ func (cs *connSet) remove(conn net.Conn) {
 
 func (cs *connSet) broadcast(data []byte) {
 	cs.mu.RLock()
-	defer cs.mu.RUnlock()
+	conns := make([]net.Conn, 0, len(cs.conns))
 	for conn := range cs.conns {
+		conns = append(conns, conn)
+	}
+	cs.mu.RUnlock()
+
+	for _, conn := range conns {
 		conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
 		if _, err := conn.Write(data); err != nil {
 			log.Printf("ser2net: write to client %s failed: %v", conn.RemoteAddr(), err)

@@ -66,7 +66,9 @@ func (h *Handler) runUDPClient() {
 		}
 
 		log.Printf("ser2net: %s udp client connected to %s", h.name, h.cfg.Address)
+		h.clients.Store(1)
 		h.relayUDPClient(conn)
+		h.clients.Store(0)
 		conn.Close()
 
 		select {
@@ -98,6 +100,7 @@ func (h *Handler) relayUDPClient(conn *net.UDPConn) {
 				if isNetTimeout(err) {
 					continue
 				}
+				log.Printf("ser2net: %s udp client read error: %v", h.name, err)
 				return
 			}
 			if n > 0 {
@@ -124,11 +127,14 @@ func (h *Handler) relayUDPClient(conn *net.UDPConn) {
 				if isTimeout(err) {
 					continue
 				}
+				log.Printf("ser2net: %s read serial error in udp client: %v", h.name, err)
 				return
 			}
 			if n > 0 {
 				h.bytesOut.Add(uint64(n))
-				conn.Write(buf[:n])
+				if _, err := conn.Write(buf[:n]); err != nil {
+					log.Printf("ser2net: %s write to udp client failed: %v", h.name, err)
+				}
 			}
 		}
 	}()
@@ -147,14 +153,19 @@ func (h *Handler) serialToUDPPeers(conn *net.UDPConn, peers *peerSet) {
 			if isTimeout(err) {
 				continue
 			}
+			log.Printf("ser2net: %s read serial error in udp server: %v", h.name, err)
 			return
 		}
 		if n > 0 {
 			h.bytesOut.Add(uint64(n))
 			data := make([]byte, n)
 			copy(data, buf[:n])
-			for _, addr := range peers.active() {
-				conn.WriteToUDP(data, addr)
+			activePeers := peers.active()
+			h.clients.Store(int32(len(activePeers)))
+			for _, addr := range activePeers {
+				if _, err := conn.WriteToUDP(data, addr); err != nil {
+					log.Printf("ser2net: %s write to udp peer %s failed: %v", h.name, addr, err)
+				}
 			}
 		}
 	}

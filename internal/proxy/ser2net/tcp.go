@@ -72,7 +72,9 @@ func (h *Handler) runTCPClient() {
 		}
 
 		log.Printf("ser2net: %s tcp client connected to %s", h.name, h.cfg.Address)
+		h.clients.Store(1)
 		h.relayTCPClient(conn)
+		h.clients.Store(0)
 		conn.Close()
 		log.Printf("ser2net: %s tcp client disconnected, reconnecting...", h.name)
 
@@ -105,6 +107,9 @@ func (h *Handler) relayTCPClient(conn net.Conn) {
 				if isNetTimeout(err) {
 					continue
 				}
+				if err != io.EOF {
+					log.Printf("ser2net: %s tcp client read error: %v", h.name, err)
+				}
 				return
 			}
 			if n > 0 {
@@ -131,12 +136,14 @@ func (h *Handler) relayTCPClient(conn net.Conn) {
 				if isTimeout(err) {
 					continue
 				}
+				log.Printf("ser2net: %s read serial error in tcp client: %v", h.name, err)
 				return
 			}
 			if n > 0 {
 				h.bytesOut.Add(uint64(n))
 				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 				if _, err := conn.Write(buf[:n]); err != nil {
+					log.Printf("ser2net: %s write to tcp client failed: %v", h.name, err)
 					return
 				}
 			}
@@ -157,6 +164,7 @@ func (h *Handler) serialToTCPClients(clients *connSet) {
 			if isTimeout(err) {
 				continue
 			}
+			log.Printf("ser2net: %s read serial error in tcp server: %v", h.name, err)
 			return
 		}
 		if n > 0 {

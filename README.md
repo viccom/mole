@@ -1,6 +1,6 @@
 # moleAgent_client
 
-内网穿透客户端，连接 moleAgent_Serv 服务端建立加密隧道，将外部请求转发到本地服务。支持 HTTP/TCP/UDP/ser2mq/vpn-manager 五种隧道类型，以及 TCP/WebSocket/KCP 三种传输协议。
+内网穿透客户端，连接 moleAgent_Serv 服务端建立加密隧道，将外部请求转发到本地服务。支持 HTTP/TCP/UDP/ser2mq/ser2tcp/ser2udp/vpn-manager 七种隧道类型，以及 TCP/WebSocket/KCP 三种传输协议。
 
 ## 🏗️ 程序家族
 

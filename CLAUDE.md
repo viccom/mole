@@ -45,6 +45,8 @@ internal/
 | `tcp` | TCP 透明转发 |
 | `udp` | UDP 透明转发 |
 | `ser2mq` | 串口 ↔ MQTT（ChaCha20-Poly1305-X 加密） |
+| `ser2tcp` | 串口 ↔ TCP（Server/Client 双模式，本地透传，不参与路由） |
+| `ser2udp` | 串口 ↔ UDP（Server/Client 双模式，本地透传，不参与路由） |
 | `vpn-manager` | VPN 程序启停监视 |
 
 ## 统一 API
