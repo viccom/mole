@@ -1,5 +1,6 @@
 // ser2net.js — 串口 <-> TCP/UDP 隧道管理
 import { api } from './api.js';
+import { openSer2NetStream, closeSer2NetStream } from './ser2net-stream.js';
 import { setText, fmtBytes, esc, toast, activateSubpanel, emptyStateMarkup, renderVizBars, renderVizRing, showSerialFormTemplate } from './main.js';
 
 const SER2NET_TYPES = new Set(['ser2tcp', 'ser2udp']);
@@ -8,6 +9,8 @@ let tunnels = [];
 let editingName = null;
 let activeFilter = 'all';
 let searchKeyword = '';
+let streamTunnelName = '';
+let streamPacketCount = 0;
 
 export function initSer2Net() {
   const tbody = document.getElementById('ser2net-tbody');
@@ -33,6 +36,10 @@ export function initSer2Net() {
     if (action === 'toggle') {
       const tunnel = tunnels.find(t => t.name === name);
       if (tunnel) handleToggle(tunnel);
+      return;
+    }
+    if (action === 'stream') {
+      handleStreamToggle(name);
     }
   });
 
@@ -65,6 +72,9 @@ export function initSer2Net() {
 
   window.__ser2netRefresh = (allTunnels) => {
     tunnels = allTunnels.filter(t => SER2NET_TYPES.has(t.type));
+    if (streamTunnelName && !tunnels.some(t => t.name === streamTunnelName)) {
+      stopStream();
+    }
     render();
   };
 }
@@ -105,6 +115,36 @@ async function handleToggle(tunnel) {
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+function handleStreamToggle(name) {
+  if (streamTunnelName === name) {
+    stopStream();
+    render();
+    toast('已停止监听', 'success');
+    return;
+  }
+
+  streamTunnelName = name;
+  streamPacketCount = 0;
+  openSer2NetStream(name, {
+    onPacket: () => {
+      streamPacketCount += 1;
+      updateStreamSummary();
+    },
+    onError: (err) => {
+      setText('ser2net-stream-summary', `SSE 异常（${name}）：${err.message}`);
+    }
+  }, { tail: 0 });
+  updateStreamSummary();
+  toast(`已开始监听 ${name}`, 'success');
+}
+
+function stopStream() {
+  closeSer2NetStream();
+  streamTunnelName = '';
+  streamPacketCount = 0;
+  updateStreamSummary();
 }
 
 function render() {
@@ -183,6 +223,15 @@ function renderMetrics(state) {
   setText('ser2net-peers', String(state.peerCount));
   setText('ser2net-type-summary', state.total ? `TCP ${state.tcpCount} / UDP ${state.udpCount}` : '暂无隧道');
   setText('ser2net-status-summary', ser2netStatusSummary(state));
+  updateStreamSummary();
+}
+
+function updateStreamSummary() {
+  if (!streamTunnelName) {
+    setText('ser2net-stream-summary', 'SSE 未监听');
+    return;
+  }
+  setText('ser2net-stream-summary', `监听中：${streamTunnelName}（已收 ${streamPacketCount} 条）`);
 }
 
 function renderFilterChips() {
@@ -295,10 +344,14 @@ function renderRow(tunnel, maxTraffic) {
   const serialBadge = `<span class="badge ${status.serial_open ? 'badge-on' : 'badge-off'}">Serial</span>`;
   const peerBadge = `<span class="badge ${running ? 'badge-on' : 'badge-off'}">${esc(connectionBadgeText(status))}</span>`;
   const errorInfo = status.error ? `<span class="badge badge-err" title="${esc(status.error)}">错误</span>` : '';
+  const recentErrorInfo = !status.error && status.recent_error
+    ? `<span class="badge badge-neutral" title="${esc(status.recent_error)}">最近错误</span>`
+    : '';
   const traffic = totalTraffic(tunnel);
   const trafficPercent = trafficPercentOf(traffic, maxTraffic);
 
-  let actions = `<button class="btn btn-sm" data-action="edit" data-name="${esc(tunnel.name)}">编辑</button>`;
+  let actions = `<button class="btn btn-sm" data-action="stream" data-name="${esc(tunnel.name)}">${streamTunnelName === tunnel.name ? '停止监听' : '监听SSE'}</button>`;
+  actions += `<button class="btn btn-sm" data-action="edit" data-name="${esc(tunnel.name)}">编辑</button>`;
   actions += tunnel.enabled
     ? `<button class="btn btn-sm" data-action="toggle" data-name="${esc(tunnel.name)}">禁用</button>`
     : `<button class="btn btn-primary btn-sm" data-action="toggle" data-name="${esc(tunnel.name)}">启用</button>`;
@@ -330,6 +383,7 @@ function renderRow(tunnel, maxTraffic) {
         <span class="badge ${enabledClass}">${enabledText}</span>
         <span class="badge ${runningClass}">${runningText}</span>
         ${errorInfo}
+        ${recentErrorInfo}
       </div>
       <div class="status-note">${esc(statusNote(status, tunnel.enabled))}</div>
     </td>
@@ -643,12 +697,14 @@ function flowSummary(status, tunnel) {
 
 function statusNote(status, enabled) {
   if (status.error) return status.error;
+  const recent = status.recent_error ? ` 最近错误：${status.recent_error}` : '';
   if (!enabled) return '配置保留，当前未启用。';
-  if (!status.running) return '等待启动或监听地址生效。';
+  if (!status.running) return `等待启动或监听地址生效。${recent}`;
   if (status.mode === 'server') {
-    return status.clients > 0 ? `当前已有 ${status.clients} 个网络端接入。` : '正在监听，等待网络端接入。';
+    const base = status.clients > 0 ? `当前已有 ${status.clients} 个网络端接入。` : '正在监听，等待网络端接入。';
+    return `${base}${recent}`;
   }
-  return '已建立主动连接，断线会自动重连。';
+  return `已建立主动连接，断线会自动重连。${recent}`;
 }
 
 function connectionText(status) {
