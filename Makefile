@@ -1,4 +1,4 @@
-.PHONY: build release clean
+.PHONY: build release clean ensure-wails build-desktop build-manager build-gui build-all
 
 # This Makefile assumes a POSIX shell environment such as Git Bash/MSYS on Windows.
 # For native PowerShell builds, use scripts/build.ps1 and scripts/release.ps1.
@@ -7,6 +7,12 @@
 BINARY_NAME    := moleagent-client
 CMD_PATH       := ./cmd/moleagent-client
 RELEASE_DIR    := ../_release
+DESKTOP_DIR    := ./cmd/moleagent-desktop
+DESKTOP_NAME   := moleAgent-desktop
+MANAGER_DIR    := ./cmd/moleagent-manager
+MANAGER_NAME   := moleAgent-manager
+WAILS_INSTALL  := github.com/wailsapp/wails/v2/cmd/wails@latest
+HOST_EXE       := $(if $(filter Windows_NT,$(OS)),.exe,)
 
 # 版本信息（从 git tag 获取，无 tag 时用 dev）
 VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -29,12 +35,66 @@ TARGETS := \
 	windows/amd64 \
 	windows/arm64
 
+ensure-wails:
+	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
+	if [ -z "$$WAILS_BIN" ]; then \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	if [ -z "$$WAILS_BIN" ]; then \
+		echo ">> Wails not found, installing $(WAILS_INSTALL) ..."; \
+		go install $(WAILS_INSTALL); \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	if [ -z "$$WAILS_BIN" ]; then \
+		echo "!! Failed to locate wails after installation. Please add Go bin to PATH."; \
+		exit 1; \
+	fi; \
+	echo ">> Using Wails: $$WAILS_BIN"
+
 # 默认：编译当前平台
 build:
 	@echo ">> Building $(BINARY_NAME) ($(VERSION))..."
 	@mkdir -p $(RELEASE_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(RELEASE_DIR)/$(BINARY_NAME) $(CMD_PATH)
 	@echo ">> Done: $(RELEASE_DIR)/$(BINARY_NAME)"
+
+build-desktop: ensure-wails
+	@echo ">> Building $(DESKTOP_NAME) ($(VERSION))..."
+	@mkdir -p $(RELEASE_DIR)
+	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
+	if [ -z "$$WAILS_BIN" ]; then \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	(cd $(DESKTOP_DIR) && "$$WAILS_BIN" build -clean -o $(DESKTOP_NAME)$(HOST_EXE)); \
+	cp -f $(DESKTOP_DIR)/build/bin/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)
+	@echo ">> Done: $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)"
+
+build-manager: ensure-wails
+	@echo ">> Building $(MANAGER_NAME) ($(VERSION))..."
+	@mkdir -p $(RELEASE_DIR)
+	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
+	if [ -z "$$WAILS_BIN" ]; then \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	(cd $(MANAGER_DIR) && "$$WAILS_BIN" build -clean -o $(MANAGER_NAME)$(HOST_EXE)); \
+	cp -f $(MANAGER_DIR)/build/bin/$(MANAGER_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
+	@echo ">> Done: $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)"
+
+build-gui: build-desktop build-manager
+
+build-all: build build-gui
 
 # 交叉编译所有平台
 release:
@@ -55,4 +115,5 @@ release:
 
 clean:
 	@rm -f $(RELEASE_DIR)/$(BINARY_NAME) $(RELEASE_DIR)/$(BINARY_NAME)-*
+	@rm -f $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
 	@echo ">> Cleaned $(BINARY_NAME) artifacts"

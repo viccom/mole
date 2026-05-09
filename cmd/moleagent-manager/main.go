@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"moleAgent_client/internal/shellui"
+
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -29,15 +30,15 @@ func buildOptions(app *App) *options.App {
 	return &options.App{
 		Title:  "moleAgent Manager",
 		Width:  1280,
-		Height: 800,
+		Height: 960,
 		AssetServer: &assetserver.Options{
 			Assets: shellui.Assets(),
 		},
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 255},
-		OnStartup:      app.startup,
-		OnDomReady:    app.domReady,
-		OnBeforeClose: app.beforeClose,
-		OnShutdown:    app.shutdown,
+		OnStartup:        app.startup,
+		OnDomReady:       app.domReady,
+		OnBeforeClose:    app.beforeClose,
+		OnShutdown:       app.shutdown,
 		// 单实例支持
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId: "moleAgent-manager.wails.single-instance",
