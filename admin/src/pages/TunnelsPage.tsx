@@ -46,6 +46,35 @@ type TunnelPageData = {
   usageMap: Record<string, TunnelUsageItem>
 }
 
+export function tunnelMatchesKeyword(tunnel: Tunnel, keyword: string): boolean {
+  const kw = keyword.trim().toLowerCase()
+  if (!kw) return true
+
+  return [
+    tunnel.name,
+    tunnel.type,
+    tunnel.target,
+    tunnel.domain || '',
+    tunnel.para?.broker || '',
+    tunnel.para?.binary?.name || '',
+    tunnel.para?.address || '',
+    tunnel.para?.mode || '',
+  ].some(value => value.toLowerCase().includes(kw))
+}
+
+export function buildTabStats(
+  tunnels: Tunnel[],
+  _usageMap: Record<string, TunnelUsageItem>,
+): { total: number; enabled: number; active: number; count: number } {
+  const enabled = tunnels.filter(t => t.enabled).length
+  return {
+    total: tunnels.length,
+    enabled,
+    active: enabled,
+    count: tunnels.length,
+  }
+}
+
 export function TunnelsPage() {
   const { toast } = useToast()
   const [formModal, setFormModal] = useState<{
@@ -120,30 +149,14 @@ export function TunnelsPage() {
       })
     }
     if (searchKeyword) {
-      const kw = searchKeyword.toLowerCase()
-      result = result.filter(t =>
-        t.name.toLowerCase().includes(kw) ||
-        t.type.toLowerCase().includes(kw) ||
-        t.target.toLowerCase().includes(kw) ||
-        (t.domain || '').toLowerCase().includes(kw) ||
-        (t.para?.broker || '').toLowerCase().includes(kw) ||
-        (t.para?.binary?.name || '').toLowerCase().includes(kw)
-      )
+      result = result.filter(t => tunnelMatchesKeyword(t, searchKeyword))
     }
     return result
   }, [tunnels, activeTab, filterStatus, searchKeyword, usageMap])
 
   const tabStats = useMemo(() => {
     const tabTunnels = activeTab === 'all' ? tunnels : tunnels.filter(tabFilters[activeTab])
-    return {
-      total: tabTunnels.length,
-      enabled: tabTunnels.filter(t => t.enabled).length,
-      active: tabTunnels.filter(t => {
-        const usage = usageMap[`${t.node_id}:${t.name}`]
-        return usage && usage.active_connections > 0
-      }).length,
-      count: tabTunnels.length,
-    }
+    return buildTabStats(tabTunnels, usageMap)
   }, [tunnels, activeTab, usageMap])
 
   const handleDelete = async () => {

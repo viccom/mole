@@ -1,9 +1,13 @@
-.PHONY: build clean
+.PHONY: build release clean build-admin copy-admin
 
 # 构建变量
 BINARY_NAME    := moleagent-serv
 CMD_PATH       := ./cmd/moleagent-serv
 RELEASE_DIR    := ../_release
+FRONTEND_DIR   := ./admin
+FRONTEND_DIST  := $(FRONTEND_DIR)/dist
+RELEASE_ADMIN_DIR  := $(RELEASE_DIR)/admin
+RELEASE_ADMIN_DIST := $(RELEASE_ADMIN_DIR)/dist
 
 # 版本信息（从 git tag 获取，无 tag 时用 dev）
 VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -25,15 +29,29 @@ TARGETS := \
 	windows/amd64 \
 	windows/arm64
 
+# 构建前端管理页面
+build-admin:
+	@echo ">> Building admin frontend..."
+	@cd $(FRONTEND_DIR) && npm run build
+	@echo ">> Done: $(FRONTEND_DIST)"
+
+# 拷贝前端构建产物到发行目录
+copy-admin:
+	@echo ">> Copying admin frontend assets..."
+	@mkdir -p $(RELEASE_ADMIN_DIR)
+	@rm -rf $(RELEASE_ADMIN_DIST)
+	@cp -R $(FRONTEND_DIST) $(RELEASE_ADMIN_DIR)
+	@echo ">> Done: $(RELEASE_ADMIN_DIST)"
+
 # 默认：编译当前平台
-build:
+build: build-admin copy-admin
 	@echo ">> Building $(BINARY_NAME) ($(VERSION))..."
 	@mkdir -p $(RELEASE_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(RELEASE_DIR)/$(BINARY_NAME) $(CMD_PATH)
 	@echo ">> Done: $(RELEASE_DIR)/$(BINARY_NAME)"
 
 # 交叉编译所有平台
-release:
+release: build-admin copy-admin
 	@mkdir -p $(RELEASE_DIR)
 	@for target in $(TARGETS); do \
 		GOOS=$${target%/*}; \
@@ -48,4 +66,5 @@ release:
 
 clean:
 	@rm -f $(RELEASE_DIR)/$(BINARY_NAME) $(RELEASE_DIR)/$(BINARY_NAME)-*
+	@rm -rf $(RELEASE_ADMIN_DIR)
 	@echo ">> Cleaned $(BINARY_NAME) artifacts"
