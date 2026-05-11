@@ -107,9 +107,21 @@ func New(cfg *Config) (*Client, error) {
 	ser2netMgr := ser2net.NewManager(context.Background())
 	vpnMgr := vpn.NewManager(context.Background())
 
+	sm := transport.NewSessionManager(dial)
+	if cfg.Transport == "kcp" {
+		sm.SetSmuxOverride(&smux.Config{
+			Version:           2,
+			KeepAliveDisabled: false,
+			KeepAliveInterval: 5 * time.Second,
+			KeepAliveTimeout:  15 * time.Second,
+			MaxFrameSize:      32768,
+			MaxReceiveBuffer:  32 * 1024 * 1024,
+			MaxStreamBuffer:   4 * 1024 * 1024,
+		})
+	}
 	return &Client{
 		cfg:        cfg,
-		transport:  transport.NewSessionManager(dial),
+		transport:  sm,
 		events:     newEventBus(),
 		tunnels:    append([]Tunnel{}, cfg.Tunnels...),
 		tunReqs:    make(chan tunnelReq, 16),

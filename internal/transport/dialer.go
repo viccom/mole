@@ -66,11 +66,16 @@ type SessionManager struct {
 	dial    DialFunc
 	session *smux.Session
 	conn    net.Conn
+	smuxOverride *smux.Config
 }
 
 // NewSessionManager 创建会话管理器
 func NewSessionManager(dial DialFunc) *SessionManager {
 	return &SessionManager{dial: dial}
+}
+
+func (sm *SessionManager) SetSmuxOverride(cfg *smux.Config) {
+	sm.smuxOverride = cfg
 }
 
 // Connect 连接服务器、执行认证、建立 smux 会话
@@ -91,7 +96,7 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 	sessionConn := &bufferedConn{Conn: conn, reader: br}
 
 	// 建立 smux 会话
-	session, err := smux.Client(sessionConn, &smux.Config{
+	smuxCfg := &smux.Config{
 		Version:           DefaultSmuxVersion,
 		KeepAliveDisabled: false,
 		KeepAliveInterval: SmuxKeepAliveInterval,
@@ -99,7 +104,11 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 		MaxFrameSize:      SmuxMaxFrameSize,
 		MaxReceiveBuffer:  SmuxMaxReceiveBuffer,
 		MaxStreamBuffer:   SmuxMaxStreamBuffer,
-	})
+	}
+	if sm.smuxOverride != nil {
+		smuxCfg = sm.smuxOverride
+	}
+	session, err := smux.Client(sessionConn, smuxCfg)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("smux client: %w", err)
