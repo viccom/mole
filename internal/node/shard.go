@@ -2,8 +2,10 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"sync"
+	"time"
 
 	"moleAgent_Serv/internal/core"
 
@@ -164,4 +166,38 @@ func (m *ShardedNodeManager) GetSession(_ context.Context, nodeID string) (*smux
 		return sess, nil
 	}
 	return nil, core.ErrNodeOffline
+}
+
+// ProbeSession 探测节点 session 是否真正存活。
+// 尝试在 5 秒超时内打开一个流：成功说明底层连接有效，失败说明连接已断。
+func (m *ShardedNodeManager) ProbeSession(_ context.Context, nodeID string) error {
+	shard := m.getShard(nodeID)
+	shard.mu.RLock()
+	sess, hasSess := shard.sessions[nodeID]
+	shard.mu.RUnlock()
+
+	if !hasSess || sess.IsClosed() {
+		return core.ErrNodeOffline
+	}
+
+	type probeResult struct {
+		stream *smux.Stream
+		err    error
+	}
+	ch := make(chan probeResult, 1)
+	go func() {
+		s, err := sess.OpenStream()
+		ch <- probeResult{s, err}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return fmt.Errorf("probe: %w", r.err)
+		}
+		r.stream.Close()
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("probe: timeout")
+	}
 }
