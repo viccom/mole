@@ -54,7 +54,7 @@ export function NodesPage() {
     if (!deleteTarget) return
     try {
       await api.deleteNode(deleteTarget.id)
-      toast('节点已删除', 'error')
+      toast('节点已删除', 'success')
       fetchNodes()
     } catch (err: unknown) {
       toast((err as Error).message || '删除失败', 'error')

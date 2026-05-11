@@ -350,20 +350,20 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 	// 1. 从旧节点移除隧道
 	oldNode, oldOk := s.nodeMgr.Get(ctx, fromNodeID)
 	var oldTunnels []core.Tunnel
+
 	if oldOk {
+		oldTunnels = oldNode.Tunnels
 		updated := make([]core.Tunnel, 0, len(oldNode.Tunnels))
 		for _, t := range oldNode.Tunnels {
 			if t.Name != tunnelCfg.Name {
 				updated = append(updated, t)
 			}
 		}
-		oldTunnels = oldNode.Tunnels
 
 		if len(updated) < len(oldNode.Tunnels) {
 			if err := s.persistUpdatedNode(ctx, fromNodeID, updated); err != nil {
 				return result, fmt.Errorf("persist old node after remove: %w", err)
 			}
-			// 更新旧节点内存状态、释放运行时资源、推送客户端
 			if err := s.applyRuntimeTunnels(ctx, fromNodeID, updated); err != nil {
 				slog.Warn("MoveTunnel: apply runtime for old node failed", "nodeId", fromNodeID, "error", err)
 			}
@@ -371,6 +371,22 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 				if err := s.pushToClient(ctx, fromNodeID, updated); err != nil {
 					slog.Warn("MoveTunnel: push to old node failed", "nodeId", fromNodeID, "error", err)
 				}
+			}
+		}
+	} else if s.nodeRepo != nil {
+		// 旧节点不在内存（离线），仍需从持久化数据中移除隧道
+		persisted, err := s.nodeRepo.GetByID(fromNodeID)
+		if err == nil && persisted != nil {
+			updated := make([]core.Tunnel, 0, len(persisted.Tunnels))
+			for _, t := range persisted.Tunnels {
+				if t.Name != tunnelCfg.Name {
+					updated = append(updated, t)
+				}
+			}
+			oldTunnels = persisted.Tunnels
+			persisted.Tunnels = updated
+			if err := s.nodeRepo.Update(persisted); err != nil {
+				slog.Warn("MoveTunnel: failed to persist old node removal", "nodeId", fromNodeID, "error", err)
 			}
 		}
 	}

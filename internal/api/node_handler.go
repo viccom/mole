@@ -220,10 +220,16 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id = strings.TrimRight(id, "/")
-	// 归属检查
+	// 归属检查：先查内存，再查持久化
 	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
 		if !checkNodeOwnership(w, r, node) {
 			return
+		}
+	} else if h.nodeRepo != nil {
+		if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
+			if !checkNodeOwnership(w, r, persisted) {
+				return
+			}
 		}
 	}
 	h.nodeMgr.Disconnect(r.Context(), id)
