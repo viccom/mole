@@ -424,14 +424,25 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
 		if err == core.ErrNodeExists {
-			// 节点已在线：拒绝新连接，后台探测旧 session 存活状态
-			slog.Info("Node already online, rejecting and probing old session", "nodeId", cmd.NodeID)
-			writeControlResp(stream, "err", "node already online")
-			go cs.probeAndCleanup(cmd.NodeID)
+			// 同一节点重连：关闭旧会话，释放资源后重新注册
+			slog.Info("Node reconnected, displacing old session", "nodeId", cmd.NodeID)
+			oldNode, oldOk := cs.nodeMgr.Get(ctx, cmd.NodeID)
+			var oldTunnels []core.Tunnel
+			if oldOk {
+				oldTunnels = append([]core.Tunnel(nil), oldNode.Tunnels...)
+			}
+			cs.nodeMgr.Remove(ctx, cmd.NodeID)
+			if cs.onNodeDisconnect != nil {
+				cs.onNodeDisconnect(cmd.NodeID, oldTunnels)
+			}
+			if err2 := cs.nodeMgr.Add(ctx, node); err2 != nil {
+				writeControlResp(stream, "err", err2.Error())
+				return
+			}
+		} else {
+			writeControlResp(stream, "err", err.Error())
 			return
 		}
-		writeControlResp(stream, "err", err.Error())
-		return
 	}
 
 	// 独立绑定运行态会话（与 Node 领域模型分离）
@@ -487,27 +498,6 @@ func writeControlResp(w interface{ Write([]byte) (int, error) }, cmd, msg string
 	resp := ControlResponse{Cmd: cmd, Msg: msg}
 	if err := writeJSONLine(w, resp); err != nil {
 		slog.Debug("Failed to write control response", "cmd", cmd, "error", err)
-	}
-}
-
-// probeAndCleanup 后台探测旧 session：若已死则清理，让客户端下次重试成功
-func (cs *ControlServer) probeAndCleanup(nodeID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := cs.nodeMgr.ProbeSession(ctx, nodeID); err != nil {
-		slog.Info("Old session dead, cleaning up", "nodeId", nodeID, "probeError", err)
-		oldNode, oldOk := cs.nodeMgr.Get(ctx, nodeID)
-		var oldTunnels []core.Tunnel
-		if oldOk {
-			oldTunnels = append([]core.Tunnel(nil), oldNode.Tunnels...)
-		}
-		cs.nodeMgr.Remove(ctx, nodeID)
-		if cs.onNodeDisconnect != nil {
-			cs.onNodeDisconnect(nodeID, oldTunnels)
-		}
-	} else {
-		slog.Info("Old session alive, keeping", "nodeId", nodeID)
 	}
 }
 
