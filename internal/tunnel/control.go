@@ -432,9 +432,15 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
 		if err == core.ErrNodeExists {
-			// 同一节点重连：关闭旧会话，释放资源后重新注册
-			slog.Info("Node reconnected, displacing old session", "nodeId", cmd.NodeID)
+			// 同一节点重连：先探测旧 session 是否真活
 			oldNode, oldOk := cs.nodeMgr.Get(ctx, cmd.NodeID)
+			if oldOk && cs.probeOldSession(ctx, cmd.NodeID, oldNode.Tunnels) {
+				slog.Info("Node already online, old session alive", "nodeId", cmd.NodeID)
+				writeControlResp(stream, "err", "node already online")
+				return
+			}
+			// 旧 session 假死，置换
+			slog.Info("Node reconnected, displacing dead session", "nodeId", cmd.NodeID)
 			var oldTunnels []core.Tunnel
 			if oldOk {
 				oldTunnels = append([]core.Tunnel(nil), oldNode.Tunnels...)
@@ -499,6 +505,40 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 			cs.persistNode(n)
 		}
 	}
+}
+
+// probeOldSession 通过旧 smux session 向旧客户端发送 tunnel_push 并等待响应。
+// 3 秒内有响应说明旧客户端真活；否则判定为假死。
+func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tunnels []core.Tunnel) bool {
+	sess, err := cs.nodeMgr.GetSession(ctx, nodeID)
+	if err != nil {
+		return false
+	}
+
+	stream, err := sess.OpenStream()
+	if err != nil {
+		return false
+	}
+	defer stream.Close()
+
+	// 发送 tunnel_push 作为探测（客户端会回复 {"cmd":"ok",...}）
+	stream.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	cmd := ControlCmd{Cmd: "tunnel_push", Tunnels: tunnels}
+	data, _ := json.Marshal(cmd)
+	if _, err := stream.Write(append(data, '\n')); err != nil {
+		return false
+	}
+
+	// 等待客户端响应
+	stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 4096)
+	n, err := stream.Read(buf)
+	if err != nil {
+		return false
+	}
+
+	var resp ControlResponse
+	return json.Unmarshal(buf[:n], &resp) == nil && resp.Cmd == "ok"
 }
 
 // writeControlResp 向控制流写入 JSON 响应行
