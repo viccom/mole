@@ -178,6 +178,16 @@ func NewKCPDialer(cfg KCPDialerConfig) DialFunc {
 			}
 			sess := r.sess
 			applyKCPSessionTuning(sess, cfg)
+			// Send a probe byte to trigger server Accept (KCP Accept only returns after first data)
+			if err := sess.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				sess.Close()
+				return nil, fmt.Errorf("kcp probe deadline: %w", err)
+			}
+			if _, err := sess.Write([]byte{0}); err != nil {
+				sess.Close()
+				return nil, fmt.Errorf("kcp probe write: %w", err)
+			}
+			sess.SetWriteDeadline(time.Time{})
 			return sess, nil
 		}
 	}
