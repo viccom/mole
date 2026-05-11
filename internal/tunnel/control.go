@@ -224,7 +224,6 @@ func (cs *ControlServer) connectionWorker(ctx context.Context, connChan <-chan c
 
 func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, transportName string) {
 	remoteAddr := conn.RemoteAddr().String()
-	defer conn.Close()
 
 	// KCP probe: client sends a probe byte to trigger Accept; discard it before auth.
 	if transportName == "kcp" {
@@ -232,6 +231,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		probe := make([]byte, 1)
 		if _, err := io.ReadFull(conn, probe); err != nil {
 			slog.Warn("KCP probe read failed", "remote", remoteAddr, "error", err)
+			conn.Close()
 			return
 		}
 		conn.SetReadDeadline(time.Time{})
@@ -241,10 +241,12 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	challenge := make([]byte, 32)
 	if _, err := rand.Read(challenge); err != nil {
 		slog.Error("Failed to generate challenge", "error", err)
+		conn.Close()
 		return
 	}
 	if _, err := conn.Write(challenge); err != nil {
 		slog.Error("Failed to send challenge", "remote", remoteAddr, "error", err)
+		conn.Close()
 		return
 	}
 
@@ -253,6 +255,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	authLine, err := reader.ReadString('\n')
 	if err != nil {
 		slog.Warn("Node auth read failed", "remote", remoteAddr, "transport", transportName, "error", err)
+		conn.Close()
 		return
 	}
 	conn.SetReadDeadline(time.Time{})
@@ -263,6 +266,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	if err := json.Unmarshal([]byte(authLine), &authMsg); err != nil {
 		writeControlResp(conn, "err", "invalid auth format")
 		slog.Warn("Node auth format invalid", "remote", remoteAddr, "transport", transportName)
+		conn.Close()
 		return
 	}
 
@@ -272,12 +276,13 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		if err != nil {
 			writeControlResp(conn, "err", "invalid token")
 			slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
+			conn.Close()
 			return
 		}
 		writeControlResp(conn, "ok", "authenticated")
 		slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
 
-		// 建立 smux 会话并使用 grant
+		// 建立 smux 会话并使用 grant（conn 生命周期转移给 goroutine）
 		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, grant)
 		return
 	}
@@ -296,10 +301,11 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 
 	writeControlResp(conn, "err", "invalid token")
 	slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName, "reason", "invalid token")
-
+	conn.Close()
 }
 
-// setupSmuxAndAccept 建立 smux 会话并开始接收流
+// setupSmuxAndAccept 建立 smux 会话并在独立 goroutine 中接收流。
+// conn 的生命周期由内部 goroutine 管理，调用方不再负责关闭。
 func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, remoteAddr string, grant *core.NodeAccessGrant) {
 	session, err := smux.Server(conn, &smux.Config{
 		Version:           2,
@@ -312,46 +318,48 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 	})
 	if err != nil {
 		slog.Error("Failed to create smux session", "remote", remoteAddr, "error", err)
+		conn.Close()
 		return
 	}
 
 	state := &connState{session: session, grant: grant, remoteAddr: remoteAddr}
 
-	defer func() {
-		node := state.get()
-		if node != nil {
-			// 快照隧道列表（Remove 后将无法从 nodeMgr 获取）
-			tunnels := append([]core.Tunnel(nil), node.Tunnels...)
+	// AcceptStream 循环在独立 goroutine 中运行，不阻塞 worker
+	go func() {
+		defer func() {
+			node := state.get()
+			if node != nil {
+				tunnels := append([]core.Tunnel(nil), node.Tunnels...)
 
-			cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
-				n.Status = core.NodeStatusOffline
-			})
-			cs.nodeMgr.Remove(ctx, node.ID)
+				cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
+					n.Status = core.NodeStatusOffline
+				})
+				cs.nodeMgr.Remove(ctx, node.ID)
 
-			// 回调清理隧道运行时资源（监听器、路由索引、统计）
-			if cs.onNodeDisconnect != nil {
-				cs.onNodeDisconnect(node.ID, tunnels)
+				if cs.onNodeDisconnect != nil {
+					cs.onNodeDisconnect(node.ID, tunnels)
+				}
+				slog.Info("Node disconnected", "nodeId", node.ID, "remote", remoteAddr)
 			}
-			slog.Info("Node disconnected", "nodeId", node.ID, "remote", remoteAddr)
-		}
-		session.Close()
-	}()
+			session.Close()
+			conn.Close()
+		}()
 
-	// 接收流（注册、心跳）
-	for {
-		stream, err := session.AcceptStream()
-		if err != nil {
-			select {
-			case <-ctx.Done():
+		for {
+			stream, err := session.AcceptStream()
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				slog.Debug("AcceptStream error", "error", err)
 				return
-			default:
 			}
-			slog.Debug("AcceptStream error", "error", err)
-			return
-		}
 
-		go cs.handleStream(ctx, stream, state)
-	}
+			go cs.handleStream(ctx, stream, state)
+		}
+	}()
 }
 
 func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, state *connState) {
