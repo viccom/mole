@@ -20,6 +20,9 @@ export function NodesPage() {
   const [showPersisted, setShowPersisted] = useState(false)
   const [migrateTarget, setMigrateTarget] = useState<{ tunnel: Tunnel; fromNodeId: string; fromNodeName: string } | null>(null)
   const [migrateNodeId, setMigrateNodeId] = useState('')
+  const [migrateAll, setMigrateAll] = useState<{ fromNodeId: string; fromNodeName: string; tunnels: Tunnel[] } | null>(null)
+  const [migrateAllNodeId, setMigrateAllNodeId] = useState('')
+  const [migrating, setMigrating] = useState(false)
   const [bulkDeleteIds, setBulkDeleteIds] = useState<Set<string>>(new Set())
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
 
@@ -107,6 +110,37 @@ export function NodesPage() {
     } catch (err: unknown) {
       toast((err as Error).message || '迁移失败', 'error')
     }
+  }
+
+  const handleMigrateAll = async () => {
+    if (!migrateAll || !migrateAllNodeId) return
+    setMigrating(true)
+    let success = 0
+    let failed = 0
+    for (const t of migrateAll.tunnels) {
+      try {
+        await api.updateTunnel({
+          name: t.name,
+          type: t.type,
+          target: t.target,
+          domain: t.domain,
+          listen_port: t.listen_port,
+          enabled: t.enabled,
+          node_id: migrateAllNodeId,
+          original_node_id: migrateAll.fromNodeId,
+          para: t.para,
+        })
+        success++
+      } catch {
+        failed++
+      }
+    }
+    toast(`已迁移 ${success} 条隧道${failed > 0 ? `，${failed} 条失败` : ''}`, failed > 0 ? 'error' : 'success')
+    setMigrating(false)
+    setMigrateAll(null)
+    setMigrateAllNodeId('')
+    fetchPersisted()
+    fetchNodes()
   }
 
   const handleBulkDelete = async () => {
@@ -292,15 +326,26 @@ export function NodesPage() {
                         </div>
                       </td>
                       <td className="px-4 py-2 text-right">
-                        {!n.online && (
-                          <button
-                            onClick={() => handleDeletePersistedNode(n.id)}
-                            title="清理此节点数据"
-                            className="p-1.5 text-gray-400 hover:text-red-600 rounded-md hover:bg-red-50"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                        <div className="flex items-center justify-end gap-1">
+                          {!n.online && n.tunnels && n.tunnels.length > 0 && (
+                            <button
+                              onClick={() => setMigrateAll({ fromNodeId: n.id, fromNodeName: n.name, tunnels: n.tunnels })}
+                              title="全部迁移到其他节点"
+                              className="p-1.5 text-gray-400 hover:text-blue-600 rounded-md hover:bg-blue-50"
+                            >
+                              <ArrowRightLeft className="w-4 h-4" />
+                            </button>
+                          )}
+                          {!n.online && (
+                            <button
+                              onClick={() => handleDeletePersistedNode(n.id)}
+                              title="清理此节点数据"
+                              className="p-1.5 text-gray-400 hover:text-red-600 rounded-md hover:bg-red-50"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -378,6 +423,65 @@ export function NodesPage() {
                 className="px-4 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
               >
                 迁移
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {migrateAll && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => { if (!migrating) { setMigrateAll(null); setMigrateAllNodeId('') } }} />
+          <div className="relative bg-white rounded-xl w-full max-w-md p-6 shadow-2xl">
+            <h3 className="text-base font-semibold mb-4">全部迁移</h3>
+            <div className="space-y-3 text-sm">
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="text-gray-500">来源：</span>
+                <span className="font-medium">{migrateAll.fromNodeName}</span>
+                <span className="text-gray-400 ml-2">({migrateAll.fromNodeId.slice(0, 8)})</span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="text-gray-500">隧道数量：</span>
+                <span className="font-medium">{migrateAll.tunnels.length} 条</span>
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {migrateAll.tunnels.map((t, i) => (
+                    <span key={i} className="text-xs text-gray-500 bg-white border border-gray-200 rounded px-1.5 py-0.5">
+                      {t.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-gray-500 mb-1">目标节点（在线）</label>
+                <select
+                  value={migrateAllNodeId}
+                  onChange={e => setMigrateAllNodeId(e.target.value)}
+                  disabled={migrating}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                >
+                  <option value="">选择目标节点</option>
+                  {onlineNodes.map(n => (
+                    <option key={n.id} value={n.id}>
+                      {n.name} ({n.id.slice(0, 8)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => { setMigrateAll(null); setMigrateAllNodeId('') }}
+                disabled={migrating}
+                className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleMigrateAll}
+                disabled={!migrateAllNodeId || migrating}
+                className="px-4 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
+              >
+                {migrating ? '迁移中...' : `迁移 ${migrateAll.tunnels.length} 条隧道`}
               </button>
             </div>
           </div>
