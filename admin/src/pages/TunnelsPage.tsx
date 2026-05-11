@@ -225,14 +225,7 @@ export function TunnelsPage() {
   }
 
   const targetDisplay = (tunnel: Tunnel): string => {
-    if (tunnel.type === 'ser2mq') return tunnel.para?.broker || tunnel.target
-    if (tunnel.type === 'vpn-manager') return tunnel.para?.binary?.name || tunnel.target
-    if (tunnel.type === 'ser2tcp' || tunnel.type === 'ser2udp') {
-      const mode = tunnel.para?.mode || 'server'
-      const addr = tunnel.para?.address || '-'
-      return `${mode} ${addr}`
-    }
-    return tunnel.target
+    return tunnel.target || '-'
   }
 
   return (

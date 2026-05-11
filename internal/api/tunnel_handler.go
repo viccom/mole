@@ -50,10 +50,14 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, t := range n.Tunnels {
+			target := t.Target
+			if target == "" && len(t.Para) > 0 {
+				target = extractTargetFromPara(string(t.Type), t.Para)
+			}
 			items = append(items, tunnelInfo{
 				Name:       t.Name,
 				Type:       string(t.Type),
-				Target:     t.Target,
+				Target:     target,
 				Domain:     t.Domain,
 				ListenPort: t.ListenPort,
 				Enabled:    t.IsEnabled(),
@@ -360,10 +364,14 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			target := t.Target
+			if target == "" && len(t.Para) > 0 {
+				target = extractTargetFromPara(string(t.Type), t.Para)
+			}
 			item := usageItem{
 				Name:        t.Name,
 				Type:        string(t.Type),
-				Target:      t.Target,
+				Target:      target,
 				Domain:      t.Domain,
 				ListenPort:  t.ListenPort,
 				Enabled:     t.IsEnabled(),
@@ -398,4 +406,28 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"total": len(items),
 	})
+}
+
+// extractTargetFromPara extracts display target from Para for types with empty Target field.
+// VPN tunnels use the VPN software key (vnt, easytier, tailscale, etc.) to identify the provider.
+func extractTargetFromPara(tunnelType string, para json.RawMessage) string {
+	if tunnelType != "vpn-manager" {
+		return ""
+	}
+	var p map[string]json.RawMessage
+	if err := json.Unmarshal(para, &p); err != nil {
+		return ""
+	}
+	vpnKeys := []string{"vnt", "easytier", "tailscale"}
+	for _, key := range vpnKeys {
+		if raw, ok := p[key]; ok {
+			var cfg struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(raw, &cfg) == nil && cfg.Name != "" {
+				return cfg.Name
+			}
+		}
+	}
+	return ""
 }
