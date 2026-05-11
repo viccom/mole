@@ -1,4 +1,4 @@
-import type { User, Role, Node, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, VersionInfo, VNTConfig } from '../types/api'
+import type { User, Role, Node, PersistedNode, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, VersionInfo, VNTConfig } from '../types/api'
 
 const API = '/api/v1'
 let token = localStorage.getItem('ma_tk')
@@ -137,6 +137,7 @@ export const api = {
     request<Node>(`/nodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteNode: (id: string) => request(`/nodes/${id}`, { method: 'DELETE' }),
   disconnectNode: (id: string) => request(`/nodes/${id}/connection`, { method: 'DELETE' }),
+  getPersistedNodes: () => request<{ items: PersistedNode[]; total: number }>('/nodes/persisted'),
 
   // Tunnels
   getTunnels: () => request<{ items: Tunnel[]; total: number }>('/tunnels'),

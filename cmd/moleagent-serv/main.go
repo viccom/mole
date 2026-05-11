@@ -337,6 +337,7 @@ func buildAPIRouter(
 	// === 节点管理 ===
 	router.Register("GET", "/api/v1/nodes", nodeH.List, "nodes", "read")
 	router.Register("POST", "/api/v1/nodes", nodeH.Create, "nodes", "write")
+	router.Register("GET", "/api/v1/nodes/persisted", nodeH.ListPersisted, "nodes", "read")
 	router.Register("GET", "/api/v1/nodes/", nodeH.Get, "nodes", "read")
 	router.Register("PUT", "/api/v1/nodes/", nodeH.Update, "nodes", "write")
 	router.Register("DELETE", "/api/v1/nodes/", nodeH.Delete, "nodes", "delete")

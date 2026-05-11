@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus, Database, ArrowRightLeft } from 'lucide-react'
 import { api } from '../api/client'
-import type { Node } from '../types/api'
+import type { Node, PersistedNode, Tunnel } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
 import { Badge } from '../components/Badge'
 import { Loading } from '../components/Loading'
@@ -17,6 +17,12 @@ export function NodesPage() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [deleteTarget, setDeleteTarget] = useState<Node | null>(null)
   const [tunnelModal, setTunnelModal] = useState<{ presetNodeId: string } | null>(null)
+  const [showPersisted, setShowPersisted] = useState(false)
+  const [migrateTarget, setMigrateTarget] = useState<{ tunnel: Tunnel; fromNodeId: string; fromNodeName: string } | null>(null)
+  const [migrateNodeId, setMigrateNodeId] = useState('')
+  const [bulkDeleteIds, setBulkDeleteIds] = useState<Set<string>>(new Set())
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
+
   const { data, loading, run: fetchNodes } = useRequest(
     () => api.getNodes(),
     {
@@ -26,6 +32,14 @@ export function NodesPage() {
     },
   )
   const nodes = data?.items || []
+
+  const { data: persistedData, loading: persistedLoading, run: fetchPersisted } = useRequest(
+    () => api.getPersistedNodes(),
+    { onError: () => {} },
+  )
+  const persistedNodes = persistedData?.items || []
+
+  const onlineNodes = nodes.filter(n => n.status === 'online')
 
   const toggleExpand = (id: string) => {
     setExpandedIds(prev => {
@@ -40,7 +54,7 @@ export function NodesPage() {
     if (!deleteTarget) return
     try {
       await api.deleteNode(deleteTarget.id)
-      toast('节点已删除', 'success')
+      toast('节点已删除', 'error')
       fetchNodes()
     } catch (err: unknown) {
       toast((err as Error).message || '删除失败', 'error')
@@ -54,23 +68,95 @@ export function NodesPage() {
       await api.deleteTunnel(nodeId, name)
       toast('隧道已删除', 'success')
       fetchNodes()
+      if (showPersisted) fetchPersisted()
     } catch (err: unknown) {
       toast((err as Error).message || '删除隧道失败', 'error')
     }
   }
+
+  const handleDeletePersistedNode = async (nodeId: string) => {
+    try {
+      await api.deleteNode(nodeId)
+      toast('节点数据已清理', 'success')
+      fetchPersisted()
+      fetchNodes()
+    } catch (err: unknown) {
+      toast((err as Error).message || '删除失败', 'error')
+    }
+  }
+
+  const handleMigrateTunnel = async () => {
+    if (!migrateTarget || !migrateNodeId) return
+    try {
+      await api.updateTunnel({
+        name: migrateTarget.tunnel.name,
+        type: migrateTarget.tunnel.type,
+        target: migrateTarget.tunnel.target,
+        domain: migrateTarget.tunnel.domain,
+        listen_port: migrateTarget.tunnel.listen_port,
+        enabled: migrateTarget.tunnel.enabled,
+        node_id: migrateNodeId,
+        original_node_id: migrateTarget.fromNodeId,
+        para: migrateTarget.tunnel.para,
+      })
+      toast('隧道已迁移', 'success')
+      setMigrateTarget(null)
+      setMigrateNodeId('')
+      fetchPersisted()
+      fetchNodes()
+    } catch (err: unknown) {
+      toast((err as Error).message || '迁移失败', 'error')
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    let failed = 0
+    for (const id of bulkDeleteIds) {
+      try {
+        await api.deleteNode(id)
+      } catch {
+        failed++
+      }
+    }
+    toast(`已清理 ${bulkDeleteIds.size - failed} 个离线节点${failed > 0 ? `，${failed} 个失败` : ''}`, failed > 0 ? 'error' : 'success')
+    setBulkDeleteIds(new Set())
+    setConfirmBulkDelete(false)
+    fetchPersisted()
+    fetchNodes()
+  }
+
+  const toggleBulkItem = (id: string) => {
+    setBulkDeleteIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const offlinePersisted = persistedNodes.filter(n => !n.online)
 
   return (
     <div className="flex flex-col h-full">
       <PageHeader
         title="节点管理"
         actions={
-          <button
-            onClick={fetchNodes}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
-          >
-            <RefreshCw className="w-4 h-4" />
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setShowPersisted(!showPersisted); if (!showPersisted) fetchPersisted() }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-lg transition-colors ${showPersisted ? 'bg-gray-800 text-white border-gray-800' : 'border-gray-300 hover:bg-gray-50'}`}
+            >
+              <Database className="w-4 h-4" />
+              持久化数据
+            </button>
+            <button
+              onClick={fetchNodes}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+            >
+              <RefreshCw className="w-4 h-4" />
+              刷新
+            </button>
+          </div>
         }
       />
 
@@ -113,6 +199,116 @@ export function NodesPage() {
             </tbody>
           </table>
         )}
+
+        {/* Persisted data panel */}
+        {showPersisted && (
+          <div className="border-t-2 border-gray-300">
+            <div className="px-6 py-3 bg-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Database className="w-4 h-4 text-gray-500" />
+                <span className="text-sm font-medium text-gray-700">持久化节点数据</span>
+                <span className="text-xs text-gray-400">{offlinePersisted.length} 个离线</span>
+              </div>
+              {offlinePersisted.length > 0 && (
+                <div className="flex items-center gap-2">
+                  {bulkDeleteIds.size > 0 && (
+                    <button
+                      onClick={() => setConfirmBulkDelete(true)}
+                      className="px-3 py-1 text-xs bg-red-600 text-white rounded-lg hover:bg-red-700"
+                    >
+                      清理选中 ({bulkDeleteIds.size})
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (bulkDeleteIds.size === offlinePersisted.length) setBulkDeleteIds(new Set())
+                      else setBulkDeleteIds(new Set(offlinePersisted.map(n => n.id)))
+                    }}
+                    className="px-3 py-1 text-xs border border-gray-300 rounded-lg hover:bg-gray-200"
+                  >
+                    {bulkDeleteIds.size === offlinePersisted.length ? '取消全选' : '全选离线'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {persistedLoading ? (
+              <Loading />
+            ) : persistedNodes.length === 0 ? (
+              <Empty message="无持久化数据" />
+            ) : (
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-gray-50/50 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    <th className="w-10 px-4 py-2"></th>
+                    <th className="px-4 py-2">ID</th>
+                    <th className="px-4 py-2">名称</th>
+                    <th className="px-4 py-2">状态</th>
+                    <th className="px-4 py-2">隧道数</th>
+                    <th className="px-4 py-2">隧道配置</th>
+                    <th className="px-4 py-2 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {persistedNodes.map(n => (
+                    <tr key={n.id} className={`hover:bg-gray-50/50 ${!n.online ? 'bg-red-50/30' : ''}`}>
+                      <td className="px-4 py-2">
+                        {!n.online && (
+                          <input
+                            type="checkbox"
+                            checked={bulkDeleteIds.has(n.id)}
+                            onChange={() => toggleBulkItem(n.id)}
+                            className="w-4 h-4 rounded border-gray-300"
+                          />
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-sm font-mono text-gray-500">{n.id.slice(0, 8)}</td>
+                      <td className="px-4 py-2 text-sm font-medium">{n.name}</td>
+                      <td className="px-4 py-2">
+                        <Badge variant={n.online ? 'success' : 'error'}>
+                          {n.online ? '在线' : '离线'}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-2 text-sm">{n.tunnel_count}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex flex-wrap gap-1">
+                          {n.tunnels && n.tunnels.length > 0 ? n.tunnels.map((t, i) => (
+                            <span key={i} className="inline-flex items-center gap-1 text-xs bg-white border border-gray-200 rounded px-2 py-0.5">
+                              <span className="font-medium">{t.name}</span>
+                              <span className="text-gray-400">{t.type.toUpperCase()}</span>
+                              {!n.online && (
+                                <button
+                                  onClick={() => setMigrateTarget({ tunnel: t, fromNodeId: n.id, fromNodeName: n.name })}
+                                  title="迁移到其他节点"
+                                  className="text-blue-400 hover:text-blue-600 ml-0.5"
+                                >
+                                  <ArrowRightLeft className="w-3 h-3" />
+                                </button>
+                              )}
+                            </span>
+                          )) : (
+                            <span className="text-xs text-gray-400">无</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        {!n.online && (
+                          <button
+                            onClick={() => handleDeletePersistedNode(n.id)}
+                            title="清理此节点数据"
+                            className="p-1.5 text-gray-400 hover:text-red-600 rounded-md hover:bg-red-50"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
 
       {deleteTarget && (
@@ -124,6 +320,68 @@ export function NodesPage() {
           onCancel={() => setDeleteTarget(null)}
           danger
         />
+      )}
+
+      {confirmBulkDelete && (
+        <ConfirmDialog
+          title="批量清理离线节点"
+          message={`确定要清理 ${bulkDeleteIds.size} 个离线节点的数据吗？此操作不可恢复。`}
+          confirmText="清理"
+          onConfirm={handleBulkDelete}
+          onCancel={() => setConfirmBulkDelete(false)}
+          danger
+        />
+      )}
+
+      {migrateTarget && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => { setMigrateTarget(null); setMigrateNodeId('') }} />
+          <div className="relative bg-white rounded-xl w-full max-w-md p-6 shadow-2xl">
+            <h3 className="text-base font-semibold mb-4">迁移隧道</h3>
+            <div className="space-y-3 text-sm">
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="text-gray-500">隧道：</span>
+                <span className="font-medium">{migrateTarget.tunnel.name}</span>
+                <span className="text-gray-400 ml-2">({migrateTarget.tunnel.type.toUpperCase()})</span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="text-gray-500">来源：</span>
+                <span className="font-medium">{migrateTarget.fromNodeName}</span>
+                <span className="text-gray-400 ml-2">({migrateTarget.fromNodeId.slice(0, 8)})</span>
+              </div>
+              <div>
+                <label className="block text-gray-500 mb-1">目标节点（在线）</label>
+                <select
+                  value={migrateNodeId}
+                  onChange={e => setMigrateNodeId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                >
+                  <option value="">选择目标节点</option>
+                  {onlineNodes.map(n => (
+                    <option key={n.id} value={n.id}>
+                      {n.name} ({n.id.slice(0, 8)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => { setMigrateTarget(null); setMigrateNodeId('') }}
+                className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleMigrateTunnel}
+                disabled={!migrateNodeId}
+                className="px-4 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
+              >
+                迁移
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {tunnelModal && (
@@ -194,7 +452,6 @@ function NodeRowGroup({
         <tr>
           <td colSpan={10} className="bg-gray-50/70 px-8 py-4">
             <div className="space-y-4">
-              {/* Node info */}
               <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-gray-500">
                 <span>节点 ID: <code className="text-xs bg-white px-1.5 py-0.5 rounded border">{node.id}</code></span>
                 {node.remote_addr && <span>来源 IP: <code className="text-xs bg-white px-1.5 py-0.5 rounded border">{node.remote_addr}</code></span>}
@@ -202,7 +459,6 @@ function NodeRowGroup({
                 <span>最近心跳: {formatTimeAgo(node.last_heartbeat)}</span>
               </div>
 
-              {/* Tunnel list */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-gray-700">

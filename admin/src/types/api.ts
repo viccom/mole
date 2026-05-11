@@ -36,6 +36,15 @@ export interface Node {
   tunnels?: Tunnel[]
 }
 
+export interface PersistedNode {
+  id: string
+  name: string
+  online: boolean
+  owner_user_id: string
+  tunnel_count: number
+  tunnels: Tunnel[]
+}
+
 export interface Tunnel {
   name: string
   type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp'

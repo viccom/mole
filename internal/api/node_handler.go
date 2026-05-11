@@ -250,3 +250,55 @@ func (h *NodeHandler) listTunnels(w http.ResponseWriter, r *http.Request, nodeID
 	}
 	ResponseOK(w, node.Tunnels)
 }
+
+
+// ListPersisted handles GET /api/v1/nodes/persisted — returns all persisted nodes from the database.
+// Used for managing offline node data: cleanup and tunnel migration.
+func (h *NodeHandler) ListPersisted(w http.ResponseWriter, r *http.Request) {
+	if h.nodeRepo == nil {
+		ResponseOK(w, map[string]any{"items": []any{}, "total": 0})
+		return
+	}
+
+	allPersisted, err := h.nodeRepo.GetAll()
+	if err != nil {
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to load persisted nodes")
+		return
+	}
+
+	claims := auth.GetClaims(r.Context())
+	isAdmin := IsAdmin(claims)
+
+	// Build a set of online node IDs to mark status
+	onlineNodes := h.nodeMgr.GetAll(r.Context())
+	onlineSet := make(map[string]bool, len(onlineNodes))
+	for _, n := range onlineNodes {
+		onlineSet[n.ID] = true
+	}
+
+	type persistedInfo struct {
+		ID          string        `json:"id"`
+		Name        string        `json:"name"`
+		Online      bool          `json:"online"`
+		OwnerUserID string        `json:"owner_user_id"`
+		TunnelCount int           `json:"tunnel_count"`
+		Tunnels     []core.Tunnel `json:"tunnels"`
+	}
+
+	items := make([]persistedInfo, 0, len(allPersisted))
+	for _, n := range allPersisted {
+		if !isAdmin && n.OwnerUserID != claims.UserID {
+			continue
+		}
+		items = append(items, persistedInfo{
+			ID:          n.ID,
+			Name:        n.Name,
+			Online:      onlineSet[n.ID],
+			OwnerUserID: n.OwnerUserID,
+			TunnelCount: len(n.Tunnels),
+			Tunnels:     n.Tunnels,
+		})
+	}
+
+	ResponseOK(w, map[string]any{"items": items, "total": len(items)})
+}
