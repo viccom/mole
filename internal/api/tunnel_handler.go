@@ -409,7 +409,7 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 }
 
 // extractTargetFromPara extracts display target from Para for types with empty Target field.
-// VPN tunnels use the VPN software key (vnt, easytier, tailscale, etc.) to identify the provider.
+// VPN tunnels use the VPN provider key (vnt, easytier, tailscale, openvpn, etc.) as target.
 func extractTargetFromPara(tunnelType string, para json.RawMessage) string {
 	if tunnelType != "vpn-manager" {
 		return ""
@@ -418,15 +418,10 @@ func extractTargetFromPara(tunnelType string, para json.RawMessage) string {
 	if err := json.Unmarshal(para, &p); err != nil {
 		return ""
 	}
-	vpnKeys := []string{"vnt", "easytier", "tailscale"}
+	vpnKeys := []string{"vnt", "easytier", "tailscale", "openvpn"}
 	for _, key := range vpnKeys {
-		if raw, ok := p[key]; ok {
-			var cfg struct {
-				Name string `json:"name"`
-			}
-			if json.Unmarshal(raw, &cfg) == nil && cfg.Name != "" {
-				return cfg.Name
-			}
+		if _, ok := p[key]; ok {
+			return key
 		}
 	}
 	return ""
