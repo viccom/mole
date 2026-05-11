@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"runtime"
@@ -224,6 +225,17 @@ func (cs *ControlServer) connectionWorker(ctx context.Context, connChan <-chan c
 func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, transportName string) {
 	remoteAddr := conn.RemoteAddr().String()
 	defer conn.Close()
+
+	// KCP probe: client sends a probe byte to trigger Accept; discard it before auth.
+	if transportName == "kcp" {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		probe := make([]byte, 1)
+		if _, err := io.ReadFull(conn, probe); err != nil {
+			slog.Warn("KCP probe read failed", "remote", remoteAddr, "error", err)
+			return
+		}
+		conn.SetReadDeadline(time.Time{})
+	}
 
 	// 1. Challenge-Response 认证
 	challenge := make([]byte, 32)
