@@ -9,6 +9,7 @@ import { useRequest } from '../hooks/useRequest'
 interface TunnelFormModalProps {
   tunnel?: Tunnel
   presetNodeId?: string
+  defaultType?: TunnelType
   onClose: () => void
   onSuccess: () => void
 }
@@ -24,12 +25,23 @@ const PARITY_OPTIONS = [
   { value: 'O', label: '奇 (O)' },
 ]
 
-export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: TunnelFormModalProps) {
+const tunnelTypeOptions: { value: TunnelType; label: string }[] = [
+  { value: 'http', label: 'HTTP' },
+  { value: 'https', label: 'HTTPS' },
+  { value: 'tcp', label: 'TCP' },
+  { value: 'udp', label: 'UDP' },
+  { value: 'ser2mq', label: 'Ser2MQ' },
+  { value: 'vpn-manager', label: 'VPN' },
+  { value: 'ser2tcp', label: 'Ser2TCP' },
+  { value: 'ser2udp', label: 'Ser2UDP' },
+]
+
+export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, onSuccess }: TunnelFormModalProps) {
   const { toast } = useToast()
   const isEdit = !!tunnel
 
   const [name, setName] = useState(tunnel?.name || '')
-  const [type, setType] = useState<TunnelType>(tunnel?.type || 'http')
+  const [type, setType] = useState<TunnelType>(tunnel?.type || defaultType || 'http')
   const [target, setTarget] = useState(tunnel?.target || '')
   const [domain, setDomain] = useState(tunnel?.domain || '')
   const [listenPort, setListenPort] = useState(tunnel?.listen_port?.toString() || '')
@@ -271,7 +283,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
   const selectClass = inputClass
 
   return (
-    <Modal title={isEdit ? '编辑隧道' : '创建隧道'} onClose={onClose} size={type === 'vpn-manager' || type === 'ser2tcp' || type === 'ser2udp' ? 'lg' : undefined}>
+    <Modal title={isEdit ? '编辑隧道' : '创建隧道'} onClose={onClose} size="lg">
       <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto">
         <FormField label="隧道名称">
           <input
@@ -288,25 +300,31 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         </FormField>
 
         <FormField label="类型">
-          <select
-            value={type}
-            onChange={e => setType(e.target.value as TunnelType)}
-            className={selectClass}
-          >
-            <option value="http">HTTP</option>
-            <option value="https">HTTPS</option>
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-            <option value="ser2mq">Ser2MQ（串口转 MQTT）</option>
-            <option value="vpn-manager">VPN Manager（程序管理）</option>
-            <option value="ser2tcp">Ser2TCP（串口转 TCP）</option>
-            <option value="ser2udp">Ser2UDP（串口转 UDP）</option>
-          </select>
+          <div className="flex flex-wrap gap-2">
+            {tunnelTypeOptions.map(opt => (
+              <button
+                key={opt.value}
+                type="button"
+                disabled={isEdit}
+                onClick={() => setType(opt.value)}
+                className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                  type === opt.value
+                    ? 'bg-primary text-white border-primary'
+                    : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                } ${isEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </FormField>
 
         {/* HTTP/HTTPS 配置 */}
         {(type === 'http' || type === 'https') && (
           <>
+            <div className="bg-blue-50 rounded-lg p-3 text-sm text-blue-700">
+              将外部 HTTP/HTTPS 请求转发到本地 Web 服务，支持域名绑定和 WebSocket 长连接。
+            </div>
             <FormField label="目标地址">
               <input
                 type="text"
@@ -331,6 +349,9 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         {/* TCP/UDP 配置 */}
         {(type === 'tcp' || type === 'udp') && (
           <>
+            <div className="bg-blue-50 rounded-lg p-3 text-sm text-blue-700">
+              在服务端监听端口，将 {type.toUpperCase()} 流量透明转发到节点本地目标地址。
+            </div>
             <FormField label="目标地址（可选）">
               <input
                 type="text"
@@ -355,6 +376,9 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         {/* Ser2MQ 配置 */}
         {type === 'ser2mq' && (
           <>
+            <div className="bg-blue-50 rounded-lg p-3 text-sm text-blue-700">
+              串口数据通过 MQTT 协议双向转发，使用 ChaCha20-Poly1305 加密，客户端本地运行。
+            </div>
             <FormField label="MQTT Broker">
               <input
                 type="text"
@@ -434,6 +458,9 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         {/* VPN Manager 配置 */}
         {type === 'vpn-manager' && (
           <>
+            <div className="bg-blue-50 rounded-lg p-3 text-sm text-blue-700">
+              管理 VPN 程序的启动、停止与运行监控，支持崩溃自动重启和日志采集。
+            </div>
             <FormField label="程序名称">
               <input
                 type="text"

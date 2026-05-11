@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search } from 'lucide-react'
+import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -80,11 +80,14 @@ export function TunnelsPage() {
   const [formModal, setFormModal] = useState<{
     tunnel?: Tunnel
     presetNodeId?: string
+    defaultType?: string
   } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Tunnel | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('all')
   const [filterStatus, setFilterStatus] = useState<FilterKey>('all')
   const [searchKeyword, setSearchKeyword] = useState('')
+  const [showDetails, setShowDetails] = useState(false)
+  const [filterNodeId, setFilterNodeId] = useState('')
 
   const { data, loading, run: fetchData } = useRequest<TunnelPageData>(
     async () => {
@@ -140,6 +143,9 @@ export function TunnelsPage() {
     if (activeTab !== 'all') {
       result = result.filter(tabFilters[activeTab])
     }
+    if (filterNodeId) {
+      result = result.filter(t => t.node_id === filterNodeId)
+    }
     if (filterStatus === 'enabled') result = result.filter(t => t.enabled)
     else if (filterStatus === 'disabled') result = result.filter(t => !t.enabled)
     else if (filterStatus === 'active') {
@@ -152,7 +158,7 @@ export function TunnelsPage() {
       result = result.filter(t => tunnelMatchesKeyword(t, searchKeyword))
     }
     return result
-  }, [tunnels, activeTab, filterStatus, searchKeyword, usageMap])
+  }, [tunnels, activeTab, filterNodeId, filterStatus, searchKeyword, usageMap])
 
   const tabStats = useMemo(() => {
     const tabTunnels = activeTab === 'all' ? tunnels : tunnels.filter(tabFilters[activeTab])
@@ -243,7 +249,7 @@ export function TunnelsPage() {
               刷新
             </button>
             <button
-              onClick={() => setFormModal({})}
+              onClick={() => setFormModal({ defaultType: activeTab === 'web' ? 'http' : activeTab === 'stream' ? 'tcp' : activeTab === 'serial' ? 'ser2mq' : activeTab === 'vpn' ? 'vpn-manager' : 'http' })}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark"
             >
               <Plus className="w-4 h-4" />
@@ -323,15 +329,36 @@ export function TunnelsPage() {
               </button>
             ))}
           </div>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={searchKeyword}
-              onChange={e => setSearchKeyword(e.target.value)}
-              placeholder="搜索名称/类型/目标..."
-              className="pl-9 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30"
-            />
+          <div className="flex items-center gap-2">
+            <select
+              value={filterNodeId}
+              onChange={e => setFilterNodeId(e.target.value)}
+              className="px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              <option value="">全部节点</option>
+              {nodes.map(n => (
+                <option key={n.id} value={n.id}>
+                  {n.name} ({n.id.slice(0, 8)})
+                </option>
+              ))}
+            </select>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                value={searchKeyword}
+                onChange={e => setSearchKeyword(e.target.value)}
+                placeholder="搜索名称/类型/目标..."
+                className="pl-9 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <button
+              onClick={() => setShowDetails(!showDetails)}
+              title={showDetails ? '隐藏详情列' : '显示详情列（流量/连接/最近活动）'}
+              className={`p-1.5 rounded transition-colors ${showDetails ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-100'}`}
+            >
+              <Columns3 className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
@@ -349,9 +376,9 @@ export function TunnelsPage() {
                 <th className="px-6 py-3">目标</th>
                 <th className="px-6 py-3">访问地址</th>
                 <th className="px-6 py-3">节点</th>
-                <th className="px-6 py-3">流量</th>
-                <th className="px-6 py-3">连接</th>
-                <th className="px-6 py-3">最近活动</th>
+                {showDetails && <th className="px-6 py-3">流量</th>}
+                {showDetails && <th className="px-6 py-3">连接</th>}
+                {showDetails && <th className="px-6 py-3">最近活动</th>}
                 <th className="px-6 py-3 text-right">操作</th>
               </tr>
             </thead>
@@ -393,37 +420,43 @@ export function TunnelsPage() {
                     <td className="px-6 py-3 text-sm text-gray-500">
                       {ownerNode ? ownerNode.name : tunnel.node_id || '-'}
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-500">
-                      {usage ? (
-                        <div className="flex items-center gap-2" title={`入站: ${formatBytes(usage.bytes_in)} / 出站: ${formatBytes(usage.bytes_out)}`}>
-                          <span className="flex items-center gap-0.5 text-emerald-600">
-                            <ArrowDown className="w-3 h-3" />
-                            {formatBytes(usage.bytes_in)}
-                          </span>
-                          <span className="flex items-center gap-0.5 text-blue-600">
-                            <ArrowUp className="w-3 h-3" />
-                            {formatBytes(usage.bytes_out)}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-3 text-sm text-gray-500">
-                      {usage ? (
-                        <div className="flex items-center gap-1" title={`总连接: ${usage.total_connections} / 活跃: ${usage.active_connections}`}>
-                          <Users className="w-3.5 h-3.5 text-gray-400" />
-                          <span>{usage.active_connections}</span>
-                          <span className="text-gray-400">/</span>
-                          <span className="text-gray-400">{usage.total_connections}</span>
-                        </div>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-3 text-sm text-gray-500">
-                      {usage?.last_activity ? formatTimeAgo(usage.last_activity) : '-'}
-                    </td>
+                    {showDetails && (
+                      <td className="px-6 py-3 text-sm text-gray-500">
+                        {usage ? (
+                          <div className="flex items-center gap-2" title={`入站: ${formatBytes(usage.bytes_in)} / 出站: ${formatBytes(usage.bytes_out)}`}>
+                            <span className="flex items-center gap-0.5 text-emerald-600">
+                              <ArrowDown className="w-3 h-3" />
+                              {formatBytes(usage.bytes_in)}
+                            </span>
+                            <span className="flex items-center gap-0.5 text-blue-600">
+                              <ArrowUp className="w-3 h-3" />
+                              {formatBytes(usage.bytes_out)}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                    )}
+                    {showDetails && (
+                      <td className="px-6 py-3 text-sm text-gray-500">
+                        {usage ? (
+                          <div className="flex items-center gap-1" title={`总连接: ${usage.total_connections} / 活跃: ${usage.active_connections}`}>
+                            <Users className="w-3.5 h-3.5 text-gray-400" />
+                            <span>{usage.active_connections}</span>
+                            <span className="text-gray-400">/</span>
+                            <span className="text-gray-400">{usage.total_connections}</span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                    )}
+                    {showDetails && (
+                      <td className="px-6 py-3 text-sm text-gray-500">
+                        {usage?.last_activity ? formatTimeAgo(usage.last_activity) : '-'}
+                      </td>
+                    )}
                     <td className="px-6 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <button
@@ -480,6 +513,7 @@ export function TunnelsPage() {
         <TunnelFormModal
           tunnel={formModal.tunnel}
           presetNodeId={formModal.presetNodeId}
+          defaultType={formModal.defaultType as any}
           onClose={() => setFormModal(null)}
           onSuccess={() => {
             setFormModal(null)
