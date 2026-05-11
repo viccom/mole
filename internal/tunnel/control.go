@@ -423,8 +423,26 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 	}
 
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
-		writeControlResp(stream, "err", err.Error())
-		return
+		if err == core.ErrNodeExists {
+			// 同一节点重连：关闭旧会话，释放资源后重新注册
+			slog.Info("Node reconnected, displacing old session", "nodeId", cmd.NodeID)
+			oldNode, oldOk := cs.nodeMgr.Get(ctx, cmd.NodeID)
+			var oldTunnels []core.Tunnel
+			if oldOk {
+				oldTunnels = append([]core.Tunnel(nil), oldNode.Tunnels...)
+			}
+			cs.nodeMgr.Remove(ctx, cmd.NodeID)
+			if cs.onNodeDisconnect != nil {
+				cs.onNodeDisconnect(cmd.NodeID, oldTunnels)
+			}
+			if err2 := cs.nodeMgr.Add(ctx, node); err2 != nil {
+				writeControlResp(stream, "err", err2.Error())
+				return
+			}
+		} else {
+			writeControlResp(stream, "err", err.Error())
+			return
+		}
 	}
 
 	// 独立绑定运行态会话（与 Node 领域模型分离）
