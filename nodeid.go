@@ -5,6 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"os"
+	"sort"
+	"strings"
 	"unicode"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -12,20 +16,62 @@ import (
 
 const nodeIDLength = 8
 
-// HardwareNodeID 基于CPU信息生成确定性节点ID（8字符，首字符字母）
-// 参考 apiAgent/wClient GetHardwareID 的设计：CPU VendorID + ModelName → SHA256
+// HardwareNodeID 基于 CPU + MAC + machine-id 生成确定性节点 ID（8 字符，首字符字母）
 func HardwareNodeID() (string, error) {
+	var parts []string
+
 	info, err := cpu.Info()
-	if err != nil || len(info) == 0 {
-		return "", fmt.Errorf("cpu info unavailable: %v", err)
+	if err == nil && len(info) > 0 {
+		parts = append(parts, info[0].VendorID, info[0].ModelName)
 	}
-	hash := sha256.Sum256([]byte(info[0].VendorID + info[0].ModelName))
+
+	if mac := firstHardwareMAC(); mac != "" {
+		parts = append(parts, mac)
+	}
+
+	if mid := readMachineID(); mid != "" {
+		parts = append(parts, mid)
+	}
+
+	if len(parts) == 0 {
+		return "", fmt.Errorf("no hardware info available")
+	}
+
+	hash := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	id := hex.EncodeToString(hash[:])[:8]
-	// 确保首字符是字母：hex 的 a-f 保持不变，0-9 映射到 a-j
 	if id[0] >= '0' && id[0] <= '9' {
 		id = string(rune(id[0]-'0'+'a')) + id[1:]
 	}
 	return id, nil
+}
+
+// firstHardwareMAC 返回第一个非回环网卡的 MAC 地址（小写冒号分隔）
+func firstHardwareMAC() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	// 按 name 排序保证确定性
+	sort.Slice(interfaces, func(i, j int) bool {
+		return interfaces[i].Name < interfaces[j].Name
+	})
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 || len(iface.HardwareAddr) == 0 {
+			continue
+		}
+		return iface.HardwareAddr.String()
+	}
+	return ""
+}
+
+// readMachineID 读取 Linux machine-id
+func readMachineID() string {
+	for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
+		if data, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
 }
 
 // DefaultNodeID 生成默认节点ID：优先硬件ID，fallback随机ID

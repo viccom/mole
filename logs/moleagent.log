@@ -1,0 +1,44 @@
+time=2026-05-11T11:40:01.312+08:00 level=INFO msg="moleAgent_Serv starting..."
+time=2026-05-11T11:40:01.316+08:00 level=INFO msg="Database opened" path=/tmp/test-config.db
+time=2026-05-11T11:40:01.317+08:00 level=INFO msg="moleAgent_Serv started" controlPort=:19981 gatewayPort=:19980 apiPort=:19983
+time=2026-05-11T11:40:01.317+08:00 level=INFO msg="Gateway server listening" addr=:19980
+time=2026-05-11T11:40:01.318+08:00 level=INFO msg="API server listening" addr=:19983
+time=2026-05-11T11:40:01.318+08:00 level=INFO msg="Control server listening" addr=:19981 transport=tcp
+time=2026-05-11T11:40:01.318+08:00 level=INFO msg="KCP listener created" addr=:19982 dataShards=0 parityShards=0 encrypted=false
+time=2026-05-11T11:40:01.318+08:00 level=INFO msg="Control server listening" addr=:19982 transport=kcp
+time=2026-05-11T11:40:03.316+08:00 level=INFO msg="Node authenticated via legacy global token"
+time=2026-05-11T11:40:03.316+08:00 level=INFO msg="Node authenticated" remote=127.0.0.1:36417 transport=kcp userId=system legacy=true
+time=2026-05-11T11:40:03.316+08:00 level=INFO msg="Node registered" nodeId=gd48c36f name=test-local tunnels=0 ownerUserId=system
+time=2026-05-11T11:40:03.317+08:00 level=INFO msg="Node tunnels updated" nodeId=gd48c36f tunnels=0
+time=2026-05-11T11:40:18.314+08:00 level=INFO msg="Received signal, shutting down..." signal=terminated
+time=2026-05-11T11:40:18.314+08:00 level=INFO msg="Health check stopped"
+time=2026-05-11T11:40:18.314+08:00 level=INFO msg="Control server stopped"
+time=2026-05-11T11:40:18.314+08:00 level=INFO msg="moleAgent_Serv stopped gracefully"
+time=2026-05-11T11:40:18.314+08:00 level=INFO msg="Released node tunnel resources" nodeId=gd48c36f tunnels=0
+time=2026-05-11T11:40:18.314+08:00 level=INFO msg="Node disconnected" nodeId=gd48c36f remote=127.0.0.1:36417
+time=2026-05-11T11:40:18.315+08:00 level=INFO msg="Database closed"
+time=2026-05-11T11:40:41.517+08:00 level=INFO msg="moleAgent_Serv starting..."
+time=2026-05-11T11:40:41.520+08:00 level=INFO msg="Database opened" path=/tmp/test-config.db
+time=2026-05-11T11:40:41.521+08:00 level=INFO msg="moleAgent_Serv started" controlPort=:19981 gatewayPort=:19980 apiPort=:19983
+time=2026-05-11T11:40:41.521+08:00 level=INFO msg="API server listening" addr=:19983
+time=2026-05-11T11:40:41.521+08:00 level=INFO msg="Gateway server listening" addr=:19980
+time=2026-05-11T11:40:41.522+08:00 level=INFO msg="Control server listening" addr=:19981 transport=tcp
+time=2026-05-11T11:40:41.522+08:00 level=INFO msg="KCP listener created" addr=:19981 dataShards=0 parityShards=0 encrypted=false
+time=2026-05-11T11:40:41.522+08:00 level=INFO msg="Control server listening" addr=:19981 transport=kcp
+time=2026-05-11T11:40:43.525+08:00 level=INFO msg="Node authenticated via legacy global token"
+time=2026-05-11T11:40:43.525+08:00 level=INFO msg="Node authenticated" remote=127.0.0.1:46648 transport=kcp userId=system legacy=true
+time=2026-05-11T11:40:43.526+08:00 level=INFO msg="Node registered" nodeId=gd48c36f name=test-kcp tunnels=0 ownerUserId=system
+time=2026-05-11T11:40:43.527+08:00 level=INFO msg="Node tunnels updated" nodeId=gd48c36f tunnels=0
+time=2026-05-11T11:40:51.523+08:00 level=INFO msg="Node authenticated via legacy global token"
+time=2026-05-11T11:40:51.524+08:00 level=INFO msg="Node authenticated" remote=127.0.0.1:40826 transport=tcp userId=system legacy=true
+time=2026-05-11T11:40:51.524+08:00 level=DEBUG msg="AcceptStream error" error=EOF
+time=2026-05-11T11:40:56.527+08:00 level=INFO msg="Node authenticated via legacy global token"
+time=2026-05-11T11:40:56.527+08:00 level=INFO msg="Node authenticated" remote=127.0.0.1:40938 transport=tcp userId=system legacy=true
+time=2026-05-11T11:40:56.527+08:00 level=DEBUG msg="AcceptStream error" error=EOF
+time=2026-05-11T11:40:59.520+08:00 level=INFO msg="Received signal, shutting down..." signal=terminated
+time=2026-05-11T11:40:59.520+08:00 level=INFO msg="Health check stopped"
+time=2026-05-11T11:40:59.520+08:00 level=INFO msg="Control server stopped"
+time=2026-05-11T11:40:59.520+08:00 level=INFO msg="moleAgent_Serv stopped gracefully"
+time=2026-05-11T11:40:59.520+08:00 level=INFO msg="Released node tunnel resources" nodeId=gd48c36f tunnels=0
+time=2026-05-11T11:40:59.520+08:00 level=INFO msg="Node disconnected" nodeId=gd48c36f remote=127.0.0.1:46648
+time=2026-05-11T11:40:59.521+08:00 level=INFO msg="Database closed"
