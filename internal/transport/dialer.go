@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"time"
@@ -133,12 +134,14 @@ func (sm *SessionManager) Close() {
 
 // authenticate 执行 Challenge-Response 认证，返回 bufio.Reader 保留缓冲数据
 func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
+	log.Println("  auth: waiting for challenge...")
 	// 读取 32 字节 challenge
 	conn.SetReadDeadline(time.Now().Add(DefaultAuthTimeout))
 	challenge := make([]byte, 32)
 	if _, err := io.ReadFull(conn, challenge); err != nil {
 		return nil, fmt.Errorf("read challenge: %w", err)
 	}
+	log.Println("  auth: challenge received, sending credentials")
 
 	// 发送认证消息
 	authMsg, err := json.Marshal(map[string]string{"token": token})
@@ -148,6 +151,7 @@ func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 	if _, err := conn.Write(append(authMsg, '\n')); err != nil {
 		return nil, fmt.Errorf("send auth: %w", err)
 	}
+	log.Println("  auth: credentials sent, waiting for response")
 
 	// 读取认证响应
 	reader := bufio.NewReader(conn)
@@ -156,6 +160,7 @@ func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 		return nil, fmt.Errorf("read auth response: %w", err)
 	}
 	conn.SetReadDeadline(time.Time{})
+	log.Println("  auth: response received")
 
 	var result struct {
 		Cmd string `json:"cmd"`

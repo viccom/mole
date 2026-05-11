@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -178,6 +179,7 @@ func NewKCPDialer(cfg KCPDialerConfig) DialFunc {
 			}
 			sess := r.sess
 			applyKCPSessionTuning(sess, cfg)
+			log.Printf("  kcp: dial OK (conv=%d, local=%s)", sess.GetConv(), sess.LocalAddr())
 			// Send a probe byte to trigger server Accept (KCP Accept only returns after first data)
 			if err := sess.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
 				sess.Close()
@@ -187,6 +189,7 @@ func NewKCPDialer(cfg KCPDialerConfig) DialFunc {
 				sess.Close()
 				return nil, fmt.Errorf("kcp probe write: %w", err)
 			}
+			log.Println("  kcp: probe byte sent")
 			sess.SetWriteDeadline(time.Time{})
 			return sess, nil
 		}
