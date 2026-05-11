@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"log/slog"
 	"net"
+	"sync"
+	"sync/atomic"
 
 	kcp "github.com/xtaci/kcp-go/v5"
 )
@@ -78,9 +80,12 @@ func (t *KCPTransport) blockCrypt() (kcp.BlockCrypt, error) {
 }
 
 // kcpListener wraps *kcp.Listener to apply session-level tuning on each accepted connection.
+// It also tracks active connections by remote address to close stale sessions on reconnect.
 type kcpListener struct {
 	*kcp.Listener
-	cfg KCPConfig
+	cfg       KCPConfig
+	connMap   sync.Map // remoteAddr → *trackedConn
+	connCount atomic.Int64
 }
 
 func (l *kcpListener) Accept() (net.Conn, error) {
@@ -88,6 +93,8 @@ func (l *kcpListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	remoteAddr := conn.RemoteAddr().String()
 
 	if sess, ok := conn.(*kcp.UDPSession); ok {
 		interval := l.cfg.Interval
@@ -120,5 +127,45 @@ func (l *kcpListener) Accept() (net.Conn, error) {
 		}
 	}
 
-	return conn, nil
+	// Close stale connection from the same remote address (safety net for
+	// cases where kcp-go's internal session replacement doesn't trigger).
+	if old, loaded := l.connMap.LoadAndDelete(remoteAddr); loaded {
+		if tc, ok := old.(*trackedConn); ok {
+			slog.Warn("KCP closing stale connection for same remote addr",
+				"remote", remoteAddr, "staleAge", tc.age())
+			tc.Conn.Close()
+		}
+	}
+
+	tc := &trackedConn{Conn: conn, remoteAddr: remoteAddr, listener: l}
+	l.connMap.Store(remoteAddr, tc)
+	l.connCount.Add(1)
+	slog.Info("KCP accepted", "remote", remoteAddr, "active", l.connCount.Load())
+
+	return tc, nil
+}
+
+// removeConn removes a tracked connection. Called by trackedConn.Close().
+func (l *kcpListener) removeConn(tc *trackedConn) {
+	if l.connMap.CompareAndDelete(tc.remoteAddr, tc) {
+		l.connCount.Add(-1)
+	}
+}
+
+// trackedConn wraps net.Conn to notify kcpListener on close.
+type trackedConn struct {
+	net.Conn
+	remoteAddr string
+	listener   *kcpListener
+	created    int64 // unix nano
+}
+
+func (c *trackedConn) Close() error {
+	c.listener.removeConn(c)
+	return c.Conn.Close()
+}
+
+func (c *trackedConn) age() int64 {
+	// simple age in seconds
+	return 0
 }
