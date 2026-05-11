@@ -224,6 +224,7 @@ func (cs *ControlServer) connectionWorker(ctx context.Context, connChan <-chan c
 
 func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, transportName string) {
 	remoteAddr := conn.RemoteAddr().String()
+	slog.Info("Handling new connection", "remote", remoteAddr, "transport", transportName)
 
 	// KCP probe: client sends a probe byte to trigger Accept; discard it before auth.
 	if transportName == "kcp" {
@@ -235,6 +236,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 			return
 		}
 		conn.SetReadDeadline(time.Time{})
+		slog.Debug("KCP probe read OK", "remote", remoteAddr)
 	}
 
 	// 1. Challenge-Response 认证
@@ -249,6 +251,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		conn.Close()
 		return
 	}
+	slog.Debug("Challenge sent", "remote", remoteAddr, "transport", transportName)
 
 	reader := bufio.NewReader(conn)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -283,7 +286,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
 
 		// 建立 smux 会话并使用 grant（conn 生命周期转移给 goroutine）
-		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, grant)
+		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, grant, transportName)
 		return
 	}
 
@@ -295,7 +298,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, &core.NodeAccessGrant{
 			UserID:       "system",
 			LegacyGlobal: true,
-		})
+		}, transportName)
 		return
 	}
 
@@ -306,21 +309,30 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 
 // setupSmuxAndAccept 建立 smux 会话并在独立 goroutine 中接收流。
 // conn 的生命周期由内部 goroutine 管理，调用方不再负责关闭。
-func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, remoteAddr string, grant *core.NodeAccessGrant) {
+func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, remoteAddr string, grant *core.NodeAccessGrant, transportName string) {
+	keepAliveInterval := 30 * time.Second
+	keepAliveTimeout := 90 * time.Second
+	if transportName == "kcp" {
+		keepAliveInterval = 5 * time.Second
+		keepAliveTimeout = 15 * time.Second
+	}
+
 	session, err := smux.Server(conn, &smux.Config{
 		Version:           2,
 		KeepAliveDisabled: false,
-		KeepAliveInterval: 30 * time.Second,
-		KeepAliveTimeout:  90 * time.Second,
+		KeepAliveInterval: keepAliveInterval,
+		KeepAliveTimeout:  keepAliveTimeout,
 		MaxFrameSize:      32768,
 		MaxReceiveBuffer:  32 * 1024 * 1024,
 		MaxStreamBuffer:   4 * 1024 * 1024,
 	})
 	if err != nil {
-		slog.Error("Failed to create smux session", "remote", remoteAddr, "error", err)
+		slog.Error("Failed to create smux session", "remote", remoteAddr, "transport", transportName, "error", err)
 		conn.Close()
 		return
 	}
+	slog.Info("Smux session created", "remote", remoteAddr, "transport", transportName,
+		"keepAliveInterval", keepAliveInterval, "keepAliveTimeout", keepAliveTimeout)
 
 	state := &connState{session: session, grant: grant, remoteAddr: remoteAddr}
 
@@ -357,6 +369,7 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 			}
 			session.Close()
 			conn.Close()
+			slog.Info("Connection cleanup complete", "remote", remoteAddr, "transport", transportName)
 		}()
 
 		for {
