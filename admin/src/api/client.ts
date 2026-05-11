@@ -74,6 +74,7 @@ interface TunnelPayload {
   listen_port?: number
   enabled?: boolean
   node_id: string
+  original_node_id?: string
   para?: {
     enable?: boolean
     broker?: string

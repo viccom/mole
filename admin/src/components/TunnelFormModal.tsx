@@ -34,6 +34,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
   const [domain, setDomain] = useState(tunnel?.domain || '')
   const [listenPort, setListenPort] = useState(tunnel?.listen_port?.toString() || '')
   const [nodeId, setNodeId] = useState(presetNodeId || tunnel?.node_id || '')
+  const originalNodeId = isEdit ? (tunnel?.node_id || '') : ''
   const [enabled, setEnabled] = useState(tunnel?.enabled !== false)
 
   // ser2mq 配置
@@ -89,6 +90,10 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
   )
   const onlineNodes = useMemo(
     () => (nodesResponse?.items || []).filter((node: Node) => node.status === 'online'),
+    [nodesResponse],
+  )
+  const allNodes = useMemo(
+    () => (nodesResponse?.items || []),
     [nodesResponse],
   )
 
@@ -219,6 +224,10 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
       toast('请选择节点', 'error')
       return
     }
+    if (isEdit && !nodeId) {
+      toast('请选择节点', 'error')
+      return
+    }
 
     try {
       setSubmitting(true)
@@ -228,6 +237,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
         type,
         enabled,
         node_id: nodeId,
+        ...(isEdit && originalNodeId && originalNodeId !== nodeId ? { original_node_id: originalNodeId } : {}),
         target: (() => {
           switch (type) {
             case 'http': case 'https': return target.trim()
@@ -706,26 +716,24 @@ export function TunnelFormModal({ tunnel, presetNodeId, onClose, onSuccess }: Tu
           </>
         )}
 
-        {!isEdit && (
-          <FormField label="节点">
-            <select
-              value={nodeId}
-              onChange={e => setNodeId(e.target.value)}
-              disabled={nodesLoading || !!presetNodeId}
-              className={selectClass}
-            >
-              <option value="">{nodesLoading ? '加载中...' : '选择节点'}</option>
-              {onlineNodes.map(node => (
-                <option key={node.id} value={node.id}>
-                  {node.name} ({node.id.slice(0, 8)})
-                </option>
-              ))}
-            </select>
-            {!nodesLoading && onlineNodes.length === 0 && (
-              <p className="mt-1 text-xs text-amber-600">暂无在线节点</p>
-            )}
-          </FormField>
-        )}
+        <FormField label="节点">
+          <select
+            value={nodeId}
+            onChange={e => setNodeId(e.target.value)}
+            disabled={nodesLoading || !!presetNodeId}
+            className={selectClass}
+          >
+            <option value="">{nodesLoading ? '加载中...' : '选择节点'}</option>
+            {(isEdit ? allNodes : onlineNodes).map(node => (
+              <option key={node.id} value={node.id}>
+                {node.name} ({node.id.slice(0, 8)}{node.status === 'online' ? '' : ', 离线'})
+              </option>
+            ))}
+          </select>
+          {!nodesLoading && (isEdit ? allNodes : onlineNodes).length === 0 && (
+            <p className="mt-1 text-xs text-amber-600">暂无{isEdit ? '' : '在线'}节点</p>
+          )}
+        </FormField>
 
         <FormField label="启用">
           <label className="flex items-center gap-2 cursor-pointer">

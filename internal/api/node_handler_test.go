@@ -70,6 +70,10 @@ func (m *testTunnelConfigManager) ApplyTunnel(context.Context, string, core.Tunn
 	return core.TunnelChangeResult{}, nil
 }
 
+func (m *testTunnelConfigManager) MoveTunnel(_ context.Context, _, _ string, _ core.Tunnel) (core.TunnelChangeResult, error) {
+	return core.TunnelChangeResult{}, nil
+}
+
 func (m *testTunnelConfigManager) RemoveTunnel(ctx context.Context, nodeID string, tunnelName string) (core.TunnelChangeResult, error) {
 	if err := m.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
 		updated := make([]core.Tunnel, 0, len(n.Tunnels))

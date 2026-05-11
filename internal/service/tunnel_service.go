@@ -340,6 +340,107 @@ func (s *TunnelConfigService) persistUpdatedNode(ctx context.Context, nodeID str
 	return s.nodeRepo.Update(&persisted)
 }
 
+// MoveTunnel 将隧道从一个节点迁移到另一个节点（原子操作：从旧节点删除 + 添加到新节点）。
+func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNodeID string, tunnelCfg core.Tunnel) (core.TunnelChangeResult, error) {
+	if err := validateTunnel(tunnelCfg); err != nil {
+		return core.TunnelChangeResult{}, err
+	}
+	result := core.TunnelChangeResult{Status: "ok"}
+
+	// 1. 从旧节点移除隧道
+	oldNode, oldOk := s.nodeMgr.Get(ctx, fromNodeID)
+	var oldTunnels []core.Tunnel
+	if oldOk {
+		updated := make([]core.Tunnel, 0, len(oldNode.Tunnels))
+		for _, t := range oldNode.Tunnels {
+			if t.Name != tunnelCfg.Name {
+				updated = append(updated, t)
+			}
+		}
+		oldTunnels = oldNode.Tunnels
+
+		if len(updated) < len(oldNode.Tunnels) {
+			if err := s.persistUpdatedNode(ctx, fromNodeID, updated); err != nil {
+				return result, fmt.Errorf("persist old node after remove: %w", err)
+			}
+			// 更新旧节点内存状态、释放运行时资源、推送客户端
+			if err := s.applyRuntimeTunnels(ctx, fromNodeID, updated); err != nil {
+				slog.Warn("MoveTunnel: apply runtime for old node failed", "nodeId", fromNodeID, "error", err)
+			}
+			if oldNode.Status == core.NodeStatusOnline && s.pusher != nil {
+				if err := s.pushToClient(ctx, fromNodeID, updated); err != nil {
+					slog.Warn("MoveTunnel: push to old node failed", "nodeId", fromNodeID, "error", err)
+				}
+			}
+		}
+	}
+
+	// 2. 添加到新节点
+	newNode, newOk := s.nodeMgr.Get(ctx, toNodeID)
+	if !newOk {
+		s.rollbackOldNode(ctx, fromNodeID, oldOk, oldTunnels, tunnelCfg)
+		return result, core.ErrNodeNotFound
+	}
+
+	updatedNew := make([]core.Tunnel, 0, len(newNode.Tunnels)+1)
+	replaced := false
+	for _, t := range newNode.Tunnels {
+		if t.Name == tunnelCfg.Name {
+			updatedNew = append(updatedNew, tunnelCfg)
+			replaced = true
+		} else {
+			updatedNew = append(updatedNew, t)
+		}
+	}
+	if !replaced {
+		updatedNew = append(updatedNew, tunnelCfg)
+	}
+
+	if err := s.persistUpdatedNode(ctx, toNodeID, updatedNew); err != nil {
+		s.rollbackOldNode(ctx, fromNodeID, oldOk, oldTunnels, tunnelCfg)
+		return result, fmt.Errorf("persist new node: %w", err)
+	}
+	result.Persisted = true
+
+	// 在线新节点：推送 + 创建运行时
+	if newNode.Status == core.NodeStatusOnline && s.pusher != nil {
+		if err := s.pushToClient(ctx, toNodeID, updatedNew); err != nil {
+			result.Status = "synced_server_only"
+			result.Warning = "client push failed: " + err.Error()
+			return result, nil
+		}
+		result.ClientSynced = true
+	}
+
+	if err := s.applyRuntimeTunnels(ctx, toNodeID, updatedNew); err != nil {
+		return result, err
+	}
+
+	slog.Info("Tunnel moved", "tunnel", tunnelCfg.Name, "from", fromNodeID, "to", toNodeID)
+	return result, nil
+}
+
+// rollbackOldNode 回滚旧节点：将隧道加回持久化 + 更新内存状态
+func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID string, oldOk bool, oldTunnels []core.Tunnel, tunnelCfg core.Tunnel) {
+	if !oldOk {
+		return
+	}
+	rollback := make([]core.Tunnel, 0, len(oldTunnels)+1)
+	for _, t := range oldTunnels {
+		if t.Name != tunnelCfg.Name {
+			rollback = append(rollback, t)
+		}
+	}
+	rollback = append(rollback, tunnelCfg)
+	if rbErr := s.persistUpdatedNode(ctx, fromNodeID, rollback); rbErr != nil {
+		slog.Error("MoveTunnel: rollback persist failed", "nodeId", fromNodeID, "error", rbErr)
+		return
+	}
+	if rbErr := s.applyRuntimeTunnels(ctx, fromNodeID, rollback); rbErr != nil {
+		slog.Error("MoveTunnel: rollback runtime failed", "nodeId", fromNodeID, "error", rbErr)
+	}
+}
+
 // ReleaseNodeResources 释放离线节点的隧道运行时资源（监听器、路由索引、统计条目）
 // 不修改持久化配置，节点重连时可通过 applyRuntimeTunnels 重新激活
 func (s *TunnelConfigService) ReleaseNodeResources(ctx context.Context, nodeID string, tunnels []core.Tunnel) {

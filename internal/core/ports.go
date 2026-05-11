@@ -25,6 +25,7 @@ type TunnelChangeResult struct {
 // TunnelConfigManager 统一处理隧道配置变更、持久化、索引刷新和客户端同步
 type TunnelConfigManager interface {
 	ApplyTunnel(ctx context.Context, nodeID string, tunnel Tunnel) (TunnelChangeResult, error)
+	MoveTunnel(ctx context.Context, fromNodeID, toNodeID string, tunnel Tunnel) (TunnelChangeResult, error)
 	RemoveTunnel(ctx context.Context, nodeID string, tunnelName string) (TunnelChangeResult, error)
 	ReplaceTunnels(ctx context.Context, nodeID string, tunnels []Tunnel) (TunnelChangeResult, error)
 	SyncFromClient(ctx context.Context, nodeID string, tunnels []Tunnel) error

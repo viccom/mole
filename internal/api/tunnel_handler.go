@@ -151,14 +151,15 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 // Create 创建/更新隧道配置，通过 TunnelConfigService 统一处理
 func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name       string          `json:"name"`
-		Type       string          `json:"type"`
-		Target     string          `json:"target"`
-		Domain     string          `json:"domain,omitempty"`
-		ListenPort int             `json:"listen_port,omitempty"`
-		Enabled    *bool           `json:"enabled,omitempty"`
-		NodeID     string          `json:"node_id"`
-		Para       json.RawMessage `json:"para,omitempty"`
+		Name           string          `json:"name"`
+		Type           string          `json:"type"`
+		Target         string          `json:"target"`
+		Domain         string          `json:"domain,omitempty"`
+		ListenPort     int             `json:"listen_port,omitempty"`
+		Enabled        *bool           `json:"enabled,omitempty"`
+		NodeID         string          `json:"node_id"`
+		OriginalNodeID string          `json:"original_node_id,omitempty"`
+		Para           json.RawMessage `json:"para,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
@@ -176,6 +177,14 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		if !ok || node.OwnerUserID != claims.UserID {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
+		}
+		// 迁移时还需校验旧节点归属
+		if req.OriginalNodeID != "" && req.OriginalNodeID != req.NodeID {
+			oldNode, ok := h.nodeMgr.Get(r.Context(), req.OriginalNodeID)
+			if !ok || oldNode.OwnerUserID != claims.UserID {
+				ResponseError(w, http.StatusNotFound, 404, "Original node not found")
+				return
+			}
 		}
 	}
 
@@ -205,7 +214,13 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.tunnelSvc.ApplyTunnel(r.Context(), req.NodeID, newTunnel)
+	var result core.TunnelChangeResult
+	var err error
+	if req.OriginalNodeID != "" && req.OriginalNodeID != req.NodeID {
+		result, err = h.tunnelSvc.MoveTunnel(r.Context(), req.OriginalNodeID, req.NodeID, newTunnel)
+	} else {
+		result, err = h.tunnelSvc.ApplyTunnel(r.Context(), req.NodeID, newTunnel)
+	}
 	if err != nil {
 		if err == core.ErrNodeNotFound {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
