@@ -169,8 +169,13 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
-	if req.Name == "" || req.Type == "" || req.Target == "" || req.NodeID == "" {
-		ResponseError(w, http.StatusBadRequest, 400, "name, type, target, node_id are required")
+	clientLocalTypes := map[string]bool{"ser2mq": true, "vpn-manager": true, "ser2tcp": true, "ser2udp": true}
+	if req.Name == "" || req.Type == "" || req.NodeID == "" {
+		ResponseError(w, http.StatusBadRequest, 400, "name, type, node_id are required")
+		return
+	}
+	if req.Target == "" && !clientLocalTypes[req.Type] {
+		ResponseError(w, http.StatusBadRequest, 400, "target is required")
 		return
 	}
 
