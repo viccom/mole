@@ -329,17 +329,31 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 		defer func() {
 			node := state.get()
 			if node != nil {
-				tunnels := append([]core.Tunnel(nil), node.Tunnels...)
-
-				cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
-					n.Status = core.NodeStatusOffline
-				})
-				cs.nodeMgr.Remove(ctx, node.ID)
-
-				if cs.onNodeDisconnect != nil {
-					cs.onNodeDisconnect(node.ID, tunnels)
+				// Guard: if another connection displaced us (same nodeID,
+				// different session), skip cleanup to avoid removing the
+				// newly registered node.
+				displaced := false
+				if _, ok := cs.nodeMgr.Get(ctx, node.ID); ok {
+					if currentSess, err := cs.nodeMgr.GetSession(ctx, node.ID); err == nil && currentSess != session {
+						displaced = true
+					}
 				}
-				slog.Info("Node disconnected", "nodeId", node.ID, "remote", remoteAddr)
+
+				if displaced {
+					slog.Debug("Node re-registered by new connection, skipping cleanup", "nodeId", node.ID)
+				} else {
+					tunnels := append([]core.Tunnel(nil), node.Tunnels...)
+
+					cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
+						n.Status = core.NodeStatusOffline
+					})
+					cs.nodeMgr.Remove(ctx, node.ID)
+
+					if cs.onNodeDisconnect != nil {
+						cs.onNodeDisconnect(node.ID, tunnels)
+					}
+					slog.Info("Node disconnected", "nodeId", node.ID, "remote", remoteAddr)
+				}
 			}
 			session.Close()
 			conn.Close()
