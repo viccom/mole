@@ -29,18 +29,22 @@ type WSDialerConfig struct {
 func NewWSDialer(cfg WSDialerConfig) DialFunc {
 	return func(ctx context.Context, addr string) (net.Conn, error) {
 		var url string
+		tlsConfig := cfg.TLSConfig
 		if strings.HasPrefix(addr, "ws://") || strings.HasPrefix(addr, "wss://") {
 			url = addr
+			if strings.HasPrefix(addr, "wss://") && tlsConfig == nil {
+				tlsConfig = &tls.Config{InsecureSkipVerify: true}
+			}
 		} else {
 			scheme := "ws"
-			if cfg.TLSConfig != nil {
+			if tlsConfig != nil {
 				scheme = "wss"
 			}
 			url = fmt.Sprintf("%s://%s/ws", scheme, addr)
 		}
 		dialer := websocket.Dialer{
 			HandshakeTimeout: DefaultConnectTimeout,
-			TLSClientConfig:  cfg.TLSConfig,
+			TLSClientConfig:  tlsConfig,
 		}
 
 		wsConn, _, err := dialer.DialContext(ctx, url, nil)
