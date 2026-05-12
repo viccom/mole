@@ -1,11 +1,13 @@
 package tunnel
 
 import (
+	"context"
 	"crypto/sha256"
 	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	kcp "github.com/xtaci/kcp-go/v5"
 )
@@ -64,7 +66,9 @@ func (t *KCPTransport) Listen(addr string) (net.Listener, error) {
 		"encrypted", t.Config.Key != "",
 	)
 
-	return &kcpListener{Listener: ln, cfg: t.Config}, nil
+	kl := &kcpListener{Listener: ln, cfg: t.Config}
+	go kl.snmpMonitor(context.Background())
+	return kl, nil
 }
 
 func (t *KCPTransport) Name() string {
@@ -86,6 +90,46 @@ type kcpListener struct {
 	cfg       KCPConfig
 	connMap   sync.Map // remoteAddr → *trackedConn
 	connCount atomic.Int64
+}
+
+func (l *kcpListener) snmpMonitor(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	var lastInPkts, lastInErrs, lastInCsumErrors, lastKCPInErrors uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			snmp := kcp.DefaultSnmp
+			inPkts := atomic.LoadUint64(&snmp.InPkts)
+			inErrs := atomic.LoadUint64(&snmp.InErrs)
+			inCsumErrors := atomic.LoadUint64(&snmp.InCsumErrors)
+			kcpInErrors := atomic.LoadUint64(&snmp.KCPInErrors)
+			inBytes := atomic.LoadUint64(&snmp.InBytes)
+			outPkts := atomic.LoadUint64(&snmp.OutPkts)
+			outBytes := atomic.LoadUint64(&snmp.OutBytes)
+			currEstab := atomic.LoadUint64(&snmp.CurrEstab)
+
+			deltaPkts := inPkts - lastInPkts
+			deltaErrs := inErrs - lastInErrs
+			deltaCsum := inCsumErrors - lastInCsumErrors
+			deltaKCP := kcpInErrors - lastKCPInErrors
+
+			slog.Info("KCP SNMP",
+				"inPkts", deltaPkts, "inBytes", inBytes,
+				"outPkts", outPkts, "outBytes", outBytes,
+				"inErrs", deltaErrs, "inCsumErrs", deltaCsum,
+				"kcpInErrs", deltaKCP,
+				"currEstab", currEstab, "active", l.connCount.Load(),
+			)
+
+			lastInPkts = inPkts
+			lastInErrs = inErrs
+			lastInCsumErrors = inCsumErrors
+			lastKCPInErrors = kcpInErrors
+		}
+	}
 }
 
 func (l *kcpListener) Accept() (net.Conn, error) {
