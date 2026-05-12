@@ -17,6 +17,12 @@ type Config struct {
 	Auth     AuthConfig     `yaml:"auth"`
 	Database DatabaseConfig `yaml:"database"`
 	Logging  LoggingConfig  `yaml:"logging"`
+	Feishu   FeishuConfig   `yaml:"feishu"`
+}
+
+type FeishuConfig struct {
+	AppID     string `yaml:"app_id"`
+	AppSecret string `yaml:"app_secret"`
 }
 
 type ServerConfig struct {
@@ -42,7 +48,8 @@ type TLSConfig struct {
 
 // GatewayConfig 网关配置
 type GatewayConfig struct {
-	HyphenRouting bool `yaml:"hyphen_routing"` // 泛域名分隔符：true=hyphen(-), false=dot(.)
+	HyphenRouting bool   `yaml:"hyphen_routing"` // 泛域名分隔符：true=hyphen(-), false=dot(.)
+	DefaultDomain string `yaml:"default_domain"`   // 隧道访问地址默认域名
 }
 
 // KCPConfig KCP 协议配置
@@ -197,6 +204,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MA_TLS_KEY"); v != "" {
 		cfg.Server.TLS.KeyFile = v
+	}
+	if v := os.Getenv("MA_FEISHU_APP_ID"); v != "" {
+		cfg.Feishu.AppID = v
+	}
+	if v := os.Getenv("MA_FEISHU_APP_SECRET"); v != "" {
+		cfg.Feishu.AppSecret = v
 	}
 }
 

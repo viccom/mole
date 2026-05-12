@@ -171,3 +171,12 @@ type TunnelRuntimeStats struct {
 	ActiveConns  int64  `json:"active_connections"`
 	LastActivity string `json:"last_activity,omitempty"`
 }
+
+// FeishuBinding 飞书账户绑定关系
+type FeishuBinding struct {
+	OpenID     string    `json:"open_id"`
+	UserID     string    `json:"user_id"`
+	FeishuName string    `json:"feishu_name"`
+	AvatarURL  string    `json:"avatar_url,omitempty"`
+	BoundAt    time.Time `json:"bound_at"`
+}

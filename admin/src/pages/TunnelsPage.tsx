@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
@@ -11,7 +11,7 @@ import { StatCard } from '../components/StatCard'
 import { TunnelFormModal } from '../components/TunnelFormModal'
 import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
-import { tunnelAccessUrl, formatBytes, formatTimeAgo } from '../lib/utils'
+import { tunnelAccessUrl, formatBytes, formatTimeAgo, fetchDefaultDomain } from '../lib/utils'
 
 type TabKey = 'all' | 'web' | 'stream' | 'serial' | 'vpn'
 type FilterKey = 'all' | 'enabled' | 'disabled' | 'active'
@@ -87,6 +87,7 @@ export function TunnelsPage() {
   const [filterStatus, setFilterStatus] = useState<FilterKey>('all')
   const [searchKeyword, setSearchKeyword] = useState('')
   const [showDetails, setShowDetails] = useState(false)
+  useEffect(() => { fetchDefaultDomain() }, [])
   const [filterNodeId, setFilterNodeId] = useState('')
 
   const { data, loading, run: fetchData } = useRequest<TunnelPageData>(

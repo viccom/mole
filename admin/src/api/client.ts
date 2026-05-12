@@ -107,6 +107,21 @@ export const api = {
       method: 'POST', body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
     }),
 
+  // Feishu SSO
+  feishuConfig: () =>
+    request<{ app_id: string }>('/auth/feishu/config'),
+  feishuCallback: (code: string) =>
+    request<{ need_bind: boolean; feishu_token?: string; feishu_name?: string; token?: string; expires_at?: string; user?: { id: string; username: string } }>('/auth/feishu/callback', {
+      method: 'POST', body: JSON.stringify({ code }),
+    }),
+  feishuBind: (feishuToken: string, username: string, password: string) =>
+    request<{ token: string; expires_at: string; user: { id: string; username: string } }>('/auth/feishu/bind', {
+      method: 'POST', body: JSON.stringify({ feishu_token: feishuToken, username, password }),
+    }),
+  getFeishuBinding: () =>
+    request<{ bound: boolean; feishu_name?: string; avatar_url?: string; bound_at?: string }>('/me/feishu-bindings'),
+  unbindFeishu: () => request('/me/feishu-bindings', { method: 'DELETE' }),
+
   // Users
   getUsers: () => request<User[]>('/users'),
   createUser: (data: { username: string; password: string; status: string; role_ids?: string[] }) =>

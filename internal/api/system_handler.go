@@ -24,7 +24,14 @@ func NewSystemHandler(db *redka.DB, cfg *config.Config) *SystemHandler {
 }
 
 func (h *SystemHandler) Version(w http.ResponseWriter, r *http.Request) {
-	ResponseOK(w, version.GetSystemInfo())
+	si := version.GetSystemInfo()
+	ResponseOK(w, map[string]any{
+		"version":       si.Version,
+		"git_hash":      si.GitHash,
+		"build_date":    si.BuildDate,
+		
+		"default_domain": h.cfg.Server.Gateway.DefaultDomain,
+	})
 }
 
 func (h *SystemHandler) Health(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +65,7 @@ func (h *SystemHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
 			"max_nodes":      h.cfg.Server.MaxNodes,
 			"max_concurrent": h.cfg.Server.MaxConcurrent,
 			"tls_enabled":    h.cfg.Server.TLS.Enabled,
+			"default_domain": h.cfg.Server.Gateway.DefaultDomain,
 		},
 		"mqtt": map[string]any{
 			"enabled":  h.cfg.MQTT.Enabled,

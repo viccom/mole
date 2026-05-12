@@ -17,6 +17,7 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/config"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/feishu"
 	"moleAgent_Serv/internal/logging"
 	"moleAgent_Serv/internal/mqtt"
 	"moleAgent_Serv/internal/node"
@@ -195,35 +196,48 @@ func main() {
 		}()
 	}
 
+	// --- 飞书集成 ---
+	feishuClient := feishu.NewClient(cfg.Feishu.AppID, cfg.Feishu.AppSecret)
+	feishuBindingRepo := storage.NewFeishuBindingRepo(db)
+
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo)
+	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, jwtMgr)
 	adminDir, _ := os.Getwd()
 	distDir := filepath.Join(adminDir, "admin", "dist")
 	fileServer := http.FileServer(http.Dir(distDir))
 	adminFS := http.StripPrefix("/admin", fileServer)
-	// SPA fallback: 每次从磁盘读取 index.html，前端重新编译后无需重启
+	mobileDistDir := filepath.Join(adminDir, "mobile", "dist")
+	mobileFS := http.StripPrefix("/mobile", http.FileServer(http.Dir(mobileDistDir)))
+	mobileIndexPath := filepath.Join(mobileDistDir, "index.html")
 	indexPath := filepath.Join(distDir, "index.html")
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/admin") {
-			// 尝试匹配静态文件
-			staticPath := strings.TrimPrefix(r.URL.Path, "/admin")
+	spaHandler := func(fs http.Handler, dist, index string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			prefix := r.URL.Path[:strings.Index(r.URL.Path[1:], "/")+1]
+			staticPath := strings.TrimPrefix(r.URL.Path, prefix)
 			if staticPath == "" {
 				staticPath = "/"
 			}
-			fullPath := filepath.Join(distDir, filepath.Clean(staticPath))
+			fullPath := filepath.Join(dist, filepath.Clean(staticPath))
 			if fi, err := os.Stat(fullPath); err == nil && !fi.IsDir() {
-				adminFS.ServeHTTP(w, r)
+				fs.ServeHTTP(w, r)
 				return
 			}
-			// 带扩展名的资源请求不 fallback，直接 404
-				if strings.Contains(staticPath, ".") {
-					http.NotFound(w, r)
-					return
-				}
-				// SPA fallback: 返回 index.html
+			if strings.Contains(staticPath, ".") {
+				http.NotFound(w, r)
+				return
+			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			html, _ := os.ReadFile(indexPath)
+			html, _ := os.ReadFile(index)
 			w.Write(html)
+		}
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/admin") {
+			spaHandler(adminFS, distDir, indexPath).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/mobile") {
+			spaHandler(mobileFS, mobileDistDir, mobileIndexPath).ServeHTTP(w, r)
 			return
 		}
 		apiRouter.ServeHTTP(w, r)
@@ -288,6 +302,9 @@ func buildAPIRouter(
 	nodeRepo core.NodeRepo,
 	tunnelSvc *service.TunnelConfigService,
 	accessTokenRepo core.AccessTokenRepo,
+	feishuClient *feishu.Client,
+	feishuBindingRepo core.FeishuBindingRepo,
+	jwtMgr *auth.JWTManager,
 ) http.Handler {
 	router := api.NewRouter(mw)
 
@@ -300,11 +317,15 @@ func buildAPIRouter(
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
+	feishuH := api.NewFeishuHandler(feishuClient, authSvc, feishuBindingRepo, userRepo, jwtMgr, rbacEngine, storage.DB())
 
 	// === 公开端点 ===
 	router.RegisterPublic("POST", "/api/v1/auth/login", authH.Login)
 	router.RegisterPublic("GET", "/api/v1/health", sysH.Health)
 	router.RegisterPublic("GET", "/api/v1/version", sysH.Version)
+	router.RegisterPublic("POST", "/api/v1/auth/feishu/callback", feishuH.Callback)
+	router.RegisterPublic("POST", "/api/v1/auth/feishu/bind", feishuH.Bind)
+	router.RegisterPublic("GET", "/api/v1/auth/feishu/config", feishuH.Config)
 
 	// === 需要认证的端点 ===
 	router.RegisterAuth("POST", "/api/v1/auth/logout", authH.Logout)
@@ -317,6 +338,10 @@ func buildAPIRouter(
 	router.RegisterAuth("POST", "/api/v1/me/access-tokens", tokenH.Create)
 	router.RegisterAuth("DELETE", "/api/v1/me/access-tokens/", tokenH.Delete)
 	router.RegisterAuth("POST", "/api/v1/me/access-tokens/", tokenH.Rotate)
+
+	// === 飞书绑定管理 ===
+	router.RegisterAuth("GET", "/api/v1/me/feishu-bindings", feishuH.GetBinding)
+	router.RegisterAuth("DELETE", "/api/v1/me/feishu-bindings", feishuH.Unbind)
 
 	// === 用户管理（RBAC） ===
 	router.Register("GET", "/api/v1/users", userH.List, "users", "read")

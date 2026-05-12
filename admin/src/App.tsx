@@ -5,6 +5,7 @@ import { useAuth } from './hooks/useAuth'
 import { Loading } from './components/Loading'
 
 const LoginPage = lazy(() => import('./pages/LoginPage').then(module => ({ default: module.LoginPage })))
+const FeishuBindPage = lazy(() => import('./pages/FeishuBindPage').then(module => ({ default: module.FeishuBindPage })))
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then(module => ({ default: module.DashboardPage })))
 const NodesPage = lazy(() => import('./pages/NodesPage').then(module => ({ default: module.NodesPage })))
 const TunnelsPage = lazy(() => import('./pages/TunnelsPage').then(module => ({ default: module.TunnelsPage })))
@@ -29,6 +30,7 @@ export default function App() {
     <BrowserRouter basename="/admin">
       <Routes>
         <Route path="/login" element={<LazyPage><LoginPage /></LazyPage>} />
+        <Route path="/feishu-bind" element={<LazyPage><FeishuBindPage /></LazyPage>} />
         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route path="/dashboard" element={<LazyPage><DashboardPage /></LazyPage>} />
           <Route path="/nodes" element={<LazyPage><NodesPage /></LazyPage>} />

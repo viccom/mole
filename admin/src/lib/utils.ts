@@ -42,15 +42,32 @@ export function getGatewayBase(): string {
   return parts.length > 2 ? parts.slice(1).join('.') : window.location.hostname
 }
 
-export function tunnelAccessUrl(tunnel: { type: string; domain?: string; name?: string; node_id?: string; listen_port?: number }): string {
-  const base = getGatewayBase()
+let cachedDefaultDomain: string | undefined
+
+export async function fetchDefaultDomain(): Promise<string | undefined> {
+  try {
+    const res = await fetch('/api/v1/version')
+    const data = await res.json()
+    cachedDefaultDomain = data?.data?.default_domain || data?.default_domain || ''
+    return cachedDefaultDomain || undefined
+  } catch { return undefined }
+}
+
+export function getDefaultDomain(): string | undefined {
+  return cachedDefaultDomain || undefined
+}
+
+export function tunnelAccessUrl(tunnel: { type: string; domain?: string; name?: string; node_id?: string; listen_port?: number }, defaultDomain?: string): string {
+  const dd = defaultDomain || cachedDefaultDomain
   if (tunnel.type === 'http' || tunnel.type === 'https') {
     const scheme = tunnel.type
-    const host = tunnel.domain || `${tunnel.name}-${tunnel.node_id}.${base}`
-    return `${scheme}://${host}`
+    if (tunnel.domain) return `${scheme}://${tunnel.domain}`
+    const base = dd || getGatewayBase()
+    return `${scheme}://${tunnel.name}-${tunnel.node_id}.${base}`
   }
   if (tunnel.listen_port) {
-    return `${tunnel.type}://${window.location.hostname}:${tunnel.listen_port}`
+    const host = dd || window.location.hostname
+    return `${tunnel.type}://${host}:${tunnel.listen_port}`
   }
   return '-'
 }

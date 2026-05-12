@@ -14,6 +14,8 @@
 
 **前端 (admin/)**: React 18 + TypeScript + Vite + TailwindCSS + Headless UI
 
+**手机端 (mobile/)**: React 18 + TypeScript + Vite + TailwindCSS（独立前端，底部 Tab 导航）
+
 ## 项目结构
 
 ```
@@ -21,16 +23,18 @@ cmd/moleagent-serv/     入口
 internal/
   config/               配置加载 (YAML + 环境变量)
   core/                 领域模型、接口、错误、事件总线
-  storage/              redka 仓储层 (UserRepo, RoleRepo, NodeRepo, AccessTokenRepo)
+  storage/              redka 仓储层 (UserRepo, RoleRepo, NodeRepo, AccessTokenRepo, FeishuBindingRepo)
   auth/                 JWT、bcrypt、RBAC、中间件
   api/                  HTTP API 路由与处理器
+  feishu/               飞书开放平台 API 客户端（tenant_access_token、用户信息）
   tunnel/               隧道核心 (control, http, tcp, udp, registry, stats, transport)
   node/                 分片节点管理器 + 健康检查
   service/              业务服务（接入 Token 认证、隧道配置）
   mqtt/                 内嵌 MQTT Broker
   logging/              日志初始化
 configs/                配置文件模板
-admin/                  前端 React SPA（构建产物部署在 admin/dist/）
+admin/                  PC 前端 React SPA（构建产物部署在 admin/dist/）
+mobile/                 手机端独立前端（底部 Tab 导航，构建产物部署在 mobile/dist/）
 ```
 
 ## 架构要点
@@ -177,6 +181,34 @@ config.Load() → logging.Init() → storage.Init()
 - `GET/POST/DELETE /api/v1/me/access-tokens` + `POST .../rotate`
 - 使用 `RegisterAuth`（仅认证，无 RBAC 资源）
 - 从 JWT claims 直接取 UserID，用户只能管理自己的 Token
+
+
+### 飞书企业自建应用 SSO
+
+**配置**: `feishu.app_id` + `feishu.app_secret`（YAML 或 `MA_FEISHU_APP_ID` / `MA_FEISHU_APP_SECRET` 环境变量）
+
+**认证流程**:
+1. 前端检测飞书环境 → JSAPI `requestAuthCode(appId)` 获取 auth_code
+2. `POST /api/v1/auth/feishu/callback { code }` → 后端用 tenant_access_token + auth_code 换用户信息
+3. 已绑定 → 签发 JWT 一键登录；未绑定 → 返回 `need_bind` + 临时 `feishu_token`（5 分钟有效）
+4. `POST /api/v1/auth/feishu/bind { feishu_token, username, password }` → 验证密码 → 写绑定 → 签发 JWT
+
+**绑定存储**（Redka）:
+- `feishu_bindings` hash: `open_id → { user_id, feishu_name, avatar_url, bound_at }`
+- `feishu_user_bindings` hash: `user_id → open_id`（反向索引）
+- `feishu_bind_tokens` string: 临时令牌，5 分钟 TTL
+
+**前端**:
+- PC 端（admin/）：LoginPage 检测飞书环境自动 SSO，非飞书环境显示「飞书登录」按钮；FeishuBindPage 处理首次绑定
+- 手机端（mobile/）：独立前端，底部 Tab 导航（节点/隧道/设置），自动触发飞书 SSO，仅节点管理和隧道管理
+
+**关键约定**:
+- 一个飞书 open_id 只能绑定一个 moleAgent 账户
+- 一个 moleAgent 账户也只绑一个飞书身份
+- `GET /api/v1/auth/feishu/config` 公开端点返回 `app_id`（供前端 JSAPI 调用）
+- `GET/DELETE /api/v1/me/feishu-bindings` 需认证端点（查看/解绑）
+- `internal/feishu/client.go` 封装飞书 API，tenant_access_token 缓存 2 小时
+- 飞书未配置（app_id 为空）时所有飞书端点返回 503
 
 ### 隧道创建归属校验
 

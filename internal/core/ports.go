@@ -122,3 +122,12 @@ type TunnelStatsReader interface {
 	GetAll() map[string]*TunnelRuntimeStats
 	Remove(name string)
 }
+
+// FeishuBindingRepo 飞书账户绑定仓库接口
+type FeishuBindingRepo interface {
+	Create(binding *FeishuBinding) error
+	GetByOpenID(openID string) (*FeishuBinding, error)
+	GetByUserID(userID string) (*FeishuBinding, error)
+	DeleteByOpenID(openID string) error
+	DeleteByUserID(userID string) error
+}

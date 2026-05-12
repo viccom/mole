@@ -25,6 +25,7 @@ server:
     recv_window: 0         # 接收窗口（0=使用默认值）
   gateway:
     hyphen_routing: true    # 泛域名分隔符: true=hyphen(-), false=dot(.)
+    default_domain: ""      # 隧道访问地址默认域名，空则自动推断（如 mole.example.com）
 
 mqtt:
   enabled: true
@@ -52,3 +53,7 @@ logging:
   console:
     enabled: true
     color: true
+
+feishu:
+  app_id: ""               # 飞书企业自建应用 App ID，也可通过 MA_FEISHU_APP_ID 环境变量设置
+  app_secret: ""           # 飞书企业自建应用 App Secret，也可通过 MA_FEISHU_APP_SECRET 环境变量设置

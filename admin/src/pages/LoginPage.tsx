@@ -1,15 +1,60 @@
-import { useState, FormEvent } from 'react'
+import { useState, useEffect, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
+import { isFeishuEnv, requestAuthCode } from '../lib/feishu'
+import { api } from '../api/client'
 
 export function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const { login } = useAuth()
+  const [feishuAvailable, setFeishuAvailable] = useState(false)
+  const [feishuAppId, setFeishuAppId] = useState('')
+  const { login, feishuLogin } = useAuth()
   const { toast } = useToast()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const config = await api.feishuConfig()
+        if (config.app_id) {
+          setFeishuAvailable(true)
+          setFeishuAppId(config.app_id)
+          if (isFeishuEnv()) {
+            handleFeishuSSO(config.app_id)
+          }
+        }
+      } catch {
+        // feishu not configured, ignore
+      }
+    }
+    init()
+  }, [])
+
+  const handleFeishuSSO = async (appId: string) => {
+    setLoading(true)
+    try {
+      const code = await requestAuthCode(appId)
+      const result = await feishuLogin(code)
+      if (result.needBind) {
+        navigate('/feishu-bind', { state: { feishuToken: result.feishuToken, feishuName: result.feishuName } })
+      } else {
+        toast('登录成功', 'success')
+        navigate('/dashboard')
+      }
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : '飞书登录失败', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleFeishuClick = async () => {
+    if (!feishuAppId) { toast('飞书未配置', 'error'); return }
+    handleFeishuSSO(feishuAppId)
+  }
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -38,6 +83,21 @@ export function LoginPage() {
           <h1 className="text-2xl font-bold text-[#3730A3]">MoleAgent</h1>
           <p className="text-gray-500 mt-1">管理后台登录</p>
         </div>
+        {feishuAvailable && (
+          <>
+            <button onClick={handleFeishuClick} disabled={loading}
+              className="w-full py-2.5 mb-4 bg-[#3370FF] text-white rounded-lg font-medium text-sm hover:bg-[#245BDB] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6zm4 4h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+              </svg>
+              {loading ? '飞书登录中...' : '飞书登录'}
+            </button>
+            <div className="relative my-4">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200" /></div>
+              <div className="relative flex justify-center"><span className="bg-white px-3 text-xs text-gray-400">或</span></div>
+            </div>
+          </>
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">用户名</label>
