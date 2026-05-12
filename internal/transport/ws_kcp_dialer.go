@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,13 +28,16 @@ type WSDialerConfig struct {
 // NewWSDialer returns a DialFunc that connects via WebSocket.
 func NewWSDialer(cfg WSDialerConfig) DialFunc {
 	return func(ctx context.Context, addr string) (net.Conn, error) {
-		scheme := "ws"
-		host := addr
-		if cfg.TLSConfig != nil {
-			scheme = "wss"
+		var url string
+		if strings.HasPrefix(addr, "ws://") || strings.HasPrefix(addr, "wss://") {
+			url = addr
+		} else {
+			scheme := "ws"
+			if cfg.TLSConfig != nil {
+				scheme = "wss"
+			}
+			url = fmt.Sprintf("%s://%s/ws", scheme, addr)
 		}
-
-		url := fmt.Sprintf("%s://%s/ws", scheme, host)
 		dialer := websocket.Dialer{
 			HandshakeTimeout: DefaultConnectTimeout,
 			TLSClientConfig:  cfg.TLSConfig,
