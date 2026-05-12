@@ -203,6 +203,23 @@ config.Load() → logging.Init() → storage.Init()
 - 不修改持久化配置，节点重连时通过 `applyRuntimeTunnels` 重新激活
 - 由 `controlSrv.SetOnNodeDisconnect` 和 `health check` 两处触发
 
+### 节点故障重连快速恢复
+
+**三层防护机制**（所有传输协议共用 1、2）：
+
+1. **goroutine 置换保护**：`setupSmuxAndAccept` 的 defer 检查 displacement 状态——旧 goroutine 发现新连接已接管时跳过 Remove，防止误删新注册节点
+2. **probeOldSession 探测**：`handleRegister` 发现 nodeID 已存在时，3 秒超时探测旧 session（OpenStream → 写 tunnel_push → 等响应）。真活→拒绝重连；假死→置换，新连接接管
+3. **传输层差异**：
+   - **TCP/WS**：新连接始终可达（新 socket/upgrade），无需额外处理，重连总耗时约 5-8 秒
+   - **KCP**：需要特殊处理（见下文）
+
+**KCP 重连特殊机制**：
+
+- smux keepalive **5s/15s**（TCP/WS 为 30s/90s），加速假死 session 检测
+- 客户端发送 probe byte `\x00` 触发服务端 kcp-go Accept，服务端 `handleConnection` 必须先读取丢弃，否则 `\x00` 残留污染 auth JSON 读取
+- `kcpListener` 按 remote address 追踪连接，新连接到达时主动关闭旧连接（stale connection tracking）
+- kcp-go listener 内部 sessions map 按 conv+sn 处理路由：conv 匹配→喂给旧 session；conv 不匹配+sn==0→替换旧 session；conv 不匹配+sn!=0→静默丢弃
+
 ## 构建 & 运行
 
 ```bash
