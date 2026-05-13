@@ -191,8 +191,12 @@ func (pm *ProcessMgr) Stop() {
 
 	// 尝试优雅退出
 	if pm.process != nil {
-		// 先尝试 SIGTERM
-		pm.process.Signal(syscall.SIGTERM)
+		// 使用平台相关的优雅停止方式
+		// Windows: 使用 Kill (由于 CREATE_NEW_PROCESS_GROUP)
+		// Unix/Linux/macOS: 使用 SIGTERM
+		if err := StopProcess(pm.process); err != nil {
+			log.Printf("vpn-manager %s stop warning: %v", pm.name, err)
+		}
 
 		// 等待退出超时
 		done := make(chan struct{})
@@ -205,6 +209,7 @@ func (pm *ProcessMgr) Stop() {
 		case <-done:
 		case <-time.After(time.Duration(pm.cfg.Watchdog.QuitGrace) * time.Second):
 			// 超时，强制 kill
+			log.Printf("vpn-manager %s timeout, force kill", pm.name)
 			pm.process.Kill()
 		}
 	}
