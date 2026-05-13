@@ -1,4 +1,14 @@
-.PHONY: build release clean ensure-wails build-desktop build-manager build-gui build-all
+.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish
+
+.DEFAULT_GOAL := help
+
+help: ## 显示帮助信息
+	@echo "moleAgent_client $(VERSION)"
+	@echo ""
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Targets:"
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | sed 's/:.*## /: /' | column -t -s ':' | sed 's/^/  /'
 
 # This Makefile assumes a POSIX shell environment such as Git Bash/MSYS on Windows.
 # For native PowerShell builds, use scripts/build.ps1 and scripts/release.ps1.
@@ -6,7 +16,7 @@
 # 构建变量
 BINARY_NAME    := moleagent-client
 CMD_PATH       := ./cmd/moleagent-client
-RELEASE_DIR    := ../_release
+RELEASE_DIR    := ../_release/molec
 DESKTOP_DIR    := ./cmd/moleagent-desktop
 DESKTOP_NAME   := moleAgent-desktop
 MANAGER_DIR    := ./cmd/moleagent-manager
@@ -35,7 +45,7 @@ TARGETS := \
 	windows/amd64 \
 	windows/arm64
 
-ensure-wails:
+ensure-wails: ## 检查并安装 Wails CLI
 	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
 	if [ -z "$$WAILS_BIN" ]; then \
 		GOBIN=$$(go env GOBIN); \
@@ -58,13 +68,13 @@ ensure-wails:
 	echo ">> Using Wails: $$WAILS_BIN"
 
 # 默认：编译当前平台
-build:
+build: ## 编译当前平台 CLI 二进制
 	@echo ">> Building $(BINARY_NAME) ($(VERSION))..."
 	@mkdir -p $(RELEASE_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(RELEASE_DIR)/$(BINARY_NAME) $(CMD_PATH)
 	@echo ">> Done: $(RELEASE_DIR)/$(BINARY_NAME)"
 
-build-desktop: ensure-wails
+build-desktop: ensure-wails ## 编译桌面版 GUI（Wails）
 	@echo ">> Building $(DESKTOP_NAME) ($(VERSION))..."
 	@mkdir -p $(RELEASE_DIR)
 	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
@@ -78,7 +88,7 @@ build-desktop: ensure-wails
 	cp -f $(DESKTOP_DIR)/build/bin/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)
 	@echo ">> Done: $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)"
 
-build-manager: ensure-wails
+build-manager: ensure-wails ## 编译管理器 GUI（Wails）
 	@echo ">> Building $(MANAGER_NAME) ($(VERSION))..."
 	@mkdir -p $(RELEASE_DIR)
 	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
@@ -92,12 +102,12 @@ build-manager: ensure-wails
 	cp -f $(MANAGER_DIR)/build/bin/$(MANAGER_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
 	@echo ">> Done: $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)"
 
-build-gui: build-desktop build-manager
+build-gui: build-desktop build-manager ## 编译全部 GUI 应用
 
-build-all: build build-gui
+build-all: build build-gui ## 编译 CLI + 全部 GUI
 
 # 交叉编译所有平台
-release:
+release: ## 交叉编译所有平台二进制
 	@mkdir -p $(RELEASE_DIR)
 	@for target in $(TARGETS); do \
 		GOOS=$${target%/*}; \
@@ -113,8 +123,7 @@ release:
 	done
 	@echo ">> All platforms built in $(RELEASE_DIR)/"
 
-clean:
-	@rm -f $(RELEASE_DIR)/$(BINARY_NAME) $(RELEASE_DIR)/$(BINARY_NAME)-*
+clean: ## 清理编译产物
 	@rm -f $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
 	@echo ">> Cleaned $(BINARY_NAME) artifacts"
 
@@ -122,7 +131,7 @@ clean:
 UPLOAD_DIR  := px:/lhcos-data/appupdater/molec
 UPDATE_BASE := https://fs.px.metme.top/app/molec
 
-publish: release
+publish: release ## 编译所有平台并发布到升级服务器
 	@echo ">> Generating latest.json ..."
 	@echo '{"version":"$(VERSION)","date":"$(DATE)","assets":{' > $(RELEASE_DIR)/latest.json
 	@first=true; \
