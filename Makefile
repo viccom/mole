@@ -117,3 +117,35 @@ clean:
 	@rm -f $(RELEASE_DIR)/$(BINARY_NAME) $(RELEASE_DIR)/$(BINARY_NAME)-*
 	@rm -f $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
 	@echo ">> Cleaned $(BINARY_NAME) artifacts"
+
+# 生成 latest.json 并发布到升级服务器
+UPLOAD_DIR  := px:/lhcos-data/appupdater/molec
+UPDATE_BASE := https://fs.px.metme.top/app/molec
+
+publish: release
+	@echo ">> Generating latest.json ..."
+	@echo '{"version":"$(VERSION)","date":"$(DATE)","assets":{' > $(RELEASE_DIR)/latest.json
+	@first=true; \
+	for target in $(TARGETS); do \
+		GOOS=$${target%/*}; \
+		GOARCH=$${target##*/}; \
+		GOARM=""; \
+		EXT=""; \
+		if [ "$$GOARCH" = "armv7" ]; then GOARCH="arm"; GOARM="7"; fi; \
+		if [ "$$GOOS" = "windows" ]; then EXT=".exe"; fi; \
+		ARCH_TAG=$${target##*/}; \
+		FILE=$(BINARY_NAME)-$$GOOS-$$ARCH_TAG$$EXT; \
+		PATHFILE=$(RELEASE_DIR)/$$FILE; \
+		if [ ! -f "$$PATHFILE" ]; then continue; fi; \
+		SHA256=$$(sha256sum $$PATHFILE | cut -d' ' -f1); \
+		SIZE=$$(stat -c%s $$PATHFILE); \
+		if [ "$$first" = true ]; then first=false; else echo ',' >> $(RELEASE_DIR)/latest.json; fi; \
+		printf '"%s/%s":{"url":"$(UPDATE_BASE)/%s","sha256":"%s","size":%d}' \
+			$$GOOS $$ARCH_TAG $$FILE $$SHA256 $$SIZE >> $(RELEASE_DIR)/latest.json; \
+	done; \
+	echo '}}' >> $(RELEASE_DIR)/latest.json
+	@echo ">> latest.json:"
+	@cat $(RELEASE_DIR)/latest.json | python3 -m json.tool
+	@echo ">> Uploading to $(UPLOAD_DIR) ..."
+	@scp -r $(RELEASE_DIR)/$(BINARY_NAME)-* $(RELEASE_DIR)/latest.json $(UPLOAD_DIR)/
+	@echo ">> Published $(VERSION) to $(UPLOAD_DIR)/"

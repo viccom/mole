@@ -1,6 +1,6 @@
 module moleAgent_client
 
-go 1.24.0
+go 1.25.3
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
@@ -24,6 +24,7 @@ require (
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
+	github.com/viccom/go-selfupdater v0.0.0-20260513061528-db1217cca600 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect

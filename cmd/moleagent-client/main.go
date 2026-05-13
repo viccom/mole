@@ -11,8 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
+
+	selfupdate "github.com/viccom/go-selfupdater"
 
 	moleAgent_client "moleAgent_client"
 	"moleAgent_client/internal/builtin"
@@ -20,9 +23,16 @@ import (
 )
 
 func main() {
-	// 检测 -tunnels 子命令
-	if len(os.Args) > 1 && os.Args[1] == "-tunnels" {
-		os.Exit(handleTunnelsCmd(os.Args[2:]))
+	// 检测子命令
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-tunnels":
+			os.Exit(handleTunnelsCmd(os.Args[2:]))
+		case "-check-update":
+			os.Exit(handleCheckUpdate())
+		case "-self-update":
+			os.Exit(handleSelfUpdate())
+		}
 	}
 
 	cfgFlag := flag.String("config", "", "配置文件路径 (JSON)")
@@ -47,10 +57,14 @@ Options:
   -transport <proto>   传输协议 (tcp, ws, kcp)
   -http <port>         内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)
   -tunnels             隧道管理子命令 (见: moleagent-client -tunnels -h)
+  -check-update        检测新版本
+  -self-update         自动升级并重启
 
 Examples:
   moleagent-client -config client.json
   moleagent-client -server localhost:9981 -token mytoken
+  moleagent-client -check-update
+  moleagent-client -self-update
 `)
 	}
 	flag.Parse()
@@ -278,5 +292,75 @@ func deleteTunnel(baseURL, name string) int {
 	}
 
 	fmt.Printf("Tunnel %q deleted successfully.\n", name)
+	return 0
+}
+
+const defaultUpdateURL = "https://fs.px.metme.top/app/molec/latest.json"
+
+func handleCheckUpdate() int {
+	ver := version.Version
+	if ver == "dev" || ver == "" {
+		fmt.Fprintln(os.Stderr, "Error: cannot check update for dev build")
+		return 1
+	}
+
+	src := selfupdate.NewHTTPSource(defaultUpdateURL)
+	u := selfupdate.New(src, ver)
+
+	release, err := u.Check()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	if release == nil {
+		fmt.Printf("moleAgent_client %s is up to date (%s/%s)\n", ver, runtime.GOOS, runtime.GOARCH)
+		return 0
+	}
+
+	fmt.Printf("Update available: %s → %s\n", ver, release.Version)
+	asset, err := release.AssetForCurrentPlatform()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: %v\n", err)
+		return 0
+	}
+	fmt.Printf("  URL:    %s\n", asset.URL)
+	fmt.Printf("  SHA256: %s\n", asset.SHA256)
+	fmt.Printf("  Size:   %d bytes\n", asset.Size)
+	fmt.Printf("\nRun 'moleagent-client -self-update' to upgrade.\n")
+	return 0
+}
+
+func handleSelfUpdate() int {
+	ver := version.Version
+	if ver == "dev" || ver == "" {
+		fmt.Fprintln(os.Stderr, "Error: cannot update dev build")
+		return 1
+	}
+
+	src := selfupdate.NewHTTPSource(defaultUpdateURL)
+	u := selfupdate.New(src, ver,
+		selfupdate.WithLogger(func(format string, args ...any) {
+			fmt.Printf(format+"\n", args...)
+		}),
+	)
+
+	release, err := u.Check()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	if release == nil {
+		fmt.Printf("moleAgent_client %s is already up to date.\n", ver)
+		return 0
+	}
+
+	fmt.Printf("Updating %s → %s ...\n", ver, release.Version)
+	if err := u.UpdateAndRestart(release); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
 	return 0
 }
