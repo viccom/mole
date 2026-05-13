@@ -35,11 +35,14 @@ window.location.href.split('?')[0].split('#')[0]
 https://mole.metme.top/admin
 https://mole.metme.top/admin/
 https://mole.metme.top/admin/login
+https://mole.metme.top/admin/feishu-callback
 https://mole.metme.top/mobile
 https://mole.metme.top/mobile/
 ```
 
 > **经验教训**：SPA 的路由路径（如 `/admin/login`）也算页面 URL。`/admin/login` ≠ `/admin/login/`，末尾斜杠不匹配会导致 10236 错误。建议同时添加带和不带斜杠的版本。
+>
+> **⚠️ PC 扫码登录**：`/admin/feishu-callback` 是 PC 浏览器飞书 OAuth2 网页授权的回调地址，必须添加。如果缺失会导致错误码 20029（重定向 URL 有误）。如果通过内网 IP 访问（如 `http://192.168.1.100:8080`），也需要将 `http://192.168.1.100:8080/admin/feishu-callback` 添加到重定向 URL 列表中。
 
 ### 3. H5 可信域名
 
@@ -113,6 +116,8 @@ export function isFeishuEnv(): boolean {
 
 ### 4. 登录流程
 
+#### 飞书客户端内（H5 JSAPI）
+
 ```
 飞书客户端打开应用 → 检测 isFeishuEnv()
   → 自动调用 requestAuthCode(appId) 获取 auth_code
@@ -120,10 +125,22 @@ export function isFeishuEnv(): boolean {
       → 后端用 code 换取用户信息 (open_id)
         → 已绑定：直接返回 JWT token → 登录成功
         → 未绑定：返回 need_bind + feishu_token → 跳转绑定页面
-          → 用户输入用户名密码
-            → POST /api/v1/auth/feishu/bind { feishu_token, username, password }
-              → 绑定成功，返回 JWT token → 登录成功
 ```
+
+#### PC 浏览器（OAuth2 网页授权，扫码登录）
+
+```
+PC 浏览器访问 /admin/login → 点击"飞书扫码登录"
+  → 跳转飞书 OAuth2 授权页（显示二维码）
+    → 用户用飞书 App 扫码授权
+      → 飞书回调到 /admin/feishu-callback?code=xxx
+        → 前端提取 code → POST /api/v1/auth/feishu/callback { code }
+          → 后端用 code 换取用户信息 (open_id)
+            → 已绑定：直接返回 JWT token → 跳转 Dashboard
+            → 未绑定：返回 need_bind + feishu_token → 跳转绑定页面
+```
+
+> **前提**：飞书开发者后台 → 安全设置 → 重定向 URL 中必须添加 `/admin/feishu-callback` 的完整地址（如 `https://mole.metme.top/admin/feishu-callback`），否则会报错 20029。
 
 ## 后端集成
 
@@ -175,6 +192,7 @@ c.tokenExpire = time.Now().Add(time.Duration(expire) * time.Second)
 
 | 错误码 | 含义 | 排查方向 |
 |--------|------|----------|
+| 20029 | 重定向 URL 有误 | PC 扫码登录时，未在开发者后台添加 `/admin/feishu-callback` 的重定向 URL |
 | 10236 | URL 不合法 | 重定向 URL 未配置或末尾斜杠不匹配 |
 | 10235 | 未配置重定向 URL | 在开发者后台添加重定向 URL |
 | 10200 | appId 不合法 | 检查前端传入的 appId 是否正确 |
@@ -187,11 +205,11 @@ c.tokenExpire = time.Now().Add(time.Duration(expire) * time.Second)
 部署前逐一确认：
 
 - [ ] JSSDK CDN URL 正确且可访问（返回 200）
-- [ ] 重定向 URL 已添加所有可能的页面路径（带/不带末尾斜杠）
+- [ ] 重定向 URL 已添加所有可能的页面路径（含 `/admin/feishu-callback`，带/不带末尾斜杠）
 - [ ] 桌面端主页 / 移动端主页 URL 已配置
 - [ ] 应用已发布且目标用户在可用范围内
 - [ ] `requestAuthCode` 在 `h5sdk.ready()` 回调中调用
 - [ ] 后端 `SetExpire` 使用 `time.Duration` 而非裸数字
 - [ ] auth_code 只使用一次（不可重复调用 callback）
 - [ ] bind_token TTL 合理（建议 5 分钟）
-- [ ] 飞书客户端内测试（外部浏览器无法使用 JSAPI）
+- [ ] 飞书客户端内测试 H5 JSAPI 登录，PC 浏览器测试 OAuth2 扫码登录

@@ -93,10 +93,7 @@ export function NodeDetailPage() {
       <header className="sticky top-0 z-40 bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3">
         <button onClick={() => navigate('/nodes')}><ArrowLeft className="w-5 h-5 text-gray-600" /></button>
         <h1 className="text-lg font-semibold">{node.name}</h1>
-        <div className="ml-auto flex items-center gap-3">
-          <button onClick={refresh} className="text-blue-600 p-1.5 -m-1.5" disabled={loading}>
-            <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+        <div className="ml-auto flex items-center gap-1.5">
           {node.status === 'online' ? (
             <><Circle className="w-2.5 h-2.5 text-green-500 fill-green-500" /><span className="text-xs text-green-600">在线</span></>
           ) : (
@@ -116,7 +113,12 @@ export function NodeDetailPage() {
         </div>
 
         <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-          <h2 className="text-sm font-medium text-gray-500 mb-3">隧道 ({node.tunnels?.length || 0})</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-gray-500">隧道 ({node.tunnels?.length || 0})</h2>
+            <button onClick={refresh} className="text-blue-600 p-1 -m-1" disabled={loading}>
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
           {(!node.tunnels || node.tunnels.length === 0) && (
             <p className="text-sm text-gray-400 text-center py-4">暂无隧道</p>
           )}

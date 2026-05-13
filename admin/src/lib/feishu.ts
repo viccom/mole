@@ -20,6 +20,22 @@ export function isFeishuEnv(): boolean {
   return ua.includes('feishu') || ua.includes('lark')
 }
 
+export function buildOAuth2URL(appId: string): string {
+  const base = window.location.origin + '/admin/feishu-callback'
+  const params = new URLSearchParams({
+    app_id: appId,
+    redirect_uri: base,
+    state: randomState(),
+  })
+  return `https://open.feishu.cn/open-apis/authen/v1/authorize?${params.toString()}`
+}
+
+function randomState(): string {
+  const arr = new Uint8Array(16)
+  crypto.getRandomValues(arr)
+  return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('')
+}
+
 export function requestAuthCode(appId: string): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!window.h5sdk) {

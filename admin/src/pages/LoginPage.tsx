@@ -2,7 +2,7 @@ import { useState, useEffect, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
-import { isFeishuEnv, requestAuthCode } from '../lib/feishu'
+import { isFeishuEnv, requestAuthCode, buildOAuth2URL } from '../lib/feishu'
 import { api } from '../api/client'
 
 export function LoginPage() {
@@ -53,7 +53,11 @@ export function LoginPage() {
 
   const handleFeishuClick = async () => {
     if (!feishuAppId) { toast('飞书未配置', 'error'); return }
-    handleFeishuSSO(feishuAppId)
+    if (isFeishuEnv()) {
+      handleFeishuSSO(feishuAppId)
+    } else {
+      window.location.href = buildOAuth2URL(feishuAppId)
+    }
   }
 
   const handleSubmit = async (e: FormEvent) => {
@@ -90,7 +94,7 @@ export function LoginPage() {
               <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6zm4 4h-2v-2h2v2zm0-4h-2V7h2v6z"/>
               </svg>
-              {loading ? '飞书登录中...' : '飞书登录'}
+              {loading ? '飞书登录中...' : isFeishuEnv() ? '飞书登录' : '飞书扫码登录'}
             </button>
             <div className="relative my-4">
               <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200" /></div>
