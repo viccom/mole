@@ -9,11 +9,20 @@ import (
 	"syscall"
 )
 
+// Windows process creation flags
+const (
+	CREATE_NEW_PROCESS_GROUP = 0x00000200
+	CREATE_NO_WINDOW         = 0x08000000
+)
+
 // getSysProcAttr 获取系统进程属性
-// 在 Windows 上需要设置 CREATE_NEW_PROCESS_GROUP 来正确终止子进程
+// 在 Windows 上需要设置 CREATE_NEW_PROCESS_GROUP 和 CREATE_NO_WINDOW
 func getSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+		// 创建独立进程组，以便正确终止进程
+		CreationFlags: CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+		// 隐藏窗口
+		HideWindow: true,
 	}
 }
 
@@ -23,14 +32,11 @@ func getLogOutputPath(name string) string {
 }
 
 // StopProcess 优雅停止进程（Windows 专用）
-// 先尝试通过生成 Ctrl+C 事件优雅停止，如果失败则降级到强制终止
+// 在 Windows 上直接使用 Kill 方式
 func StopProcess(process *os.Process) error {
 	if process == nil {
 		return nil
 	}
-	// Windows 上，由于 CREATE_NEW_PROCESS_GROUP 标志，
-	// GenerateConsoleCtrlEvent 可能不会有效，因为该进程组没有控制台
-	// 所以直接使用 Kill 方式，避免不必要的错误日志
 	log.Printf("vpn-manager: killing Windows process (PID: %d)", process.Pid)
 	return process.Kill()
 }

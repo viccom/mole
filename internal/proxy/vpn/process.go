@@ -109,21 +109,30 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 	pm.clearError()
 	pm.mu.Unlock()
 
+	log.Printf("vpn-manager: starting %s", pm.name)
+	
 	// 查找程序路径
 	binPath, err := pm.findBinary()
 	if err != nil {
+		log.Printf("vpn-manager: binary not found for %s: %v", pm.name, err)
 		pm.setError("binary", err.Error())
 		pm.Stop()
 		return err
 	}
+	log.Printf("vpn-manager: found binary at %s", binPath)
 
+	// 构建命令参数
+	args := pm.cfg.BuildArgs()
+	log.Printf("vpn-manager: command: %s %v", binPath, args)
+	
 	// 创建命令
-	cmd := exec.Command(binPath, pm.cfg.BuildArgs()...)
+	cmd := exec.Command(binPath, args...)
 	cmd.SysProcAttr = getSysProcAttr()
 
 	// 设置工作目录
 	if dir := filepath.Dir(binPath); dir != "" {
 		cmd.Dir = dir
+		log.Printf("vpn-manager: working directory: %s", cmd.Dir)
 	}
 
 	pm.mu.Lock()
@@ -131,7 +140,9 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 	pm.mu.Unlock()
 
 	// 启动进程
+	log.Printf("vpn-manager: launching process for %s", pm.name)
 	if err := pm.cmd.Start(); err != nil {
+		log.Printf("vpn-manager: failed to start process for %s: %v", pm.name, err)
 		pm.setError("startup", err.Error())
 		pm.Stop()
 		return fmt.Errorf("start process: %w", err)
@@ -291,12 +302,13 @@ func (pm *ProcessMgr) findBinary() (string, error) {
 		}
 	}
 
-	// 2. 在 ./vnet/ 目录下查找
-	vnetDir := "./vnet"
+	// 2. 在 ./vnt/ 目录下查找
+	vntDir := "./vnt"
 	if exePath, err := os.Executable(); err == nil {
-		vnetDir = filepath.Join(filepath.Dir(exePath), "vnet")
+		vntDir = filepath.Join(filepath.Dir(exePath), "vnt")
 	}
-	if path := filepath.Join(vnetDir, binName); !strings.HasPrefix(binName, "/") {
+	log.Printf("vpn-manager: looking for %q in %s", binName, vntDir)
+	if path := filepath.Join(vntDir, binName); !strings.HasPrefix(binName, "/") {
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
 		}
@@ -314,7 +326,7 @@ func (pm *ProcessMgr) findBinary() (string, error) {
 		return path, nil
 	}
 
-	return "", fmt.Errorf("binary %q not found in ./vnet/ or $PATH", binName)
+	return "", fmt.Errorf("binary %q not found in ./vnt/ or $PATH", binName)
 }
 
 // setError 设置启动失败诊断信息

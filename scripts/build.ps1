@@ -19,7 +19,7 @@ $build = (git rev-parse --short HEAD 2>$null)
 if (-not $build) { $build = "unknown" }
 
 $date = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-$ldflags = "-s -w -X main.version=$version -X main.build=$build -X main.buildDate=$date"
+$ldflags = "-s -w -X moleAgent_client/internal/version.Version=$version -X moleAgent_client/internal/version.GitHash=$build -X moleAgent_client/internal/version.BuildDate=$date"
 
 New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 $output = Join-Path $releaseDir $binaryName

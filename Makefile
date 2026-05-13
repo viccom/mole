@@ -74,7 +74,7 @@ build-desktop: ensure-wails
 		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
 		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
 	fi; \
-	(cd $(DESKTOP_DIR) && "$$WAILS_BIN" build -clean -o $(DESKTOP_NAME)$(HOST_EXE)); \
+	(cd $(DESKTOP_DIR) && "$$WAILS_BIN" build -clean -o $(DESKTOP_NAME)$(HOST_EXE) -ldflags "$(LDFLAGS)"); \
 	cp -f $(DESKTOP_DIR)/build/bin/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)
 	@echo ">> Done: $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)"
 
@@ -88,7 +88,7 @@ build-manager: ensure-wails
 		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
 		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
 	fi; \
-	(cd $(MANAGER_DIR) && "$$WAILS_BIN" build -clean -o $(MANAGER_NAME)$(HOST_EXE)); \
+	(cd $(MANAGER_DIR) && "$$WAILS_BIN" build -clean -o $(MANAGER_NAME)$(HOST_EXE) -ldflags "$(LDFLAGS)"); \
 	cp -f $(MANAGER_DIR)/build/bin/$(MANAGER_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
 	@echo ">> Done: $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)"
 
