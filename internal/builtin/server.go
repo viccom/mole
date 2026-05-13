@@ -79,6 +79,7 @@ func NewHandler(clientProvider func() *moleAgent_client.Client) http.Handler {
 	registerTunnelAPI(mux, clientProvider)
 	mux.HandleFunc("/api/check-update", withCORS(handleCheckUpdate))
 	mux.HandleFunc("/api/self-update", withCORS(handleSelfUpdate))
+	mux.HandleFunc("/api/update-progress", withCORS(handleUpdateProgress))
 
 	mux.HandleFunc("/api/version", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -235,40 +235,100 @@ refreshData().then(scheduleRefresh);
 
 // ===== 版本更新检测 =====
 let updateChecked = false;
+let progressTimer = null;
+
+function formatBytes(n) {
+  if (!n || n <= 0) return '';
+  if (n < 1048576) return (n / 1024).toFixed(1) + 'K';
+  return (n / 1048576).toFixed(1) + 'M';
+}
 
 function checkForUpdate() {
   if (updateChecked) return;
   updateChecked = true;
   fetch('/api/check-update').then(r => r.json()).then(d => {
+    const badge = document.getElementById('update-badge');
+    if (!badge) return;
     if (d.has_update) {
-      const badge = document.getElementById('update-badge');
       const latest = document.getElementById('update-latest');
-      if (badge && latest) {
-        latest.textContent = d.latest;
-        badge.style.display = 'inline';
-      }
+      if (latest) latest.textContent = d.latest;
+      badge.style.display = 'block';
+      badge.style.color = '#52c41a';
+      badge.style.pointerEvents = 'auto';
+      badge.innerHTML = '↑ 升级到 <span id="update-latest">' + esc(d.latest) + '</span>';
+    } else {
+      badge.style.display = 'block';
+      badge.style.color = '#999';
+      badge.style.pointerEvents = 'none';
+      badge.textContent = '已是最新版';
     }
   }).catch(() => {});
 }
 
-function doSelfUpdate() {
+function setBadge(html, color) {
   const badge = document.getElementById('update-badge');
-  if (badge) {
-    badge.style.pointerEvents = 'none';
-    badge.innerHTML = '升级中...';
-    badge.style.color = '#999';
-  }
+  if (!badge) return;
+  badge.innerHTML = html;
+  badge.style.color = color || '#52c41a';
+  badge.style.pointerEvents = color === '#999' ? 'none' : 'auto';
+}
+
+function pollProgress() {
+  if (progressTimer) clearInterval(progressTimer);
+  progressTimer = setInterval(() => {
+    fetch('/api/update-progress').then(r => r.json()).then(p => {
+      if (p.error) {
+        setBadge('升级失败: ' + (p.error || '未知错误'), '#cf1322');
+        clearInterval(progressTimer);
+        return;
+      }
+      if (p.phase === 'done' || p.active === false) {
+        setBadge('升级完成，等待重启...', '#52c41a');
+        clearInterval(progressTimer);
+        progressTimer = null;
+        setTimeout(() => location.reload(), 4000);
+        return;
+      }
+      const pct = p.percent || 0;
+      const d = formatBytes(p.downloaded);
+      const t = formatBytes(p.total);
+      setBadge(`↑ ${p.phase || ''} ${pct}%${d ? ' (' + d + '/' + t + ')' : ''}...`, '#1890ff');
+    }).catch(() => {
+      clearInterval(progressTimer);
+      progressTimer = null;
+      setBadge('重启中...', '#52c41a');
+      setTimeout(() => location.reload(), 3000);
+    });
+  }, 1000);
+}
+
+function doSelfUpdate() {
+  setBadge('正在启动升级...', '#999');
   fetch('/api/self-update', {method: 'POST'}).then(r => r.json()).then(d => {
     if (d.error) {
-      if (badge) { badge.innerHTML = d.message; badge.style.color = '#cf1322'; }
+      setBadge(d.message, '#cf1322');
     } else {
-      if (badge) { badge.innerHTML = '升级成功，等待重启...'; badge.style.color = '#52c41a'; }
-      setTimeout(() => location.reload(), 5000);
+      pollProgress();
     }
   }).catch(() => {
-    // server restarting
-    setTimeout(() => location.reload(), 3000);
+    pollProgress();
   });
 }
 
-setTimeout(checkForUpdate, 2000);
+// 页面加载后：先检查是否有进行中的升级，再检测新版本
+setTimeout(() => {
+  fetch('/api/update-progress').then(r => r.json()).then(p => {
+    if (p.active === true && p.phase !== 'done') {
+      const badge = document.getElementById('update-badge');
+      if (badge) badge.style.display = 'block';
+      pollProgress();
+    } else {
+      checkForUpdate();
+    }
+  }).catch(() => {
+    checkForUpdate();
+  });
+}, 1500);
+
+// 暴露到全局作用域供 onclick 调用（module scope 下默认不可见）
+window.doSelfUpdate = doSelfUpdate;
