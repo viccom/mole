@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../api/client'
 import type { ServerConfig } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -8,7 +8,7 @@ import { FormField } from '../components/FormField'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
-import { Shield, Lock, Eye, EyeOff } from 'lucide-react'
+import { Shield, Lock, Eye, EyeOff, RefreshCw } from 'lucide-react'
 
 function PasswordInput({ value, onChange, show, onToggle, placeholder }: {
   value: string; onChange: (v: string) => void; show: boolean; onToggle: () => void; placeholder: string
@@ -48,6 +48,14 @@ export function SettingsPage() {
   const [accessKeyValue, setAccessKeyValue] = useState('')
   const [savingKey, setSavingKey] = useState(false)
   const [showDisableConfirm, setShowDisableConfirm] = useState(false)
+
+  // Version update
+  const [currentVersion, setCurrentVersion] = useState('-')
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'available' | 'updating' | 'done' | 'error'>('idle')
+  const [updateMessage, setUpdateMessage] = useState('')
+  const [latestVersion, setLatestVersion] = useState('')
+  const progressRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   const { data, loading } = useRequest(async () => {
     const [configRes, keyRes] = await Promise.all([
       api.getConfig().catch(() => null as ServerConfig | null),
@@ -61,6 +69,94 @@ export function SettingsPage() {
     return { config: configRes }
   })
   const config = data?.config || null
+
+  // Version update logic
+  function formatBytes(n: number) {
+    if (!n || n <= 0) return ''
+    if (n < 1048576) return (n / 1024).toFixed(1) + 'K'
+    return (n / 1048576).toFixed(1) + 'M'
+  }
+
+  function pollProgress() {
+    if (progressRef.current) clearInterval(progressRef.current)
+    progressRef.current = setInterval(() => {
+      api.updateProgress().then(p => {
+        if (p.error) {
+          setUpdateStatus('error')
+          setUpdateMessage('升级失败: ' + p.error)
+          clearInterval(progressRef.current!)
+          progressRef.current = null
+          return
+        }
+        if (p.phase === 'done' || p.active === false) {
+          setUpdateStatus('done')
+          setUpdateMessage('升级完成，等待重启...')
+          clearInterval(progressRef.current!)
+          progressRef.current = null
+          setTimeout(() => location.reload(), 4000)
+          return
+        }
+        const pct = p.percent || 0
+        const d = formatBytes(p.downloaded || 0)
+        const t = formatBytes(p.total || 0)
+        setUpdateStatus('updating')
+        setUpdateMessage(`${p.phase || ''} ${pct}%${d ? ' (' + d + '/' + t + ')' : ''}`)
+      }).catch(() => {
+        clearInterval(progressRef.current!)
+        progressRef.current = null
+        setUpdateStatus('done')
+        setUpdateMessage('重启中...')
+        setTimeout(() => location.reload(), 3000)
+      })
+    }, 1000)
+  }
+
+  const handleUpdate = async () => {
+    setUpdateStatus('updating')
+    setUpdateMessage('正在启动升级...')
+    try {
+      const res = await api.selfUpdate()
+      if (res.error) {
+        setUpdateStatus('error')
+        setUpdateMessage(res.message || '启动升级失败')
+        return
+      }
+      pollProgress()
+    } catch {
+      pollProgress()
+    }
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      api.updateProgress().then(p => {
+        if (p.active === true && p.phase !== 'done') {
+          pollProgress()
+          return
+        }
+        api.checkUpdate().then(d => {
+          setCurrentVersion(d.current || '-')
+          if (d.has_update) {
+            setLatestVersion(d.latest || '')
+            setUpdateStatus('available')
+          } else {
+            setUpdateStatus('up-to-date')
+          }
+        }).catch(() => setUpdateStatus('idle'))
+      }).catch(() => {
+        api.checkUpdate().then(d => {
+          setCurrentVersion(d.current || '-')
+          if (d.has_update) {
+            setLatestVersion(d.latest || '')
+            setUpdateStatus('available')
+          } else {
+            setUpdateStatus('up-to-date')
+          }
+        }).catch(() => setUpdateStatus('idle'))
+      })
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [])
 
   const handleChangePassword = async () => {
     if (!oldPassword) {
@@ -243,11 +339,13 @@ export function SettingsPage() {
           </div>
         </div>
 
-        {/* Access Key (full width) */}
-        <div className="bg-white rounded-lg shadow-sm">
-          <div className="px-5 py-4 border-b border-gray-200">
-            <h3 className="font-semibold text-gray-900">Access Key</h3>
-          </div>
+        {/* Access Key + Version Update (side by side) */}
+        <div className="grid grid-cols-2 gap-6">
+          {/* Access Key */}
+          <div className="bg-white rounded-lg shadow-sm">
+            <div className="px-5 py-4 border-b border-gray-200">
+              <h3 className="font-semibold text-gray-900">Access Key</h3>
+            </div>
           <div className="p-5">
             <div className="flex items-center gap-4 mb-4">
               <span className="text-sm text-gray-500">当前状态：</span>
@@ -277,6 +375,54 @@ export function SettingsPage() {
                 >
                   禁用
                 </button>
+              )}
+            </div>
+          </div>
+          </div>
+
+          {/* Version Update */}
+          <div className="bg-white rounded-lg shadow-sm">
+            <div className="px-5 py-4 border-b border-gray-200">
+              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-gray-500" />
+                版本更新
+              </h3>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">当前版本</span>
+                <span className="font-mono font-medium">{currentVersion}</span>
+              </div>
+              {updateStatus === 'idle' && (
+                <div className="text-sm text-gray-400">检测中...</div>
+              )}
+              {updateStatus === 'up-to-date' && (
+                <div className="flex items-center gap-2">
+                  <Badge variant="success">已是最新版</Badge>
+                </div>
+              )}
+              {updateStatus === 'available' && (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="warning">有新版本</Badge>
+                    <span className="font-mono text-sm text-primary font-medium">{latestVersion}</span>
+                  </div>
+                  <button
+                    onClick={handleUpdate}
+                    className="px-4 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark"
+                  >
+                    升级
+                  </button>
+                </div>
+              )}
+              {updateStatus === 'updating' && (
+                <div className="text-sm text-blue-600 font-medium">↑ {updateMessage}</div>
+              )}
+              {updateStatus === 'done' && (
+                <div className="text-sm text-green-600 font-medium">{updateMessage}</div>
+              )}
+              {updateStatus === 'error' && (
+                <div className="text-sm text-red-600">{updateMessage}</div>
               )}
             </div>
           </div>

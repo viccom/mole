@@ -318,6 +318,7 @@ func buildAPIRouter(
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
 	feishuH := api.NewFeishuHandler(feishuClient, authSvc, feishuBindingRepo, userRepo, jwtMgr, rbacEngine, storage.DB())
+	updateH := api.NewUpdateHandler()
 
 	// === 公开端点 ===
 	router.RegisterPublic("POST", "/api/v1/auth/login", authH.Login)
@@ -387,6 +388,11 @@ func buildAPIRouter(
 	router.Register("GET", "/api/v1/accesskey", sysH.GetAccessKey, "accesskey", "read")
 	router.Register("PUT", "/api/v1/accesskey", sysH.SetAccessKey, "accesskey", "admin")
 	router.Register("DELETE", "/api/v1/accesskey", sysH.DeleteAccessKey, "accesskey", "admin")
+
+	// === 版本升级 ===
+	router.Register("GET", "/api/v1/check-update", updateH.CheckUpdate, "system", "read")
+	router.Register("POST", "/api/v1/self-update", updateH.SelfUpdate, "system", "admin")
+	router.Register("GET", "/api/v1/update-progress", updateH.UpdateProgress, "system", "read")
 
 	return router.Build()
 }

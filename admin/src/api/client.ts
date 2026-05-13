@@ -196,4 +196,9 @@ export const api = {
   getAccessKey: () => request<{ enabled: boolean }>('/accesskey'),
   setAccessKey: (key: string) => request('/accesskey', { method: 'PUT', body: JSON.stringify({ key }) }),
   deleteAccessKey: () => request('/accesskey', { method: 'DELETE' }),
+
+  // Update
+  checkUpdate: () => request<{ has_update: boolean; current: string; latest?: string; error?: boolean; message?: string }>('/check-update'),
+  selfUpdate: () => request<{ accepted?: boolean; error?: boolean; message?: string; new_version?: string }>('/self-update', { method: 'POST' }),
+  updateProgress: () => request<{ active: boolean; phase?: string; percent?: number; downloaded?: number; total?: number; error?: string }>('/update-progress'),
 }
