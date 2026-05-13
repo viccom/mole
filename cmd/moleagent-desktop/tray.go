@@ -4,6 +4,7 @@ package main
 
 import (
 	"log"
+	"runtime"
 	"sync"
 
 	"github.com/getlantern/systray"
@@ -16,6 +17,7 @@ type trayMenuManager struct {
 	app      *App
 	hidden   bool
 	quitting bool
+	ready    bool
 }
 
 var trayMgr *trayMenuManager
@@ -23,13 +25,19 @@ var trayMgr *trayMenuManager
 func initSystray(app *App) {
 	trayMgr = &trayMenuManager{app: app}
 
-	// 在新 goroutine 中运行 systray（它会阻塞）
+	// 在新 goroutine 中运行 systray
 	go func() {
+		// 锁定到单个 OS 线程以确保稳定
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
 		systray.Run(trayOnReady, trayOnExit)
 	}()
 }
 
 func trayOnReady() {
+	log.Printf("tray: initializing")
+
 	// 使用嵌入的图标数据
 	iconData := getIconData()
 	if len(iconData) == 0 {
@@ -45,30 +53,44 @@ func trayOnReady() {
 	systray.AddSeparator()
 	quitItem := systray.AddMenuItem("退出", "退出应用程序")
 
-	// 处理菜单点击
+	// 设置托盘就绪
+	trayMgr.mu.Lock()
+	trayMgr.ready = true
+	trayMgr.mu.Unlock()
+
+	log.Printf("tray: ready")
+
+	// 处理菜单点击 - 使用单独的 goroutine 处理每个菜单项
 	go func() {
-		for {
-			select {
-			case <-showItem.ClickedCh:
-				showWindow()
-			case <-quitItem.ClickedCh:
-				trayMgr.mu.Lock()
-				trayMgr.quitting = true
-				trayMgr.mu.Unlock()
-				systray.Quit()
-				if trayMgr.app != nil && trayMgr.app.ctx != nil {
-					wailsRuntime.Quit(trayMgr.app.ctx)
-				}
+		for range showItem.ClickedCh {
+			log.Printf("tray: show window clicked")
+			showWindow()
+		}
+	}()
+
+	go func() {
+		for range quitItem.ClickedCh {
+			log.Printf("tray: quit clicked")
+			trayMgr.mu.Lock()
+			trayMgr.quitting = true
+			trayMgr.mu.Unlock()
+			systray.Quit()
+			if trayMgr.app != nil && trayMgr.app.ctx != nil {
+				wailsRuntime.Quit(trayMgr.app.ctx)
 			}
 		}
 	}()
 }
 
 func trayOnExit() {
-	// 清理
+	log.Printf("tray: exit")
+	trayMgr.mu.Lock()
+	trayMgr.ready = false
+	trayMgr.mu.Unlock()
 }
 
 func showWindow() {
+	log.Printf("tray: show window")
 	if trayMgr != nil && trayMgr.app != nil && trayMgr.app.ctx != nil {
 		wailsRuntime.WindowShow(trayMgr.app.ctx)
 		wailsRuntime.WindowUnminimise(trayMgr.app.ctx)
@@ -78,6 +100,7 @@ func showWindow() {
 
 // HideToTray 隐藏窗口到托盘
 func HideToTray() {
+	log.Printf("tray: hide window")
 	if trayMgr != nil && trayMgr.app != nil && trayMgr.app.ctx != nil {
 		wailsRuntime.WindowHide(trayMgr.app.ctx)
 		trayMgr.hidden = true
