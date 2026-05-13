@@ -232,3 +232,43 @@ initSer2MQ();
 initSer2Net();
 initVPN();
 refreshData().then(scheduleRefresh);
+
+// ===== 版本更新检测 =====
+let updateChecked = false;
+
+function checkForUpdate() {
+  if (updateChecked) return;
+  updateChecked = true;
+  fetch('/api/check-update').then(r => r.json()).then(d => {
+    if (d.has_update) {
+      const badge = document.getElementById('update-badge');
+      const latest = document.getElementById('update-latest');
+      if (badge && latest) {
+        latest.textContent = d.latest;
+        badge.style.display = 'inline';
+      }
+    }
+  }).catch(() => {});
+}
+
+function doSelfUpdate() {
+  const badge = document.getElementById('update-badge');
+  if (badge) {
+    badge.style.pointerEvents = 'none';
+    badge.innerHTML = '升级中...';
+    badge.style.color = '#999';
+  }
+  fetch('/api/self-update', {method: 'POST'}).then(r => r.json()).then(d => {
+    if (d.error) {
+      if (badge) { badge.innerHTML = d.message; badge.style.color = '#cf1322'; }
+    } else {
+      if (badge) { badge.innerHTML = '升级成功，等待重启...'; badge.style.color = '#52c41a'; }
+      setTimeout(() => location.reload(), 5000);
+    }
+  }).catch(() => {
+    // server restarting
+    setTimeout(() => location.reload(), 3000);
+  });
+}
+
+setTimeout(checkForUpdate, 2000);
