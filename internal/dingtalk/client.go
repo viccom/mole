@@ -65,11 +65,8 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 		return c.accessToken, nil
 	}
 
-	body := map[string]string{
-		"appkey":    c.appKey,
-		"appsecret": c.appSecret,
-	}
-	respBody, err := c.doRequest(ctx, "POST", "https://oapi.dingtalk.com/gettoken", body, "")
+	url := fmt.Sprintf("https://oapi.dingtalk.com/gettoken?appkey=%s&appsecret=%s", c.appKey, c.appSecret)
+	respBody, err := c.doRequest(ctx, "GET", url, nil, "")
 	if err != nil {
 		return "", fmt.Errorf("get dingtalk access token: %w", err)
 	}

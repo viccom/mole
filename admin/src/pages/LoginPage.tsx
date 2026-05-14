@@ -36,7 +36,8 @@ export function LoginPage() {
         setDingtalkAvailable(true)
         setDingtalkCorpId(dingtalkCfg.corp_id)
         setDingtalkAppKey(dingtalkCfg.app_key)
-        if (isDingTalkEnv() && dingtalkCfg.corp_id) {
+        if (isDingTalkEnv() && dingtalkCfg.corp_id && !sessionStorage.getItem('dingtalk_sso_attempted')) {
+          sessionStorage.setItem('dingtalk_sso_attempted', '1')
           handleDingTalkSSO(dingtalkCfg.corp_id, dingtalkCfg.app_key)
         }
       }
