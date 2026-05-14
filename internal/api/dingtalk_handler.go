@@ -172,21 +172,21 @@ func (h *DingTalkHandler) Bind(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.userRepo.GetByUsername(req.Username)
 	if err != nil {
-		ResponseError(w, http.StatusUnauthorized, 401, "Invalid username or password")
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid username or password")
 		return
 	}
 	if user.Status == core.UserStatusDisabled {
-		ResponseError(w, http.StatusUnauthorized, 401, "Invalid username or password")
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid username or password")
 		return
 	}
 
 	hash, err := h.userRepo.GetPasswordHash(user.ID)
 	if err != nil {
-		ResponseError(w, http.StatusUnauthorized, 401, "Invalid username or password")
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid username or password")
 		return
 	}
 	if !auth.VerifyPassword(req.Password, hash) {
-		ResponseError(w, http.StatusUnauthorized, 401, "Invalid username or password")
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid username or password")
 		return
 	}
 
