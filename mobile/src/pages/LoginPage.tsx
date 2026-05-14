@@ -2,27 +2,33 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { isFeishuEnv, requestAuthCode } from '../lib/feishu'
+import { isDingTalkEnv, requestAuthCode as dingtalkRequestAuthCode } from '../lib/dingtalk'
 import { api } from '../api/client'
 
 export function LoginPage() {
   const [loading, setLoading] = useState(false)
-  const { feishuLogin } = useAuth()
+  const [ssoType, setSsoType] = useState<'feishu' | 'dingtalk' | null>(null)
+  const { feishuLogin, dingtalkLogin } = useAuth()
   const navigate = useNavigate()
 
   useEffect(() => {
     const init = async () => {
-      try {
-        const config = await api.feishuConfig()
-        if (!config.app_id) return
-        if (isFeishuEnv()) {
-          handleSSO(config.app_id)
-        }
-      } catch { /* feishu not configured */ }
+      const [feishuCfg, dingtalkCfg] = await Promise.all([
+        api.feishuConfig().catch(() => ({ app_id: '' })),
+        api.dingtalkConfig().catch(() => ({ corp_id: '', app_key: '' })),
+      ])
+      if (feishuCfg.app_id && isFeishuEnv()) {
+        handleFeishuSSO(feishuCfg.app_id)
+      }
+      if (dingtalkCfg.corp_id && isDingTalkEnv()) {
+        handleDingTalkSSO(dingtalkCfg.corp_id)
+      }
     }
     init()
   }, [])
 
-  const handleSSO = async (appId: string) => {
+  const handleFeishuSSO = async (appId: string) => {
+    setSsoType('feishu')
     setLoading(true)
     try {
       const code = await requestAuthCode(appId)
@@ -39,6 +45,28 @@ export function LoginPage() {
     }
   }
 
+  const handleDingTalkSSO = async (corpId: string) => {
+    setSsoType('dingtalk')
+    setLoading(true)
+    try {
+      const code = await dingtalkRequestAuthCode(corpId)
+      const result = await dingtalkLogin(code, 'h5')
+      if (result.needBind) {
+        navigate('/dingtalk-bind', { state: { dingtalkToken: result.dingtalkToken, dingtalkName: result.dingtalkName } })
+      } else {
+        navigate('/nodes')
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '登录失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loginLabel = loading
+    ? (ssoType === 'dingtalk' ? '钉钉登录中...' : '飞书登录中...')
+    : '请从飞书或钉钉工作台打开'
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-blue-600 flex items-center justify-center p-6">
       <div className="bg-white rounded-2xl p-8 w-full max-w-sm shadow-xl text-center">
@@ -48,12 +76,7 @@ export function LoginPage() {
           </svg>
         </div>
         <h1 className="text-2xl font-bold text-indigo-900">MoleAgent</h1>
-        <p className="text-gray-400 mt-1 mb-6 text-sm">请从飞书工作台打开</p>
-        {loading ? (
-          <div className="text-gray-500 text-sm">飞书登录中...</div>
-        ) : (
-          <div className="text-xs text-gray-300">非飞书环境请使用 PC 端登录</div>
-        )}
+        <p className="text-gray-400 mt-1 mb-6 text-sm">{loading ? loginLabel : '请从飞书或钉钉工作台打开'}</p>
       </div>
     </div>
   )

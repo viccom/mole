@@ -46,6 +46,14 @@ export const api = {
   getFeishuBinding: () => request<{ bound: boolean; feishu_name?: string }>('/me/feishu-bindings'),
   unbindFeishu: () => request('/me/feishu-bindings', { method: 'DELETE' }),
 
+  dingtalkConfig: () => request<{ corp_id: string; app_key: string }>('/auth/dingtalk/config'),
+  dingtalkCallback: (code: string, source: string) =>
+    request<{ need_bind: boolean; dingtalk_token?: string; dingtalk_name?: string; token?: string; user?: { id: string; username: string } }>('/auth/dingtalk/callback', { method: 'POST', body: JSON.stringify({ code, source }) }),
+  dingtalkBind: (dingtalkToken: string, username: string, password: string) =>
+    request<{ token: string; user: { id: string; username: string } }>('/auth/dingtalk/bind', { method: 'POST', body: JSON.stringify({ dingtalk_token: dingtalkToken, username, password }) }),
+  getDingTalkBinding: () => request<{ bound: boolean; ding_name?: string }>('/me/dingtalk-bindings'),
+  unbindDingTalk: () => request('/me/dingtalk-bindings', { method: 'DELETE' }),
+
   getNodes: () => request<{ items: Node[] }>('/nodes'),
   getNode: (id: string) => request<Node>(`/nodes/${id}`),
   getTunnels: () => request<{ items: Tunnel[] }>('/tunnels'),

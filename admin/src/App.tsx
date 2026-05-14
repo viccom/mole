@@ -7,6 +7,8 @@ import { Loading } from './components/Loading'
 const LoginPage = lazy(() => import('./pages/LoginPage').then(module => ({ default: module.LoginPage })))
 const FeishuBindPage = lazy(() => import('./pages/FeishuBindPage').then(module => ({ default: module.FeishuBindPage })))
 const FeishuCallbackPage = lazy(() => import('./pages/FeishuCallbackPage').then(module => ({ default: module.FeishuCallbackPage })))
+const DingTalkBindPage = lazy(() => import('./pages/DingTalkBindPage').then(module => ({ default: module.DingTalkBindPage })))
+const DingTalkCallbackPage = lazy(() => import('./pages/DingTalkCallbackPage').then(module => ({ default: module.DingTalkCallbackPage })))
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then(module => ({ default: module.DashboardPage })))
 const NodesPage = lazy(() => import('./pages/NodesPage').then(module => ({ default: module.NodesPage })))
 const TunnelsPage = lazy(() => import('./pages/TunnelsPage').then(module => ({ default: module.TunnelsPage })))
@@ -33,6 +35,8 @@ export default function App() {
         <Route path="/login" element={<LazyPage><LoginPage /></LazyPage>} />
         <Route path="/feishu-bind" element={<LazyPage><FeishuBindPage /></LazyPage>} />
         <Route path="/feishu-callback" element={<LazyPage><FeishuCallbackPage /></LazyPage>} />
+        <Route path="/dingtalk-bind" element={<LazyPage><DingTalkBindPage /></LazyPage>} />
+        <Route path="/dingtalk-callback" element={<LazyPage><DingTalkCallbackPage /></LazyPage>} />
         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route path="/dashboard" element={<LazyPage><DashboardPage /></LazyPage>} />
           <Route path="/nodes" element={<LazyPage><NodesPage /></LazyPage>} />

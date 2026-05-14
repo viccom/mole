@@ -180,3 +180,12 @@ type FeishuBinding struct {
 	AvatarURL  string    `json:"avatar_url,omitempty"`
 	BoundAt    time.Time `json:"bound_at"`
 }
+
+// DingTalkBinding 钉钉账户绑定关系
+type DingTalkBinding struct {
+	UnionID    string    `json:"union_id"`
+	UserID     string    `json:"user_id"`
+	DingName   string    `json:"ding_name"`
+	AvatarURL  string    `json:"avatar_url,omitempty"`
+	BoundAt    time.Time `json:"bound_at"`
+}

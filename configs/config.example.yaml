@@ -57,3 +57,8 @@ logging:
 feishu:
   app_id: ""               # 飞书企业自建应用 App ID，也可通过 MA_FEISHU_APP_ID 环境变量设置
   app_secret: ""           # 飞书企业自建应用 App Secret，也可通过 MA_FEISHU_APP_SECRET 环境变量设置
+
+dingtalk:
+  app_key: ""              # 钉钉企业自建应用 App Key，也可通过 MA_DINGTALK_APP_KEY 环境变量设置
+  app_secret: ""           # 钉钉企业自建应用 App Secret，也可通过 MA_DINGTALK_APP_SECRET 环境变量设置
+  corp_id: ""              # 钉钉企业 Corp ID（H5 JSAPI 登录需要），也可通过 MA_DINGTALK_CORP_ID 环境变量设置

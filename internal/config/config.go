@@ -18,11 +18,18 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Logging  LoggingConfig  `yaml:"logging"`
 	Feishu   FeishuConfig   `yaml:"feishu"`
+	DingTalk  DingTalkConfig `yaml:"dingtalk"`
 }
 
 type FeishuConfig struct {
 	AppID     string `yaml:"app_id"`
 	AppSecret string `yaml:"app_secret"`
+}
+
+type DingTalkConfig struct {
+	AppKey    string `yaml:"app_key"`
+	AppSecret string `yaml:"app_secret"`
+	CorpID    string `yaml:"corp_id"`
 }
 
 type ServerConfig struct {
@@ -210,6 +217,15 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MA_FEISHU_APP_SECRET"); v != "" {
 		cfg.Feishu.AppSecret = v
+	}
+	if v := os.Getenv("MA_DINGTALK_APP_KEY"); v != "" {
+		cfg.DingTalk.AppKey = v
+	}
+	if v := os.Getenv("MA_DINGTALK_APP_SECRET"); v != "" {
+		cfg.DingTalk.AppSecret = v
+	}
+	if v := os.Getenv("MA_DINGTALK_CORP_ID"); v != "" {
+		cfg.DingTalk.CorpID = v
 	}
 }
 

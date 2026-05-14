@@ -17,6 +17,7 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/config"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/dingtalk"
 	"moleAgent_Serv/internal/feishu"
 	"moleAgent_Serv/internal/logging"
 	"moleAgent_Serv/internal/mqtt"
@@ -200,8 +201,12 @@ func main() {
 	feishuClient := feishu.NewClient(cfg.Feishu.AppID, cfg.Feishu.AppSecret)
 	feishuBindingRepo := storage.NewFeishuBindingRepo(db)
 
+	// --- 钉钉集成 ---
+	dingtalkClient := dingtalk.NewClient(cfg.DingTalk.AppKey, cfg.DingTalk.AppSecret, cfg.DingTalk.CorpID)
+	dingtalkBindingRepo := storage.NewDingTalkBindingRepo(db)
+
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, jwtMgr)
+	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr)
 	adminDir, _ := os.Getwd()
 	distDir := filepath.Join(adminDir, "admin", "dist")
 	fileServer := http.FileServer(http.Dir(distDir))
@@ -304,6 +309,8 @@ func buildAPIRouter(
 	accessTokenRepo core.AccessTokenRepo,
 	feishuClient *feishu.Client,
 	feishuBindingRepo core.FeishuBindingRepo,
+	dingtalkClient *dingtalk.Client,
+	dingtalkBindingRepo core.DingTalkBindingRepo,
 	jwtMgr *auth.JWTManager,
 ) http.Handler {
 	router := api.NewRouter(mw)
@@ -318,6 +325,7 @@ func buildAPIRouter(
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
 	feishuH := api.NewFeishuHandler(feishuClient, authSvc, feishuBindingRepo, userRepo, jwtMgr, rbacEngine, storage.DB())
+	dingtalkH := api.NewDingTalkHandler(dingtalkClient, authSvc, dingtalkBindingRepo, userRepo, jwtMgr, rbacEngine, storage.DB())
 	updateH := api.NewUpdateHandler()
 
 	// === 公开端点 ===
@@ -327,6 +335,10 @@ func buildAPIRouter(
 	router.RegisterPublic("POST", "/api/v1/auth/feishu/callback", feishuH.Callback)
 	router.RegisterPublic("POST", "/api/v1/auth/feishu/bind", feishuH.Bind)
 	router.RegisterPublic("GET", "/api/v1/auth/feishu/config", feishuH.Config)
+
+	router.RegisterPublic("POST", "/api/v1/auth/dingtalk/callback", dingtalkH.Callback)
+	router.RegisterPublic("POST", "/api/v1/auth/dingtalk/bind", dingtalkH.Bind)
+	router.RegisterPublic("GET", "/api/v1/auth/dingtalk/config", dingtalkH.Config)
 
 	// === 需要认证的端点 ===
 	router.RegisterAuth("POST", "/api/v1/auth/logout", authH.Logout)
@@ -343,6 +355,10 @@ func buildAPIRouter(
 	// === 飞书绑定管理 ===
 	router.RegisterAuth("GET", "/api/v1/me/feishu-bindings", feishuH.GetBinding)
 	router.RegisterAuth("DELETE", "/api/v1/me/feishu-bindings", feishuH.Unbind)
+
+	// === 钉钉绑定管理 ===
+	router.RegisterAuth("GET", "/api/v1/me/dingtalk-bindings", dingtalkH.GetBinding)
+	router.RegisterAuth("DELETE", "/api/v1/me/dingtalk-bindings", dingtalkH.Unbind)
 
 	// === 用户管理（RBAC） ===
 	router.Register("GET", "/api/v1/users", userH.List, "users", "read")

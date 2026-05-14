@@ -6,11 +6,15 @@ import { LogOut, Link2, Info } from 'lucide-react'
 export function SettingsPage() {
   const { user, logout } = useAuth()
   const [binding, setBinding] = useState<{ bound: boolean; feishu_name?: string } | null>(null)
+  const [dingBinding, setDingBinding] = useState<{ bound: boolean; ding_name?: string } | null>(null)
   const [version, setVersion] = useState('')
 
   useEffect(() => {
-    api.getFeishuBinding().then(setBinding).catch(() => {})
-    api.getVersion().then(v => setVersion(v.version || '')).catch(() => {})
+    Promise.all([
+      api.getFeishuBinding().then(setBinding).catch(() => {}),
+      api.getDingTalkBinding().then(setDingBinding).catch(() => {}),
+      api.getVersion().then(v => setVersion(v.version || '')).catch(() => {}),
+    ])
   }, [])
 
   const handleUnbind = async () => {
@@ -18,6 +22,14 @@ export function SettingsPage() {
     try {
       await api.unbindFeishu()
       setBinding({ bound: false })
+    } catch { /* ignore */ }
+  }
+
+  const handleDingUnbind = async () => {
+    if (!confirm('确定解除钉钉绑定？')) return
+    try {
+      await api.unbindDingTalk()
+      setDingBinding({ bound: false })
     } catch { /* ignore */ }
   }
 
@@ -47,6 +59,17 @@ export function SettingsPage() {
             </div>
             {binding?.bound ? (
               <button onClick={handleUnbind} className="text-xs text-red-500">解绑 ({binding.feishu_name})</button>
+            ) : (
+              <span className="text-xs text-gray-400">未绑定</span>
+            )}
+          </div>
+          <div className="px-4 py-3 flex items-center justify-between border-t border-gray-50">
+            <div className="flex items-center gap-2.5">
+              <Link2 className="w-4 h-4 text-gray-400" />
+              <span className="text-sm text-gray-700">钉钉绑定</span>
+            </div>
+            {dingBinding?.bound ? (
+              <button onClick={handleDingUnbind} className="text-xs text-red-500">解绑 ({dingBinding.ding_name})</button>
             ) : (
               <span className="text-xs text-gray-400">未绑定</span>
             )}

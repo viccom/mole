@@ -131,3 +131,12 @@ type FeishuBindingRepo interface {
 	DeleteByOpenID(openID string) error
 	DeleteByUserID(userID string) error
 }
+
+// DingTalkBindingRepo 钉钉账户绑定仓库接口
+type DingTalkBindingRepo interface {
+	Create(binding *DingTalkBinding) error
+	GetByUnionID(unionID string) (*DingTalkBinding, error)
+	GetByUserID(userID string) (*DingTalkBinding, error)
+	DeleteByUnionID(unionID string) error
+	DeleteByUserID(userID string) error
+}

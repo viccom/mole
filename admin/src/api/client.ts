@@ -122,6 +122,21 @@ export const api = {
     request<{ bound: boolean; feishu_name?: string; avatar_url?: string; bound_at?: string }>('/me/feishu-bindings'),
   unbindFeishu: () => request('/me/feishu-bindings', { method: 'DELETE' }),
 
+  // DingTalk SSO
+  dingtalkConfig: () =>
+    request<{ corp_id: string; app_key: string }>('/auth/dingtalk/config'),
+  dingtalkCallback: (code: string, source: string) =>
+    request<{ need_bind: boolean; dingtalk_token?: string; dingtalk_name?: string; token?: string; expires_at?: string; user?: { id: string; username: string } }>('/auth/dingtalk/callback', {
+      method: 'POST', body: JSON.stringify({ code, source }),
+    }),
+  dingtalkBind: (dingtalkToken: string, username: string, password: string) =>
+    request<{ token: string; expires_at: string; user: { id: string; username: string } }>('/auth/dingtalk/bind', {
+      method: 'POST', body: JSON.stringify({ dingtalk_token: dingtalkToken, username, password }),
+    }),
+  getDingTalkBinding: () =>
+    request<{ bound: boolean; ding_name?: string; avatar_url?: string; bound_at?: string }>('/me/dingtalk-bindings'),
+  unbindDingTalk: () => request('/me/dingtalk-bindings', { method: 'DELETE' }),
+
   // Users
   getUsers: () => request<User[]>('/users'),
   createUser: (data: { username: string; password: string; status: string; role_ids?: string[] }) =>

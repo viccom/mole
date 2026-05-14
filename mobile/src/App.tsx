@@ -7,6 +7,7 @@ import { TunnelsPage } from './pages/TunnelsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LoginPage } from './pages/LoginPage'
 import { FeishuBindPage } from './pages/FeishuBindPage'
+import { DingTalkBindPage } from './pages/DingTalkBindPage'
 
 function ProtectedLayout() {
   const { user, loading } = useAuth()
@@ -32,6 +33,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<LoginPage />} />
           <Route path="/feishu-bind" element={<FeishuBindPage />} />
+          <Route path="/dingtalk-bind" element={<DingTalkBindPage />} />
           <Route path="/*" element={<ProtectedLayout />} />
         </Routes>
       </AuthProvider>

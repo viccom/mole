@@ -8,6 +8,8 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<void>
   feishuLogin: (code: string) => Promise<{ needBind: boolean; feishuToken?: string; feishuName?: string }>
   feishuBind: (feishuToken: string, username: string, password: string) => Promise<void>
+  dingtalkLogin: (code: string, source: string) => Promise<{ needBind: boolean; dingtalkToken?: string; dingtalkName?: string }>
+  dingtalkBind: (dingtalkToken: string, username: string, password: string) => Promise<void>
   logout: () => void
 }
 
@@ -54,13 +56,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(authUser)
   }, [])
 
+  const dingtalkLogin = useCallback(async (code: string, source: string) => {
+    const res = await api.dingtalkCallback(code, source)
+    if (res.need_bind) {
+      return { needBind: true as const, dingtalkToken: res.dingtalk_token, dingtalkName: res.dingtalk_name }
+    }
+    const authUser = { id: res.user!.id, username: res.user!.username, token: res.token! }
+    setToken(res.token!)
+    setUser(authUser)
+    return { needBind: false as const }
+  }, [])
+
+  const dingtalkBind = useCallback(async (dingtalkToken: string, username: string, password: string) => {
+    const res = await api.dingtalkBind(dingtalkToken, username, password)
+    const authUser = { id: res.user.id, username: res.user.username, token: res.token }
+    setToken(res.token)
+    setUser(authUser)
+  }, [])
+
   const logout = useCallback(() => {
     api.logout().catch(() => {})
     setToken(null)
     setUser(null)
   }, [])
 
-  const value = useMemo(() => ({ user, loading, login, feishuLogin, feishuBind, logout }), [user, loading, login, feishuLogin, feishuBind, logout])
+  const value = useMemo(() => ({ user, loading, login, feishuLogin, feishuBind, dingtalkLogin, dingtalkBind, logout }), [user, loading, login, feishuLogin, feishuBind, dingtalkLogin, dingtalkBind, logout])
 
   return (
     <AuthContext.Provider value={value}>
