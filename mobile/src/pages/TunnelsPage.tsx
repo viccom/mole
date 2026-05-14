@@ -40,11 +40,6 @@ function tunnelAccessUrl(t: FlatTunnel): string {
 
 const TUNNEL_TYPES = ['http', 'tcp', 'udp']
 const TYPE_LABELS: Record<string, string> = { http: 'HTTP', tcp: 'TCP', udp: 'UDP' }
-const TYPE_COLORS: Record<string, string> = {
-  http: 'bg-blue-500 text-white',
-  tcp: 'bg-emerald-500 text-white',
-  udp: 'bg-amber-500 text-white',
-}
 
 export function TunnelsPage() {
   const [nodes, setNodes] = useState<Node[]>([])
@@ -320,7 +315,8 @@ function TunnelForm({ mode, tunnel, nodes, onClose, onDone, busy, setBusy }: {
             <div className="flex gap-2">
               {TUNNEL_TYPES.map(t => (
                 <button key={t} type="button" onClick={() => setType(t)}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${type === t ? TYPE_COLORS[t] : 'bg-gray-100 text-gray-500'}`}>
+                  style={type === t ? { backgroundColor: t === 'http' ? '#3b82f6' : t === 'tcp' ? '#10b981' : '#f59e0b', color: '#fff' } : undefined}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${type !== t ? 'bg-gray-100 text-gray-500' : ''}`}>
                   {TYPE_LABELS[t]}
                 </button>
               ))}
@@ -346,7 +342,8 @@ function TunnelForm({ mode, tunnel, nodes, onClose, onDone, busy, setBusy }: {
             </div>
           )}
           <button type="submit" disabled={busy}
-            className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+            style={{ backgroundColor: '#2563eb', color: '#fff' }}
+            className="w-full py-2.5 rounded-lg text-sm font-medium disabled:opacity-50">
             {busy ? (mode === 'edit' ? '保存中...' : '创建中...') : (mode === 'edit' ? '保存修改' : '创建隧道')}
           </button>
         </form>

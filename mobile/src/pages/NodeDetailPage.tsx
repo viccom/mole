@@ -185,10 +185,10 @@ export function NodeDetailPage() {
 
 const TUNNEL_TYPES = ['http', 'tcp', 'udp']
 const TYPE_LABELS: Record<string, string> = { http: 'HTTP', tcp: 'TCP', udp: 'UDP' }
-const TYPE_COLORS: Record<string, string> = {
-  http: 'bg-blue-500 text-white',
-  tcp: 'bg-emerald-500 text-white',
-  udp: 'bg-amber-500 text-white',
+const TYPE_STYLES: Record<string, React.CSSProperties> = {
+  http: { backgroundColor: '#3b82f6', color: '#fff' },
+  tcp: { backgroundColor: '#10b981', color: '#fff' },
+  udp: { backgroundColor: '#f59e0b', color: '#fff' },
 }
 
 function TunnelCreateForm({ nodeId, onClose, onDone, busy, setBusy }: {
@@ -237,7 +237,8 @@ function TunnelCreateForm({ nodeId, onClose, onDone, busy, setBusy }: {
             <div className="flex gap-2">
               {TUNNEL_TYPES.map(t => (
                 <button key={t} type="button" onClick={() => setType(t)}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${type === t ? TYPE_COLORS[t] : 'bg-gray-100 text-gray-500'}`}>
+                  style={type === t ? TYPE_STYLES[t] : undefined}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${type !== t ? 'bg-gray-100 text-gray-500' : ''}`}>
                   {TYPE_LABELS[t]}
                 </button>
               ))}
