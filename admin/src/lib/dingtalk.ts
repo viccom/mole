@@ -57,21 +57,19 @@ export function requestAuthCode(corpId: string): Promise<string> {
     const ok = (code: string) => { if (!settled) { settled = true; resolve(code) } }
     const fail = (err: unknown) => { if (!settled) { settled = true; reject(err) } }
 
-    window.dd.error((err) => fail(new Error(`DingTalk dd error: ${JSON.stringify(err)}`)))
+    // dd.ready 内部调用：CDN JSSDK 加载后 ready 才触发
     window.dd.ready(() => {
       const params = {
         corpId,
         onSuccess: (res: { code: string }) => ok(res.code),
         onFail: (err: unknown) => fail(new Error(`DingTalk requestAuthCode failed: ${JSON.stringify(err)}`)),
       }
-
-      // 优先使用 dd.requestAuthCode（移动端），回退到 dd.runtime.permission.requestAuthCode（PC端）
       if (window.dd?.requestAuthCode) {
         window.dd.requestAuthCode(params)
       } else if (window.dd?.runtime?.permission?.requestAuthCode) {
         window.dd.runtime.permission.requestAuthCode(params)
       } else {
-        fail(new Error('DingTalk dd.requestAuthCode not available'))
+        fail(new Error('DingTalk JSAPI requestAuthCode unavailable'))
       }
     })
   })

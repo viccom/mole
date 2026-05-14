@@ -84,7 +84,8 @@ export function LoginPage() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : ''
-      if (msg.includes('not available') && appKey) {
+      // 非钉钉原生环境中 JSAPI 不可用时，回退到 OAuth2 扫码登录
+      if (!isDingTalkEnv() && msg.includes('unavailable') && appKey) {
         window.location.href = buildDingTalkOAuth2URL(appKey)
         return
       }
