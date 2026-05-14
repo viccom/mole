@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { api, type Node, type Tunnel } from '../api/client'
-import { Circle, Plus, RefreshCw, X, Pencil, Trash2 } from 'lucide-react'
+import { Circle, Plus, RefreshCw, X, Pencil, Trash2, Copy } from 'lucide-react'
 import { typeIcons } from '../lib/constants'
 
 interface FlatTunnel extends Tunnel {
@@ -83,6 +83,17 @@ export function TunnelsPage() {
     }
   }
 
+  const handleCopyUrl = (t: FlatTunnel) => {
+    const url = tunnelAccessUrl(t)
+    setActionTarget(null)
+    if (url && url !== '-') {
+      navigator.clipboard.writeText(url)
+      alert('已复制: ' + url)
+    } else {
+      alert('无访问 URL')
+    }
+  }
+
   const handleDelete = async (t: FlatTunnel) => {
     if (!confirm(`确定删除隧道「${t.name}」？`)) return
     try {
@@ -150,6 +161,7 @@ export function TunnelsPage() {
           onEdit={() => { setActionTarget(null); setEditTarget(actionTarget); setShowForm(true) }}
           
           onDelete={() => { setActionTarget(null); handleDelete(actionTarget) }}
+          onCopy={() => handleCopyUrl(actionTarget)}
         />
       )}
 
@@ -207,11 +219,12 @@ function TunnelCard({ tunnel, enabled, onLongPress, onToggle }: {
   )
 }
 
-function ActionSheet({ tunnel, onClose, onEdit, onDelete }: {
+function ActionSheet({ tunnel, onClose, onEdit, onDelete, onCopy }: {
   tunnel: FlatTunnel
   onClose: () => void
   onEdit: () => void
   onDelete: () => void
+  onCopy: () => void
 }) {
   return (
     <div className="fixed inset-0 z-[60] bg-black/40 flex items-end" onClick={onClose}>
@@ -228,6 +241,10 @@ function ActionSheet({ tunnel, onClose, onEdit, onDelete }: {
           <button onClick={onDelete}
             className="w-full flex items-center justify-center gap-3 py-3.5 bg-red-50 text-red-500 rounded-xl text-base font-medium active:bg-red-100">
             <Trash2 className="w-5 h-5" /> 删除隧道
+          </button>
+          <button onClick={onCopy}
+            className="w-full flex items-center justify-center gap-3 py-3.5 bg-emerald-50 text-emerald-600 rounded-xl text-base font-medium active:bg-emerald-100">
+            <Copy className="w-5 h-5" /> 复制访问URL
           </button>
         </div>
       </div>

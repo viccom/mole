@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api, type Node, type Tunnel } from '../api/client'
-import { ArrowLeft, Circle, Pencil, Trash2, Copy, RefreshCw } from 'lucide-react'
+import { ArrowLeft, Circle, Pencil, Trash2, Copy, RefreshCw, Plus, X } from 'lucide-react'
 import { typeIcons } from '../lib/constants'
 
 function getGatewayBase(): string {
@@ -38,6 +38,8 @@ export function NodeDetailPage() {
   const [node, setNode] = useState<Node | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionTarget, setActionTarget] = useState<Tunnel | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
 
   const refresh = () => {
@@ -115,9 +117,16 @@ export function NodeDetailPage() {
         <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium text-gray-500">隧道 ({node.tunnels?.length || 0})</h2>
-            <button onClick={refresh} className="text-blue-600 p-1 -m-1" disabled={loading}>
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
+            <div className="flex items-center gap-1">
+              <button onClick={refresh} className="text-blue-600 p-1 -m-1" disabled={loading}>
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+              {node.status === 'online' && (
+                <button onClick={() => setShowForm(true)} className="text-blue-600 p-1 -m-1">
+                  <Plus className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
           {(!node.tunnels || node.tunnels.length === 0) && (
             <p className="text-sm text-gray-400 text-center py-4">暂无隧道</p>
@@ -161,6 +170,109 @@ export function NodeDetailPage() {
           </div>
         </div>
       )}
+
+      {showForm && node && (
+        <TunnelCreateForm
+          nodeId={node.id}
+          onClose={() => setShowForm(false)}
+          onDone={() => { setShowForm(false); refresh() }}
+          busy={busy} setBusy={setBusy}
+        />
+      )}
+    </div>
+  )
+}
+
+const TUNNEL_TYPES = ['http', 'tcp', 'udp']
+const TYPE_LABELS: Record<string, string> = { http: 'HTTP', tcp: 'TCP', udp: 'UDP' }
+const TYPE_COLORS: Record<string, string> = {
+  http: 'bg-blue-500 text-white',
+  tcp: 'bg-emerald-500 text-white',
+  udp: 'bg-amber-500 text-white',
+}
+
+function TunnelCreateForm({ nodeId, onClose, onDone, busy, setBusy }: {
+  nodeId: string
+  onClose: () => void
+  onDone: () => void
+  busy: boolean
+  setBusy: (b: boolean) => void
+}) {
+  const [name, setName] = useState('')
+  const [type, setType] = useState('http')
+  const [target, setTarget] = useState('')
+  const [domain, setDomain] = useState('')
+  const [listenPort, setListenPort] = useState('')
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!name || !target) { alert('请填写名称和目标地址'); return }
+    setBusy(true)
+    try {
+      await api.createTunnel({
+        name, type, target,
+        domain: type === 'http' ? domain || undefined : undefined,
+        listen_port: (type === 'tcp' || type === 'udp') ? (listenPort ? Number(listenPort) : undefined) : undefined,
+        enabled: true,
+        node_id: nodeId,
+      })
+      onDone()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '创建失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-end" onClick={onClose}>
+      <div className="bg-white w-full rounded-t-2xl p-6 pb-24 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-lg font-semibold">新增隧道</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">类型</label>
+            <div className="flex gap-2">
+              {TUNNEL_TYPES.map(t => (
+                <button key={t} type="button" onClick={() => setType(t)}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${type === t ? TYPE_COLORS[t] : 'bg-gray-100 text-gray-500'}`}>
+                  {TYPE_LABELS[t]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">名称</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm" placeholder="隧道名称" autoFocus />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">目标地址</label>
+            <input value={target} onChange={e => setTarget(e.target.value)}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm" placeholder="127.0.0.1:8080" />
+          </div>
+          {type === 'http' && (
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">域名（可选）</label>
+              <input value={domain} onChange={e => setDomain(e.target.value)}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm" placeholder="app.example.com" />
+            </div>
+          )}
+          {(type === 'tcp' || type === 'udp') && (
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">监听端口（可选）</label>
+              <input value={listenPort} onChange={e => setListenPort(e.target.value)} type="number"
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm" placeholder="8080" />
+            </div>
+          )}
+          <button type="submit" disabled={busy}
+            className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+            {busy ? '创建中...' : '创建隧道'}
+          </button>
+        </form>
+      </div>
     </div>
   )
 }
