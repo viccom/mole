@@ -97,7 +97,7 @@ export function LoginPage() {
   const handleDingTalkClick = async () => {
     if (!dingtalkCorpId && !dingtalkAppKey) { toast('钉钉未配置', 'error'); return }
     if (isDingTalkEnv() && dingtalkCorpId) {
-      handleDingTalkSSO(dingtalkCorpId)
+      handleDingTalkSSO(dingtalkCorpId, dingtalkAppKey)
     } else {
       window.location.href = buildDingTalkOAuth2URL(dingtalkAppKey)
     }
