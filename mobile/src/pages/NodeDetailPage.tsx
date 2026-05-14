@@ -269,7 +269,7 @@ function TunnelCreateForm({ nodeId, onClose, onDone, busy, setBusy }: {
             </div>
           )}
           <button type="submit" disabled={busy}
-            className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+            style={{ backgroundColor: '#2563eb', color: '#fff' }} className="w-full py-2.5 rounded-lg text-sm font-medium disabled:opacity-50">
             {busy ? '创建中...' : '创建隧道'}
           </button>
         </form>

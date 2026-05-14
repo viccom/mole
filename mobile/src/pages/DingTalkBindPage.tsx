@@ -51,7 +51,7 @@ export function DingTalkBindPage() {
             className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
             placeholder="密码" />
           <button type="submit" disabled={loading}
-            className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+            style={{ backgroundColor: '#2563eb', color: '#fff' }} className="w-full py-2.5 rounded-lg text-sm font-medium disabled:opacity-50">
             {loading ? '绑定中...' : '绑定'}
           </button>
         </form>
