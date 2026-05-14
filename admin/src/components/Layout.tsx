@@ -1,6 +1,8 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { LayoutDashboard, Server, Network, Users, KeyRound, Radio, Settings, LogOut } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
+import { isFeishuEnv } from '../lib/feishu'
+import { isDingTalkEnv } from '../lib/dingtalk'
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: '仪表盘' },
@@ -14,6 +16,7 @@ const navItems = [
 
 export function Layout() {
   const { user, logout } = useAuth()
+  const isNativeSSO = isFeishuEnv() || isDingTalkEnv()
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -49,12 +52,14 @@ export function Layout() {
 
         <div className="p-4 border-t border-white/10">
           <div className="text-white/70 text-xs mb-2">{user?.username || 'admin'}</div>
-          <button
-            onClick={logout}
-            className="flex items-center gap-2 text-white/60 hover:text-white text-xs transition-colors"
-          >
-            <LogOut className="w-4 h-4" /> 退出
-          </button>
+          {!isNativeSSO && (
+            <button
+              onClick={logout}
+              className="flex items-center gap-2 text-white/60 hover:text-white text-xs transition-colors"
+            >
+              <LogOut className="w-4 h-4" /> 退出
+            </button>
+          )}
         </div>
       </aside>
 
