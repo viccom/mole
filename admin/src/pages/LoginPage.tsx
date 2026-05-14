@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { isFeishuEnv, requestAuthCode, buildOAuth2URL } from '../lib/feishu'
-import { isDingTalkEnv, requestAuthCode as dingtalkRequestAuthCode, buildDingTalkOAuth2URL } from '../lib/dingtalk'
+import { isDingTalkEnv, buildDingTalkOAuth2URL } from '../lib/dingtalk'
 import { api } from '../api/client'
 
 export function LoginPage() {
@@ -36,9 +36,6 @@ export function LoginPage() {
         setDingtalkAvailable(true)
         setDingtalkCorpId(dingtalkCfg.corp_id)
         setDingtalkAppKey(dingtalkCfg.app_key)
-        if (isDingTalkEnv() && dingtalkCfg.corp_id) {
-          handleDingTalkSSO(dingtalkCfg.corp_id)
-        }
       }
     }
     init()
@@ -71,31 +68,9 @@ export function LoginPage() {
     }
   }
 
-  const handleDingTalkSSO = async (corpId: string) => {
-    setLoading(true)
-    try {
-      const code = await dingtalkRequestAuthCode(corpId)
-      const result = await dingtalkLogin(code, 'h5')
-      if (result.needBind) {
-        navigate('/dingtalk-bind', { state: { dingtalkToken: result.dingtalkToken, dingtalkName: result.dingtalkName } })
-      } else {
-        toast('登录成功', 'success')
-        navigate('/dashboard')
-      }
-    } catch (err: unknown) {
-      toast(err instanceof Error ? err.message : '钉钉登录失败', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const handleDingTalkClick = async () => {
     if (!dingtalkAppKey && !dingtalkCorpId) { toast('钉钉未配置', 'error'); return }
-    if (isDingTalkEnv() && dingtalkCorpId) {
-      handleDingTalkSSO(dingtalkCorpId)
-    } else {
-      window.location.href = buildDingTalkOAuth2URL(dingtalkAppKey)
-    }
+    window.location.href = buildDingTalkOAuth2URL(dingtalkAppKey)
   }
 
   const handleSubmit = async (e: FormEvent) => {
