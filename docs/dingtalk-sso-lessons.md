@@ -170,3 +170,54 @@ doRequest(ctx, "GET", url, nil, "")
 6. **钉钉 API 文档要注意版本**：旧版 `oapi.dingtalk.com` 和新版 `api.dingtalk.com` 的请求方式不同。`gettoken` 是 GET，不是 POST。
 
 7. **部署时确认二进制文件名**：交叉编译产物带平台后缀 (`-linux-amd64`)，不要上传无后缀的旧文件。校验 md5 只能确认传输完整性，不能确认版本正确性。
+
+---
+
+### 问题 7：Bind 接口 401 状态码触发全局拦截器
+
+**现象**：绑定页面密码错误后，页面直接跳转到登录页，而不是停留在绑定页显示错误。
+
+**根因**：前端 API 客户端有全局 401 拦截器（`window.location.href = '/admin/login'`）。后端 bind 接口密码错误返回 HTTP 401，被全局拦截器捕获并强制跳转，绑定页的 catch 处理器根本没机会处理。
+
+**修复**：Bind 接口属于未认证操作（用户还没登录），密码错误应返回 400 而不是 401。
+
+```go
+// 错误：401 触发全局拦截器
+ResponseError(w, http.StatusUnauthorized, 401, "Invalid username or password")
+
+// 正确：400 让前端正常处理
+ResponseError(w, http.StatusBadRequest, 400, "Invalid username or password")
+```
+
+**教训**：在已有全局 401 拦截器的架构中，非认证类接口（如 bind、注册）不应使用 401 状态码。
+
+---
+
+### 问题 8：钉钉 WebView CSS 覆盖 Tailwind 按钮样式
+
+**现象**：移动端页面中，使用 Tailwind 彩色背景类的按钮（`bg-blue-600 text-white`）在钉钉客户端中完全不可见 — 背景和文字都消失。飞书客户端正常。
+
+**根因**：钉钉 CDN JSSDK (`dingtalk.open.js`) 注入全局 CSS，覆盖了 Tailwind 的 `background-color` 等属性。受影响的按钮变成透明背景 + 白色文字，在白色页面上完全不可见。
+
+**修复**：用 React inline `style` 代替 Tailwind 类，绕过 JSSDK 的 CSS 覆盖：
+
+```tsx
+// 会被钉钉 JSSDK 覆盖
+<button className="w-full py-2.5 bg-blue-600 text-white rounded-lg">
+
+// 正确：inline style 优先级最高
+<button style={{ backgroundColor: '#2563eb', color: '#fff' }}
+  className="w-full py-2.5 rounded-lg">
+```
+
+**教训**：钉钉移动端 WebView 基于 UC 内核，JSSDK 会注入全局 CSS。对关键视觉元素（按钮背景色）使用 inline style 而非 Tailwind 类是最稳妥的做法。
+
+---
+
+### 问题 9：移动端 dingtalk.ts 缺少同步修复
+
+**现象**：PC 端钉钉 SSO 修复后，移动端仍然无法登录。
+
+**根因**：移动端的 `dingtalk.ts` 是独立文件，没有同步 PC 端的修复（移除 `dd.error`、添加 `dd.runtime.permission.requestAuthCode` fallback）。
+
+**教训**：多端项目修复 bug 时，必须检查所有端的同名文件是否需要同步更新。
