@@ -37,7 +37,7 @@ export function LoginPage() {
         setDingtalkCorpId(dingtalkCfg.corp_id)
         setDingtalkAppKey(dingtalkCfg.app_key)
         if (isDingTalkEnv() && dingtalkCfg.corp_id) {
-          handleDingTalkSSO(dingtalkCfg.corp_id)
+          handleDingTalkSSO(dingtalkCfg.corp_id, dingtalkCfg.app_key)
         }
       }
     }
@@ -71,7 +71,7 @@ export function LoginPage() {
     }
   }
 
-  const handleDingTalkSSO = async (corpId: string) => {
+  const handleDingTalkSSO = async (corpId: string, appKey: string) => {
     setLoading(true)
     try {
       const code = await dingtalkRequestAuthCode(corpId)
@@ -84,9 +84,8 @@ export function LoginPage() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : ''
-      if (msg.includes('not available') && dingtalkAppKey) {
-        // JSAPI 不可用，降级到 OAuth2 跳转
-        window.location.href = buildDingTalkOAuth2URL(dingtalkAppKey)
+      if (msg.includes('not available') && appKey) {
+        window.location.href = buildDingTalkOAuth2URL(appKey)
         return
       }
       toast(msg || '钉钉登录失败', 'error')
