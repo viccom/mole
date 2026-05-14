@@ -83,11 +83,13 @@ export function LoginPage() {
         navigate('/dashboard')
       }
     } catch (err: unknown) {
-      // JSAPI 不可用时静默失败，不阻断用户操作
       const msg = err instanceof Error ? err.message : ''
-      if (!msg.includes('not available')) {
-        toast(err instanceof Error ? err.message : '钉钉登录失败', 'error')
+      if (msg.includes('not available') && dingtalkAppKey) {
+        // JSAPI 不可用，降级到 OAuth2 跳转
+        window.location.href = buildDingTalkOAuth2URL(dingtalkAppKey)
+        return
       }
+      toast(msg || '钉钉登录失败', 'error')
     } finally {
       setLoading(false)
     }
