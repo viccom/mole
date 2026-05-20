@@ -1,26 +1,42 @@
 package tunnel
 
-import "net"
+import (
+	"context"
+	"net"
 
-// countingConn 包装 net.Conn，在每次 Read/Write 时上报统计
+	"golang.org/x/time/rate"
+)
+
+// countingConn wraps net.Conn to track bytes and optionally throttle bandwidth.
 type countingConn struct {
 	net.Conn
-	onRead  func(int)
-	onWrite func(int)
+	onRead    func(int)
+	onWrite   func(int)
+	bwLimiter *rate.Limiter // nil = no throttling
 }
 
 func (c *countingConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	if n > 0 && c.onRead != nil {
-		c.onRead(n)
+	if n > 0 {
+		if c.bwLimiter != nil {
+			c.bwLimiter.WaitN(context.Background(), n)
+		}
+		if c.onRead != nil {
+			c.onRead(n)
+		}
 	}
 	return n, err
 }
 
 func (c *countingConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
-	if n > 0 && c.onWrite != nil {
-		c.onWrite(n)
+	if n > 0 {
+		if c.bwLimiter != nil {
+			c.bwLimiter.WaitN(context.Background(), n)
+		}
+		if c.onWrite != nil {
+			c.onWrite(n)
+		}
 	}
 	return n, err
 }

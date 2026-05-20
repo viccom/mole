@@ -215,6 +215,13 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
 	sKey := statsKey(node.ID, tunnelName)
+
+	if !tg.limiter.AcquireConn(node.ID, sKey) {
+		http.Error(w, "Too many connections", http.StatusTooManyRequests)
+		return
+	}
+	defer tg.limiter.ReleaseConn(node.ID, sKey)
+
 	tg.stats.ConnOpened(sKey)
 	defer tg.stats.ConnClosed(sKey)
 
@@ -238,11 +245,12 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		"nodeId", node.ID,
 	)
 
-	// 统计请求字节数（bytesIn: 外部→隧道）
+	// Track bytes + optional bandwidth throttling
 	trackedStream := &countingConn{
-		Conn:    stream,
-		onWrite: func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
-		onRead:  func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
+		Conn:      stream,
+		onWrite:   func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
+		onRead:    func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
+		bwLimiter: tg.limiter.BWLimiterFor(sKey),
 	}
 
 	if err := r.Write(trackedStream); err != nil {
@@ -271,6 +279,13 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 
 func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
 	sKey := statsKey(node.ID, tunnelName)
+
+	if !tg.limiter.AcquireConn(node.ID, sKey) {
+		http.Error(w, "Too many connections", http.StatusTooManyRequests)
+		return
+	}
+	defer tg.limiter.ReleaseConn(node.ID, sKey)
+
 	tg.stats.ConnOpened(sKey)
 	defer tg.stats.ConnClosed(sKey)
 
@@ -328,9 +343,10 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 	slog.Debug("WebSocket connected", "tunnel", tunnelName, "nodeId", node.ID)
 
 	trackedConn := &countingConn{
-		Conn:    clientConn,
-		onRead:  func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
-		onWrite: func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
+		Conn:      clientConn,
+		onRead:    func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
+		onWrite:   func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
+		bwLimiter: tg.limiter.BWLimiterFor(sKey),
 	}
 	biCopy(stream, trackedConn)
 }

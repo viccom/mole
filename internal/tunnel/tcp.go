@@ -69,8 +69,14 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 		return
 	}
 
-	// 使用复合键避免同名隧道串台
+	// Connection limiting
 	sKey := statsKey(node.ID, tunnel.Name)
+	if !tg.limiter.AcquireConn(node.ID, sKey) {
+		slog.Warn("TCP connection limit exceeded", "tunnel", tunnel.Name, "nodeId", node.ID)
+		return
+	}
+	defer tg.limiter.ReleaseConn(node.ID, sKey)
+
 	tg.stats.ConnOpened(sKey)
 	defer tg.stats.ConnClosed(sKey)
 
@@ -116,9 +122,10 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 	)
 
 	trackedConn := &countingConn{
-		Conn:    conn,
-		onRead:  func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
-		onWrite: func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
+		Conn:      conn,
+		onRead:    func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
+		onWrite:   func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
+		bwLimiter: tg.limiter.BWLimiterFor(sKey),
 	}
 	biCopy(stream, trackedConn)
 }

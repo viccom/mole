@@ -10,6 +10,7 @@ import (
 	"github.com/xtaci/smux"
 
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/ratelimit"
 )
 
 // 确保 StatsTracker 实现 core.TunnelStatsReader 接口
@@ -176,6 +177,7 @@ type TunnelGateway struct {
 	registry *ListenerRegistry
 	sem      *Semaphore
 	stats    *StatsTracker
+	limiter  ratelimit.GatewayLimiter
 
 	// 路由索引：加速域名和隧道名称查找
 	domainMu sync.RWMutex
@@ -197,15 +199,19 @@ type tunnelRoute struct {
 	nodeID string
 }
 
-func NewTunnelGateway(nodeMgr NodeProvider, maxConcurrent int) *TunnelGateway {
+func NewTunnelGateway(nodeMgr NodeProvider, maxConcurrent int, limiter ratelimit.GatewayLimiter) *TunnelGateway {
+	if limiter == nil {
+		limiter = ratelimit.NopLimiter{}
+	}
 	return &TunnelGateway{
 		nodeMgr:       nodeMgr,
 		registry:      NewListenerRegistry(),
 		sem:           NewSemaphore(maxConcurrent),
 		stats:         NewStatsTracker(),
+		limiter:       limiter,
 		domainIdx:     make(map[string]*domainRoute),
 		tunnelIdx:     make(map[string]*tunnelRoute),
-		HyphenRouting: true, // 默认使用 hyphen(-) 作为泛域名分隔符
+		HyphenRouting: true,
 	}
 }
 

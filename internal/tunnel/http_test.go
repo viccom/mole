@@ -93,7 +93,7 @@ func TestFindNodeTunnel_Found(t *testing.T) {
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("client1", httpTunnel("api", "api.example.com")))
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	node, tunnelName := tg.findNodeTunnel(context.Background(), "client1", "api")
 
 	if node == nil {
@@ -115,7 +115,7 @@ func TestFindNodeTunnel_NotFound(t *testing.T) {
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("client1", httpTunnel("web", "web.example.com")))
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	node, tunnelName := tg.findNodeTunnel(context.Background(), "client1", "api")
 
 	if node != nil {
@@ -134,7 +134,7 @@ func TestFindNodeTunnel_NodeOffline(t *testing.T) {
 	mp := newMockNodeProvider()
 	mp.addNode(offlineNode("client1", httpTunnel("api", "api.example.com")))
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	node, tunnelName := tg.findNodeTunnel(context.Background(), "client1", "api")
 
 	if node != nil {
@@ -153,7 +153,7 @@ func TestFindNodeTunnel_UnknownNode(t *testing.T) {
 	mp := newMockNodeProvider()
 	// No nodes added.
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	node, tunnelName := tg.findNodeTunnel(context.Background(), "nonexistent", "api")
 
 	if node != nil {
@@ -237,7 +237,7 @@ func TestIsWebSocketRequest(t *testing.T) {
 func TestServeHTTP_NoTunnelMatched(t *testing.T) {
 	mp := newMockNodeProvider()
 	// No nodes at all -- nothing can match.
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://unknown.example.com/test", nil)
 	w := httptest.NewRecorder()
@@ -261,7 +261,7 @@ func TestServeHTTP_NoTunnelMatched(t *testing.T) {
 
 func TestServeHTTP_SemaphoreOverloaded(t *testing.T) {
 	mp := newMockNodeProvider()
-	tg := NewTunnelGateway(mp, 1) // capacity 1
+	tg := NewTunnelGateway(mp, 1, nil) // capacity 1
 
 	// Acquire the single slot so the next request is blocked.
 	tg.sem.Acquire(context.Background())
@@ -290,7 +290,7 @@ func TestServeHTTP_VirtualHostRouting(t *testing.T) {
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("node1", httpTunnel("api", "")))
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	tg.HyphenRouting = true
 
 	// Host "api-node1.example.com" should resolve to node1, tunnel "api".
@@ -321,7 +321,7 @@ func TestServeHTTP_PathRouting(t *testing.T) {
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("node1", httpTunnel("web", "")))
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	tg.HyphenRouting = false
 
 	// Path "/node1/web/page" should resolve to node1, tunnel "web".
@@ -344,7 +344,7 @@ func TestServeHTTP_DomainIndexRouting(t *testing.T) {
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("node1", httpTunnel("mysite", "test.example.com")))
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	tg.RebuildIndex(context.Background()) // build domain index
 
 	req := httptest.NewRequest(http.MethodGet, "http://test.example.com/hello", nil)
@@ -480,7 +480,7 @@ func TestServeHTTP_PathRewriteOnVhostMatch(t *testing.T) {
 	mp := newMockNodeProvider()
 	mp.addNode(onlineNode("node1", httpTunnel("api", "")))
 
-	tg := NewTunnelGateway(mp, 10)
+	tg := NewTunnelGateway(mp, 10, nil)
 	tg.HyphenRouting = true
 
 	req := httptest.NewRequest(http.MethodGet, "http://api-node1.example.com/v1/data", nil)

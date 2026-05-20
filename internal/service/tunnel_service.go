@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/ratelimit"
 	"moleAgent_Serv/internal/tunnel"
 )
 
@@ -25,21 +26,25 @@ type tunnelPusher interface {
 }
 
 // TunnelConfigService 隧道配置应用服务（单一变更入口）
-// 统一处理：持久化、运行态更新、路由刷新、客户端同步
 type TunnelConfigService struct {
 	nodeMgr  core.NodeManager
 	nodeRepo core.NodeRepo
 	gateway  routeIndexer
 	pusher   tunnelPusher
+	limiter  ratelimit.GatewayLimiter
 }
 
-// NewTunnelConfigService 创建隧道配置服务
-func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway routeIndexer, pusher tunnelPusher) *TunnelConfigService {
+// NewTunnelConfigService creates a tunnel config service.
+func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway routeIndexer, pusher tunnelPusher, limiter ratelimit.GatewayLimiter) *TunnelConfigService {
+	if limiter == nil {
+		limiter = ratelimit.NopLimiter{}
+	}
 	return &TunnelConfigService{
 		nodeMgr:  nodeMgr,
 		nodeRepo: nodeRepo,
 		gateway:  gateway,
 		pusher:   pusher,
+		limiter:  limiter,
 	}
 }
 
@@ -264,6 +269,18 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		n.Tunnels = append([]core.Tunnel(nil), tunnels...)
 	}); err != nil {
 		return err
+	}
+	for _, t := range tunnels {
+		sKey := nodeID + "/" + t.Name
+		if t.RateLimit != nil {
+			cfg := ratelimit.TunnelRateConfig{
+				MaxConns: t.RateLimit.MaxConns,
+				MaxBPS:   t.RateLimit.MaxBPS,
+			}
+			s.limiter.UpdateTunnelConfig(sKey, cfg)
+		} else {
+			s.limiter.UpdateTunnelConfig(sKey, ratelimit.TunnelRateConfig{})
+		}
 	}
 
 	if s.gateway != nil {

@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"moleAgent_Serv/internal/ratelimit"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,8 +19,9 @@ type Config struct {
 	Auth     AuthConfig     `yaml:"auth"`
 	Database DatabaseConfig `yaml:"database"`
 	Logging  LoggingConfig  `yaml:"logging"`
-	Feishu   FeishuConfig   `yaml:"feishu"`
-	DingTalk  DingTalkConfig `yaml:"dingtalk"`
+	Feishu    FeishuConfig            `yaml:"feishu"`
+	DingTalk  DingTalkConfig          `yaml:"dingtalk"`
+	RateLimit ratelimit.RateLimitConfig `yaml:"ratelimit"`
 }
 
 type FeishuConfig struct {

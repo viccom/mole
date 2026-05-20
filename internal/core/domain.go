@@ -50,6 +50,13 @@ type Tunnel struct {
 	ListenPort int            `json:"listen_port,omitempty"` // TCP/UDP 隧道的监听端口
 	Enabled    *bool           `json:"enabled,omitempty"`     // 启用开关，nil/true=启用，false=禁用
 	Para       json.RawMessage `json:"para,omitempty"`        // 扩展配置（ser2mq/vpn-manager 等）
+	RateLimit  *TunnelRateLimit `json:"rate_limit,omitempty"` // per-tunnel rate limit overrides
+}
+
+// TunnelRateLimit per-tunnel rate limit overrides.
+type TunnelRateLimit struct {
+	MaxConns int   `json:"max_conns,omitempty"` // override max_conns_per_tunnel
+	MaxBPS   int64 `json:"max_bps,omitempty"`   // override max_bps_per_tunnel
 }
 
 // IsEnabled 返回隧道是否启用。零值（nil）视为启用，兼容旧数据。

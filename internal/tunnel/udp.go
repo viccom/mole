@@ -13,13 +13,14 @@ import (
 
 const udpSessionTimeout = 60 * time.Second
 
-// udpSession 跟踪一个 UDP 源地址的会话
+// udpSession tracks a UDP source address session
 type udpSession struct {
 	srcAddr  *net.UDPAddr
 	stream   net.Conn
 	lastSeen time.Time
-	cancel   context.CancelFunc // 用于取消响应读取 goroutine
-	sKey     string             // 统计复合键 (nodeID/tunnelName)
+	cancel   context.CancelFunc
+	sKey     string // stats composite key (nodeID/tunnelName)
+	nodeID   string // nodeID for connection limiter release
 }
 
 // StartUDP 启动 UDP 隧道监听（异步，与 StartTCP 行为一致）
@@ -71,6 +72,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 							s.cancel()
 							s.stream.Close()
 							tg.stats.ConnClosed(s.sKey)
+						tg.limiter.ReleaseConn(s.nodeID, s.sKey)
 							delete(sessions, key)
 							slog.Debug("UDP session expired", "tunnel", tunnel.Name, "src", key)
 						}
@@ -145,13 +147,17 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					continue
 				}
 
-				// 使用复合键统计
+				// Connection limiting
 				newSKey := statsKey(node.ID, tunnel.Name)
+				if !tg.limiter.AcquireConn(node.ID, newSKey) {
+					slog.Debug("UDP connection limit exceeded", "tunnel", tunnel.Name)
+					newStream.Close()
+					continue
+				}
 
-				// 统计：新 UDP 会话视为一个连接
+				// Track new UDP session as a connection
 				tg.stats.ConnOpened(newSKey)
 
-				// 为响应 goroutine 创建独立 context
 				respCtx, respCancel := context.WithCancel(tunnelCtx)
 				sess = &udpSession{
 					srcAddr:  addr,
@@ -159,6 +165,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					lastSeen: time.Now(),
 					cancel:   respCancel,
 					sKey:     newSKey,
+					nodeID:   node.ID,
 				}
 
 				// 读取响应协程（带 context 取消支持）
@@ -205,6 +212,9 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			// 在锁外转发数据（使用锁内捕获的 stream 引用，避免竞态）
 			// 统计入站字节数（使用复合键）
 			tg.stats.RecordBytesIn(curSKey, int64(n))
+				if bwLimiter := tg.limiter.BWLimiterFor(curSKey); bwLimiter != nil {
+					bwLimiter.WaitN(tunnelCtx, n)
+				}
 			if fwdStream != nil {
 				if _, err := fwdStream.Write(buf[:n]); err != nil {
 					slog.Debug("UDP write to stream failed", "tunnel", tunnel.Name, "error", err)
@@ -218,6 +228,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			s.cancel()
 			s.stream.Close()
 			tg.stats.ConnClosed(s.sKey)
+				tg.limiter.ReleaseConn(s.nodeID, s.sKey)
 		}
 		sessions = make(map[string]*udpSession)
 		mu.Unlock()

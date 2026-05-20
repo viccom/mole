@@ -22,6 +22,7 @@ import (
 	"moleAgent_Serv/internal/logging"
 	"moleAgent_Serv/internal/mqtt"
 	"moleAgent_Serv/internal/node"
+	"moleAgent_Serv/internal/ratelimit"
 	"moleAgent_Serv/internal/service"
 	"moleAgent_Serv/internal/storage"
 	"moleAgent_Serv/internal/tunnel"
@@ -89,11 +90,35 @@ func main() {
 		return storage.GetGlobalAccessKey()
 	})
 
+	// API rate limiter (nil when disabled)
+	var apiLimiter *ratelimit.APILimiter
+	if cfg.RateLimit.API.Enabled {
+		jwtVerify := ratelimit.JWTVerifierFunc(func(tokenString string) (string, bool) {
+			claims, err := jwtMgr.VerifyToken(tokenString)
+			if err != nil {
+				return "", false
+			}
+			return claims.UserID, true
+		})
+		apiLimiter = ratelimit.NewAPILimiter(cfg.RateLimit.API, jwtVerify)
+	}
+
 	nodeMgr := node.NewShardedNodeManager(256)
 	nodeRepo := storage.NewNodeRepo(db)
 
 	// --- 网关服务（HTTP 隧道）---（在 controlSrv 之前创建，因为注册回调需要引用）
-	gateway := tunnel.NewTunnelGateway(nodeMgr, cfg.Server.MaxConcurrent)
+	// Gateway rate limiter (NopLimiter when disabled)
+	var gatewayLimiter ratelimit.GatewayLimiter
+	if cfg.RateLimit.Gateway.Enabled {
+		gatewayLimiter = ratelimit.NewGatewayLimiter(cfg.RateLimit.Gateway)
+		slog.Info("Gateway rate limiting enabled",
+			"maxConnsPerNode", cfg.RateLimit.Gateway.MaxConnsPerNode,
+			"maxConnsPerTunnel", cfg.RateLimit.Gateway.MaxConnsPerTunnel,
+			"maxBPS", cfg.RateLimit.Gateway.MaxBPSPerTunnel,
+		)
+	}
+
+	gateway := tunnel.NewTunnelGateway(nodeMgr, cfg.Server.MaxConcurrent, gatewayLimiter)
 	gateway.HyphenRouting = cfg.Server.Gateway.HyphenRouting
 
 	// --- 控制端口 ---
@@ -167,12 +192,13 @@ func main() {
 	}()
 
 	// --- 隧道配置服务（单一变更入口）---
-	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv)
+	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv, gatewayLimiter)
 	controlSrv.SetTunnelConfigManager(tunnelSvc)
 
 	// --- 节点断开回调：清理隧道运行时资源（监听器、路由索引、统计）---
 	disconnectHandler := func(nodeID string, tunnels []core.Tunnel) {
 		tunnelSvc.ReleaseNodeResources(context.Background(), nodeID, tunnels)
+		gatewayLimiter.RemoveNode(nodeID)
 	}
 	controlSrv.SetOnNodeDisconnect(disconnectHandler)
 
@@ -206,7 +232,7 @@ func main() {
 	dingtalkBindingRepo := storage.NewDingTalkBindingRepo(db)
 
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr)
+	apiRouter := buildAPIRouter(authMW, apiLimiter, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr)
 	adminDir, _ := os.Getwd()
 	distDir := filepath.Join(adminDir, "admin", "dist")
 	fileServer := http.FileServer(http.Dir(distDir))
@@ -295,6 +321,7 @@ func main() {
 
 func buildAPIRouter(
 	mw *auth.AuthMiddleware,
+	apiLimiter *ratelimit.APILimiter,
 	authSvc *auth.AuthService,
 	nodeMgr *node.ShardedNodeManager,
 	cfg *config.Config,
@@ -313,7 +340,7 @@ func buildAPIRouter(
 	dingtalkBindingRepo core.DingTalkBindingRepo,
 	jwtMgr *auth.JWTManager,
 ) http.Handler {
-	router := api.NewRouter(mw)
+	router := api.NewRouter(mw, apiLimiter)
 
 	// Handlers
 	authH := api.NewAuthHandler(authSvc)

@@ -36,6 +36,7 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 		NodeID     string          `json:"node_id"`
 		Status     string          `json:"status"`
 		Para       json.RawMessage `json:"para,omitempty"`
+		RateLimit  *core.TunnelRateLimit `json:"rate_limit,omitempty"`
 	}
 
 	claims := auth.GetClaims(r.Context())
@@ -64,6 +65,7 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 				NodeID:     n.ID,
 				Status:     "active",
 				Para:       t.Para,
+				RateLimit:  t.RateLimit,
 			})
 		}
 	}
@@ -164,6 +166,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		NodeID         string          `json:"node_id"`
 		OriginalNodeID string          `json:"original_node_id,omitempty"`
 		Para           json.RawMessage `json:"para,omitempty"`
+		RateLimit      *core.TunnelRateLimit `json:"rate_limit,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
@@ -215,6 +218,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Domain:     req.Domain,
 		ListenPort: req.ListenPort,
 		Enabled:    req.Enabled,
+		RateLimit:  req.RateLimit,
 		Para:       req.Para,
 	}
 
@@ -356,6 +360,7 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 		ActiveConns  int64           `json:"active_connections"`
 		LastActivity string          `json:"last_activity,omitempty"`
 		Para         json.RawMessage `json:"para,omitempty"`
+			RateLimit   *core.TunnelRateLimit `json:"rate_limit,omitempty"`
 	}
 
 	items := make([]usageItem, 0)
@@ -384,6 +389,7 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 				NodeStatus:  string(n.Status),
 				OwnerUserID: n.OwnerUserID,
 				Para:        t.Para,
+				RateLimit:   t.RateLimit,
 			}
 
 			// 关联运行时统计

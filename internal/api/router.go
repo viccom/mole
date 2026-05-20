@@ -6,12 +6,14 @@ import (
 	"strings"
 
 	"moleAgent_Serv/internal/auth"
+	"moleAgent_Serv/internal/ratelimit"
 )
 
 // Router API 路由器
 type Router struct {
-	mw     *auth.AuthMiddleware
-	routes []routeEntry
+	mw      *auth.AuthMiddleware
+	limiter *ratelimit.APILimiter
+	routes  []routeEntry
 }
 
 type routeEntry struct {
@@ -20,8 +22,8 @@ type routeEntry struct {
 	handler http.Handler
 }
 
-func NewRouter(mw *auth.AuthMiddleware) *Router {
-	return &Router{mw: mw}
+func NewRouter(mw *auth.AuthMiddleware, limiter *ratelimit.APILimiter) *Router {
+	return &Router{mw: mw, limiter: limiter}
 }
 
 func (r *Router) Register(method, pattern string, handler http.HandlerFunc, resource, action string) {
@@ -43,13 +45,13 @@ func (r *Router) RegisterAuth(method, pattern string, handler http.HandlerFunc) 
 	r.routes = append(r.routes, routeEntry{method: method, prefix: pattern, handler: h})
 }
 
-// Build 构建 http.Handler
+// Build constructs the http.Handler with optional rate limiting.
 func (r *Router) Build() http.Handler {
-	return loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// 三阶段匹配：
-		// 1. 精确路径 + method 一致
-		// 2. 最长前缀 + method 一致（优先选择不冲突的最长匹配）
-		// 3. Method 不匹配检测
+	core := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// 3-phase matching:
+		// 1. exact path + method
+		// 2. longest prefix + method
+		// 3. method mismatch detection
 
 		var bestMatch *routeEntry
 		bestMatchLen := 0
@@ -58,7 +60,6 @@ func (r *Router) Build() http.Handler {
 		for i := range r.routes {
 			e := &r.routes[i]
 
-			// 精确匹配
 			if req.URL.Path == e.prefix {
 				if req.Method == e.method || req.Method == "OPTIONS" {
 					e.handler.ServeHTTP(w, req)
@@ -67,7 +68,6 @@ func (r *Router) Build() http.Handler {
 				pathMatchedButMethodMismatch = true
 			}
 
-			// 前缀匹配
 			if strings.HasPrefix(req.URL.Path, e.prefix) && len(e.prefix) > bestMatchLen {
 				if req.Method == e.method || req.Method == "OPTIONS" {
 					bestMatch = e
@@ -88,6 +88,11 @@ func (r *Router) Build() http.Handler {
 
 		ResponseError(w, http.StatusNotFound, 404, "Not found: "+req.URL.Path)
 	}))
+
+	if r.limiter != nil {
+		core = r.limiter.Middleware(core)
+	}
+	return core
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

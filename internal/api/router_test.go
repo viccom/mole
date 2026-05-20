@@ -11,13 +11,13 @@ import (
 
 func setupTestRouter() *Router {
 	mw := &auth.AuthMiddleware{}
-	router := NewRouter(mw)
+	router := NewRouter(mw, nil)
 	return router
 }
 
 func TestRouterNotFound(t *testing.T) {
 	mw := &auth.AuthMiddleware{}
-	router := NewRouter(mw)
+	router := NewRouter(mw, nil)
 	router.RegisterPublic("GET", "/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		ResponseOK(w, "ok")
 	})
@@ -35,7 +35,7 @@ func TestRouterNotFound(t *testing.T) {
 
 func TestRouterMethodNotAllowed(t *testing.T) {
 	mw := &auth.AuthMiddleware{}
-	router := NewRouter(mw)
+	router := NewRouter(mw, nil)
 	router.RegisterPublic("GET", "/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		ResponseOK(w, "ok")
 	})
@@ -53,7 +53,7 @@ func TestRouterMethodNotAllowed(t *testing.T) {
 
 func TestRouterPrefixMatch(t *testing.T) {
 	mw := &auth.AuthMiddleware{}
-	router := NewRouter(mw)
+	router := NewRouter(mw, nil)
 	router.RegisterPublic("GET", "/api/v1/users/", func(w http.ResponseWriter, r *http.Request) {
 		ResponseOK(w, "user-detail")
 	})
@@ -71,7 +71,7 @@ func TestRouterPrefixMatch(t *testing.T) {
 
 func TestRouterExactOverPrefix(t *testing.T) {
 	mw := &auth.AuthMiddleware{}
-	router := NewRouter(mw)
+	router := NewRouter(mw, nil)
 	router.RegisterPublic("GET", "/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
 		ResponseOK(w, "user-list")
 	})

@@ -62,3 +62,16 @@ dingtalk:
   app_key: ""              # 钉钉企业自建应用 App Key，也可通过 MA_DINGTALK_APP_KEY 环境变量设置
   app_secret: ""           # 钉钉企业自建应用 App Secret，也可通过 MA_DINGTALK_APP_SECRET 环境变量设置
   corp_id: ""              # 钉钉企业 Corp ID（H5 JSAPI 登录需要），也可通过 MA_DINGTALK_CORP_ID 环境变量设置
+
+ratelimit:
+  api:
+    enabled: false         # API 请求限流总开关
+    per_user: 100          # 每用户每秒请求数 (0=不限)
+    per_ip: 30             # 每IP每秒请求数 (0=不限)
+    burst: 20              # 突发桶容量
+  gateway:
+    enabled: false         # Gateway 限流总开关
+    max_conns_per_node: 1000     # 每节点最大并发连接 (0=不限)
+    max_conns_per_tunnel: 500    # 每隧道最大并发连接 (0=不限)
+    max_bps_per_tunnel: 0        # 每隧道默认带宽上限 bytes/sec (0=不限)
+    bw_burst: 65536             # 带宽突发桶容量 bytes
