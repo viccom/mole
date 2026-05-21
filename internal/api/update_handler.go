@@ -107,9 +107,8 @@ func (h *UpdateHandler) SelfUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	progress := u.Progress()
-	snapshot := progress.Snapshot()
-	if active, _ := snapshot["active"].(bool); active {
+	snapshot := u.Progress().Snapshot()
+	if snapshot.Active {
 		ResponseOK(w, map[string]any{
 			"error":   true,
 			"message": "update already in progress",
