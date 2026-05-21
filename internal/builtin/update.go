@@ -106,9 +106,8 @@ func handleSelfUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	progress := u.Progress()
-	snapshot := progress.Snapshot()
-	if active, _ := snapshot["active"].(bool); active {
+	snapshot := u.Progress().Snapshot()
+	if snapshot.Active {
 		json.NewEncoder(w).Encode(map[string]any{
 			"error":   true,
 			"message": "update already in progress",
