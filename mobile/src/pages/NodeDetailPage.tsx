@@ -39,7 +39,6 @@ export function NodeDetailPage() {
   const [loading, setLoading] = useState(true)
   const [actionTarget, setActionTarget] = useState<Tunnel | null>(null)
   const [showForm, setShowForm] = useState(false)
-  const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
 
   const refresh = () => {
@@ -176,7 +175,6 @@ export function NodeDetailPage() {
           nodeId={node.id}
           onClose={() => setShowForm(false)}
           onDone={() => { setShowForm(false); refresh() }}
-          busy={busy} setBusy={setBusy}
         />
       )}
     </div>
@@ -191,18 +189,17 @@ const TYPE_STYLES: Record<string, React.CSSProperties> = {
   udp: { backgroundColor: '#f59e0b', color: '#fff' },
 }
 
-function TunnelCreateForm({ nodeId, onClose, onDone, busy, setBusy }: {
+function TunnelCreateForm({ nodeId, onClose, onDone }: {
   nodeId: string
   onClose: () => void
   onDone: () => void
-  busy: boolean
-  setBusy: (b: boolean) => void
 }) {
   const [name, setName] = useState('')
   const [type, setType] = useState('http')
   const [target, setTarget] = useState('')
   const [domain, setDomain] = useState('')
   const [listenPort, setListenPort] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -295,6 +292,9 @@ function TunnelCard({ tunnel, enabled, nodeId, onLongPress, onToggle }: {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
   }
 
+  const accessUrl = tunnelAccessUrl(tunnel, nodeId)
+  const noUrl = accessUrl === '-'
+
   return (
     <div className="bg-white rounded-xl p-3.5 shadow-sm border border-gray-100 select-none"
       onTouchStart={startPress} onTouchEnd={cancelPress} onTouchCancel={cancelPress}
@@ -305,8 +305,8 @@ function TunnelCard({ tunnel, enabled, nodeId, onLongPress, onToggle }: {
           <div className="min-w-0">
             <div className="font-medium text-gray-800 truncate">{tunnel.name}</div>
             <div className="text-xs text-gray-400 mt-0.5">{tunnel.type} → {tunnel.target}</div>
-            <div className={`text-xs mt-0.5 truncate ${tunnelAccessUrl(tunnel, nodeId) === '-' ? 'text-gray-400' : 'text-blue-500'}`}>
-              {tunnelAccessUrl(tunnel, nodeId)}
+            <div className={`text-xs mt-0.5 truncate ${noUrl ? 'text-gray-400' : 'text-blue-500'}`}>
+              {accessUrl}
             </div>
           </div>
         </div>

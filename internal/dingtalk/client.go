@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -65,8 +66,12 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 		return c.accessToken, nil
 	}
 
-	url := fmt.Sprintf("https://oapi.dingtalk.com/gettoken?appkey=%s&appsecret=%s", c.appKey, c.appSecret)
-	respBody, err := c.doRequest(ctx, "GET", url, nil, "")
+	u, _ := url.Parse("https://oapi.dingtalk.com/gettoken")
+	q := u.Query()
+	q.Set("appkey", c.appKey)
+	q.Set("appsecret", c.appSecret)
+	u.RawQuery = q.Encode()
+	respBody, err := c.doRequest(ctx, "GET", u.String(), nil, "")
 	if err != nil {
 		return "", fmt.Errorf("get dingtalk access token: %w", err)
 	}

@@ -52,10 +52,6 @@ export function SettingsPage() {
     } catch { /* ignore */ }
   }
 
-  const showFeishuBinding = isFeishu
-  const showDingTalkBinding = isDingTalk
-  const showBindings = showFeishuBinding || showDingTalkBinding
-
   return (
     <div className="min-h-screen bg-gray-50 pb-16">
       <header className="sticky top-0 z-40 bg-white border-b border-gray-100 px-4 py-3">
@@ -74,9 +70,9 @@ export function SettingsPage() {
           </div>
         </div>
 
-        {showBindings && (
+        {(isFeishu || isDingTalk) && (
           <div className="bg-white rounded-xl shadow-sm border border-gray-100">
-            {showFeishuBinding && (
+            {isFeishu && (
               <div className="px-4 py-3 flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <Link2 className="w-4 h-4 text-gray-400" />
@@ -89,7 +85,7 @@ export function SettingsPage() {
                 )}
               </div>
             )}
-            {showDingTalkBinding && (
+            {isDingTalk && (
               <div className="px-4 py-3 flex items-center justify-between border-t border-gray-50">
                 <div className="flex items-center gap-2.5">
                   <Link2 className="w-4 h-4 text-gray-400" />
