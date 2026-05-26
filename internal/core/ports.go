@@ -30,6 +30,7 @@ type TunnelConfigManager interface {
 	ReplaceTunnels(ctx context.Context, nodeID string, tunnels []Tunnel) (TunnelChangeResult, error)
 	SyncFromClient(ctx context.Context, nodeID string, tunnels []Tunnel) error
 	LoadPersisted(ctx context.Context, nodeID string) ([]Tunnel, error)
+	UpdateNodeRateLimit(ctx context.Context, nodeID string, rl *NodeRateLimit) error
 }
 
 // TunnelManager 隧道管理器接口

@@ -7,6 +7,8 @@ import (
 
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/ratelimit"
+	"moleAgent_Serv/internal/service"
 	"moleAgent_Serv/internal/node"
 )
 
@@ -14,13 +16,15 @@ type TunnelHandler struct {
 	nodeMgr   *node.ShardedNodeManager
 	tunnelSvc core.TunnelConfigManager // 隧道配置单一变更入口
 	stats     core.TunnelStatsReader   // 运行时统计读取
+	limiter   ratelimit.GatewayLimiter // 限速配置读取
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader) *TunnelHandler {
+func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader, limiter ratelimit.GatewayLimiter) *TunnelHandler {
 	return &TunnelHandler{
 		nodeMgr:   nodeMgr,
 		tunnelSvc: tunnelSvc,
 		stats:     stats,
+		limiter:   limiter,
 	}
 }
 
@@ -360,7 +364,7 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 		ActiveConns  int64           `json:"active_connections"`
 		LastActivity string          `json:"last_activity,omitempty"`
 		Para         json.RawMessage `json:"para,omitempty"`
-			RateLimit   *core.TunnelRateLimit `json:"rate_limit,omitempty"`
+		RateLimit   *core.TunnelRateLimit `json:"rate_limit,omitempty"`
 	}
 
 	items := make([]usageItem, 0)
@@ -436,4 +440,43 @@ func extractTargetFromPara(tunnelType string, para json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+// BatchRateLimit handles PATCH /api/v1/tunnels/rate-limit — batch update rate limits.
+func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Items []service.RateLimitItem `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+	if len(req.Items) == 0 {
+		ResponseError(w, http.StatusBadRequest, 400, "items must not be empty")
+		return
+	}
+	// Ownership check
+	claims := auth.GetClaims(r.Context())
+	if claims != nil && !IsAdmin(claims) {
+		for _, item := range req.Items {
+			node, ok := h.nodeMgr.Get(r.Context(), item.NodeID)
+			if !ok || node.OwnerUserID != claims.UserID {
+				ResponseError(w, http.StatusNotFound, 404, "Node not found: "+item.NodeID)
+				return
+			}
+		}
+	}
+	results, err := h.tunnelSvc.(*service.TunnelConfigService).BatchUpdateRateLimit(r.Context(), req.Items)
+	if err != nil {
+		if err == core.ErrTunnelInvalid || err == core.ErrNodeNotFound {
+			ResponseError(w, http.StatusBadRequest, 400, err.Error())
+			return
+		}
+		ResponseError(w, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	ResponseOK(w, map[string]any{
+		"updated": len(results),
+		"items":   results,
+	})
 }

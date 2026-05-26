@@ -89,7 +89,7 @@ func TestGatewayLimiter_TunnelOverride(t *testing.T) {
 
 func TestGatewayLimiter_BWLimiterFor(t *testing.T) {
 	cfg := GatewayRateLimitConfig{
-		MaxBPSPerTunnel: 1024,
+		MaxBandwidthPerTunnel: 1024,
 		BWBurst:         512,
 	}
 	g := NewGatewayLimiter(cfg)
@@ -105,7 +105,7 @@ func TestGatewayLimiter_BWLimiterFor(t *testing.T) {
 }
 
 func TestGatewayLimiter_BWLimiterUnlimited(t *testing.T) {
-	cfg := GatewayRateLimitConfig{MaxBPSPerTunnel: 0}
+	cfg := GatewayRateLimitConfig{MaxBandwidthPerTunnel: 0}
 	g := NewGatewayLimiter(cfg)
 
 	l := g.BWLimiterFor("n1/t1")
@@ -117,7 +117,7 @@ func TestGatewayLimiter_BWLimiterUnlimited(t *testing.T) {
 func TestGatewayLimiter_RemoveTunnel(t *testing.T) {
 	cfg := GatewayRateLimitConfig{
 		MaxConnsPerTunnel: 1,
-		MaxBPSPerTunnel:   1024,
+		MaxBandwidthPerTunnel:   1024,
 	}
 	g := NewGatewayLimiter(cfg)
 
@@ -137,7 +137,7 @@ func TestGatewayLimiter_RemoveNode(t *testing.T) {
 	cfg := GatewayRateLimitConfig{
 		MaxConnsPerNode:   5,
 		MaxConnsPerTunnel: 5,
-		MaxBPSPerTunnel:   1024,
+		MaxBandwidthPerTunnel:   1024,
 	}
 	g := NewGatewayLimiter(cfg)
 
@@ -159,7 +159,7 @@ func TestGatewayLimiter_RemoveNode(t *testing.T) {
 
 func TestGatewayLimiter_UpdateTunnelBPSNoDeadlock(t *testing.T) {
 	cfg := GatewayRateLimitConfig{
-		MaxBPSPerTunnel: 1024,
+		MaxBandwidthPerTunnel: 1024,
 	}
 	g := NewGatewayLimiter(cfg)
 
@@ -169,7 +169,7 @@ func TestGatewayLimiter_UpdateTunnelBPSNoDeadlock(t *testing.T) {
 	// Update with BPS override — must not deadlock
 	done := make(chan struct{})
 	go func() {
-		g.UpdateTunnelConfig("n1/t1", TunnelRateConfig{MaxBPS: 2048})
+		g.UpdateTunnelConfig("n1/t1", TunnelRateConfig{MaxBandwidth: 2048})
 		close(done)
 	}()
 	select {

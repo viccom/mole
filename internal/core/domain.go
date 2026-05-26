@@ -29,6 +29,7 @@ type Node struct {
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
 	OwnerUserID   string     `json:"owner_user_id,omitempty"`   // 归属用户 ID
 	AccessTokenID string     `json:"access_token_id,omitempty"` // 接入 Token ID（审计用）
+	RateLimit      *NodeRateLimit `json:"rate_limit,omitempty"`        // per-node rate limit overrides
 }
 
 // TunnelType 隧道类型
@@ -55,8 +56,13 @@ type Tunnel struct {
 
 // TunnelRateLimit per-tunnel rate limit overrides.
 type TunnelRateLimit struct {
-	MaxConns int   `json:"max_conns,omitempty"` // override max_conns_per_tunnel
-	MaxBPS   int64 `json:"max_bps,omitempty"`   // override max_bps_per_tunnel
+	MaxConns      int   `json:"max_conns,omitempty"`      // override max_conns_per_tunnel
+	MaxBandwidth int64 `json:"max_bandwidth,omitempty"` // override bandwidth limit (bytes/sec)
+}
+
+// NodeRateLimit per-node rate limit overrides.
+type NodeRateLimit struct {
+	MaxConns int `json:"max_conns,omitempty"` // override max_conns_per_node
 }
 
 // IsEnabled 返回隧道是否启用。零值（nil）视为启用，兼容旧数据。

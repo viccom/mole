@@ -96,9 +96,10 @@ func (h *NodeHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name    string        `json:"name"`
-		Token   string        `json:"token"`
-		Tunnels []core.Tunnel `json:"tunnels"`
+		Name      string              `json:"name"`
+		Token     string              `json:"token"`
+		Tunnels   []core.Tunnel       `json:"tunnels"`
+		RateLimit *core.NodeRateLimit `json:"rate_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
@@ -109,11 +110,12 @@ func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	node := &core.Node{
-		ID:      req.Name,
-		Name:    req.Name,
-		Token:   req.Token,
-		Status:  core.NodeStatusOffline,
-		Tunnels: req.Tunnels,
+		ID:        req.Name,
+		Name:      req.Name,
+		Token:     req.Token,
+		Status:    core.NodeStatusOffline,
+		Tunnels:   req.Tunnels,
+		RateLimit: req.RateLimit,
 	}
 
 	// 绑定归属：管理员创建的节点归属 system，普通用户归属自己
@@ -141,8 +143,9 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id = strings.TrimRight(id, "/")
 
 	var req struct {
-		Name    string        `json:"name"`
-		Tunnels []core.Tunnel `json:"tunnels"`
+		Name      string              `json:"name"`
+		Tunnels   []core.Tunnel       `json:"tunnels"`
+		RateLimit *core.NodeRateLimit `json:"rate_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
@@ -163,6 +166,7 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if nameChanged {
 			n.Name = req.Name
 		}
+		n.RateLimit = req.RateLimit
 	}); err != nil {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 		return
@@ -307,4 +311,54 @@ func (h *NodeHandler) ListPersisted(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ResponseOK(w, map[string]any{"items": items, "total": len(items)})
+}
+
+// UpdateRateLimit handles PATCH /api/v1/nodes/{id}/rate-limit
+func (h *NodeHandler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	id = strings.TrimSuffix(id, "/rate-limit")
+	id = strings.TrimRight(id, "/")
+
+	if _, ok := h.nodeMgr.Get(r.Context(), id); !ok {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+	// Ownership check
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if !checkNodeOwnership(w, r, node) {
+			return
+		}
+	}
+
+	var req struct {
+		MaxConns int `json:"max_conns"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+
+	var rl *core.NodeRateLimit
+	if req.MaxConns > 0 {
+		rl = &core.NodeRateLimit{MaxConns: req.MaxConns}
+	}
+
+	if err := h.tunnelSvc.UpdateNodeRateLimit(r.Context(), id, rl); err != nil {
+		if err == core.ErrTunnelInvalid {
+			ResponseError(w, http.StatusBadRequest, 400, err.Error())
+			return
+		}
+		if err == core.ErrNodeNotFound {
+			ResponseError(w, http.StatusNotFound, 404, "Node not found")
+			return
+		}
+		ResponseError(w, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		ResponseOK(w, node)
+	} else {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+	}
 }

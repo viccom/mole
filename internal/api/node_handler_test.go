@@ -118,6 +118,10 @@ func (m *testTunnelConfigManager) LoadPersisted(context.Context, string) ([]core
 	return nil, nil
 }
 
+func (m *testTunnelConfigManager) UpdateNodeRateLimit(context.Context, string, *core.NodeRateLimit) error {
+	return nil
+}
+
 func TestNodeHandlerUpdate_SuccessPersistsChanges(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)

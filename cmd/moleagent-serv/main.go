@@ -114,7 +114,7 @@ func main() {
 		slog.Info("Gateway rate limiting enabled",
 			"maxConnsPerNode", cfg.RateLimit.Gateway.MaxConnsPerNode,
 			"maxConnsPerTunnel", cfg.RateLimit.Gateway.MaxConnsPerTunnel,
-			"maxBPS", cfg.RateLimit.Gateway.MaxBPSPerTunnel,
+			"maxBandwidth", cfg.RateLimit.Gateway.MaxBandwidthPerTunnel,
 		)
 	}
 
@@ -232,7 +232,7 @@ func main() {
 	dingtalkBindingRepo := storage.NewDingTalkBindingRepo(db)
 
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, apiLimiter, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr)
+	apiRouter := buildAPIRouter(authMW, apiLimiter, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr, gatewayLimiter)
 	adminDir, _ := os.Getwd()
 	distDir := filepath.Join(adminDir, "admin", "dist")
 	fileServer := http.FileServer(http.Dir(distDir))
@@ -339,6 +339,7 @@ func buildAPIRouter(
 	dingtalkClient *dingtalk.Client,
 	dingtalkBindingRepo core.DingTalkBindingRepo,
 	jwtMgr *auth.JWTManager,
+	gatewayLimiter ratelimit.GatewayLimiter,
 ) http.Handler {
 	router := api.NewRouter(mw, apiLimiter)
 
@@ -347,7 +348,7 @@ func buildAPIRouter(
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo, nodeMgr)
 	roleH := api.NewRoleHandler(roleRepo)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
-	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats())
+	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats(), gatewayLimiter)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
@@ -410,12 +411,14 @@ func buildAPIRouter(
 	router.Register("GET", "/api/v1/nodes/", nodeH.Get, "nodes", "read")
 	router.Register("PUT", "/api/v1/nodes/", nodeH.Update, "nodes", "write")
 	router.Register("DELETE", "/api/v1/nodes/", nodeH.Delete, "nodes", "delete")
+	router.Register("PATCH", "/api/v1/nodes/", nodeH.UpdateRateLimit, "nodes", "write")
 
 	// === 隧道管理 ===
 	router.Register("GET", "/api/v1/tunnels", tunnelH.List, "tunnels", "read")
 	router.Register("GET", "/api/v1/tunnels/stats", tunnelH.Stats, "tunnels", "read")
 	router.Register("GET", "/api/v1/tunnels/usage", tunnelH.Usage, "tunnels", "read")
 	router.Register("POST", "/api/v1/tunnels", tunnelH.Create, "tunnels", "write")
+	router.Register("PATCH", "/api/v1/tunnels/rate-limit", tunnelH.BatchRateLimit, "tunnels", "write")
 	router.Register("DELETE", "/api/v1/tunnels/", tunnelH.Delete, "tunnels", "delete")
 
 	// === MQTT 管理 ===

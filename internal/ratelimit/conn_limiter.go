@@ -10,19 +10,20 @@ import (
 
 // gatewayLimiterImpl implements GatewayLimiter with connection counting and bandwidth control.
 type gatewayLimiterImpl struct {
-	connMu         sync.Mutex
-	nodeConns      map[string]int64 // nodeID -> active connection count
-	tunnelConns    map[string]int64 // sKey -> active connection count
+	connMu          sync.Mutex
+	nodeConns       map[string]int64 // nodeID -> active connection count
+	tunnelConns     map[string]int64 // sKey -> active connection count
 	tunnelOverrides map[string]connOverride
+	nodeOverrides   map[string]connOverride // nodeID -> per-node MaxConns override
 
 	maxConnsPerNode   int64
 	maxConnsPerTunnel int64
 
 	bwMu       sync.Mutex
 	bwLimiters map[string]*rate.Limiter
-	bwOverrides map[string]int64 // sKey -> override bps
-	defaultBPS int64
-	bwBurst    int
+	bwOverrides map[string]int64 // sKey -> override bandwidth (bytes/sec)
+	defaultBPS  int64
+	bwBurst     int
 }
 
 type connOverride struct {
@@ -35,11 +36,12 @@ func NewGatewayLimiter(cfg GatewayRateLimitConfig) *gatewayLimiterImpl {
 		nodeConns:        make(map[string]int64),
 		tunnelConns:      make(map[string]int64),
 		tunnelOverrides:  make(map[string]connOverride),
+		nodeOverrides:    make(map[string]connOverride),
 		maxConnsPerNode:  int64(cfg.MaxConnsPerNode),
 		maxConnsPerTunnel: int64(cfg.MaxConnsPerTunnel),
 		bwLimiters:       make(map[string]*rate.Limiter),
 		bwOverrides:      make(map[string]int64),
-		defaultBPS:       cfg.MaxBPSPerTunnel,
+		defaultBPS:       cfg.MaxBandwidthPerTunnel,
 		bwBurst:          cfg.BWBurst,
 	}
 }
@@ -103,8 +105,8 @@ func (g *gatewayLimiterImpl) UpdateTunnelConfig(sKey string, cfg TunnelRateConfi
 	g.connMu.Unlock()
 
 	g.bwMu.Lock()
-	if cfg.MaxBPS > 0 {
-		g.bwOverrides[sKey] = cfg.MaxBPS
+	if cfg.MaxBandwidth > 0 {
+		g.bwOverrides[sKey] = cfg.MaxBandwidth
 	} else {
 		delete(g.bwOverrides, sKey)
 	}
@@ -115,6 +117,36 @@ func (g *gatewayLimiterImpl) UpdateTunnelConfig(sKey string, cfg TunnelRateConfi
 		}
 	}
 	g.bwMu.Unlock()
+}
+
+func (g *gatewayLimiterImpl) UpdateNodeConfig(nodeID string, cfg NodeRateConfig) {
+	g.connMu.Lock()
+	if cfg.MaxConns > 0 {
+		g.nodeOverrides[nodeID] = connOverride{maxConns: int64(cfg.MaxConns)}
+	} else {
+		delete(g.nodeOverrides, nodeID)
+	}
+	g.connMu.Unlock()
+}
+
+func (g *gatewayLimiterImpl) EffectiveLimits(nodeID, sKey string) EffectiveLimits {
+	g.connMu.Lock()
+	maxConns := g.effectiveNodeConns(nodeID)
+	tunnelConns := g.effectiveTunnelConns(sKey)
+	g.connMu.Unlock()
+
+	g.bwMu.Lock()
+	maxBW := g.effectiveBPSLocked(sKey)
+	g.bwMu.Unlock()
+
+	return EffectiveLimits{
+		MaxConns:     int(minPositive(maxConns, tunnelConns)),
+		MaxBandwidth: maxBW,
+	}
+}
+
+func (g *gatewayLimiterImpl) GlobalDefaults() (int, int, int64) {
+	return int(g.maxConnsPerNode), int(g.maxConnsPerTunnel), g.defaultBPS
 }
 
 func (g *gatewayLimiterImpl) RemoveTunnel(sKey string) {
@@ -132,7 +164,7 @@ func (g *gatewayLimiterImpl) RemoveTunnel(sKey string) {
 func (g *gatewayLimiterImpl) RemoveNode(nodeID string) {
 	g.connMu.Lock()
 	delete(g.nodeConns, nodeID)
-	// Clean tunnel-level entries belonging to this node
+	delete(g.nodeOverrides, nodeID)
 	for sKey := range g.tunnelConns {
 		if strings.HasPrefix(sKey, nodeID+"/") {
 			delete(g.tunnelConns, sKey)
@@ -153,21 +185,19 @@ func (g *gatewayLimiterImpl) RemoveNode(nodeID string) {
 
 func (g *gatewayLimiterImpl) checkLimits(nodeID, sKey string) bool {
 	// Node-level check
-	if g.maxConnsPerNode > 0 {
-		if g.nodeConns[nodeID] >= g.maxConnsPerNode {
-			slog.Debug("Node connection limit exceeded", "nodeId", nodeID, "current", g.nodeConns[nodeID], "limit", g.maxConnsPerNode)
+	nodeLimit := g.effectiveNodeConns(nodeID)
+	if nodeLimit > 0 {
+		if g.nodeConns[nodeID] >= nodeLimit {
+			slog.Warn("Node connection limit exceeded", "nodeId", nodeID, "current", g.nodeConns[nodeID], "limit", nodeLimit)
 			return false
 		}
 	}
 
 	// Tunnel-level check
-	limit := g.maxConnsPerTunnel
-	if override, ok := g.tunnelOverrides[sKey]; ok && override.maxConns > 0 {
-		limit = override.maxConns
-	}
-	if limit > 0 {
-		if g.tunnelConns[sKey] >= limit {
-			slog.Debug("Tunnel connection limit exceeded", "sKey", sKey, "current", g.tunnelConns[sKey], "limit", limit)
+	tunnelLimit := g.effectiveTunnelConns(sKey)
+	if tunnelLimit > 0 {
+		if g.tunnelConns[sKey] >= tunnelLimit {
+			slog.Warn("Tunnel connection limit exceeded", "sKey", sKey, "current", g.tunnelConns[sKey], "limit", tunnelLimit)
 			return false
 		}
 	}
@@ -175,9 +205,36 @@ func (g *gatewayLimiterImpl) checkLimits(nodeID, sKey string) bool {
 	return true
 }
 
+func (g *gatewayLimiterImpl) effectiveNodeConns(nodeID string) int64 {
+	if override, ok := g.nodeOverrides[nodeID]; ok && override.maxConns > 0 {
+		return override.maxConns
+	}
+	return g.maxConnsPerNode
+}
+
+func (g *gatewayLimiterImpl) effectiveTunnelConns(sKey string) int64 {
+	if override, ok := g.tunnelOverrides[sKey]; ok && override.maxConns > 0 {
+		return override.maxConns
+	}
+	return g.maxConnsPerTunnel
+}
+
 func (g *gatewayLimiterImpl) effectiveBPSLocked(sKey string) int64 {
 	if override, ok := g.bwOverrides[sKey]; ok {
 		return override
 	}
 	return g.defaultBPS
+}
+
+func minPositive(a, b int64) int64 {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 {
+		return a
+	}
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -81,6 +81,10 @@ func validateTunnel(t core.Tunnel) error {
 		return fmt.Errorf("%w: unknown tunnel type %q", core.ErrTunnelInvalid, t.Type)
 	}
 
+	if err := validateRateLimit(t.RateLimit); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -95,6 +99,42 @@ func validateTunnels(tunnels []core.Tunnel) error {
 			return fmt.Errorf("%w: duplicate tunnel name %q", core.ErrTunnelInvalid, tunnels[i].Name)
 		}
 		names[tunnels[i].Name] = true
+	}
+	return nil
+}
+
+const (
+	maxConnsUpperBound     = 100000
+	maxBandwidthUpperBound = 10737418240 // 10 GB/s
+)
+
+// validateRateLimit 校验限速配置（拒绝零值/负值/极大值）
+func validateRateLimit(rl *core.TunnelRateLimit) error {
+	if rl == nil {
+		return nil
+	}
+	if rl.MaxConns < 0 || rl.MaxConns > maxConnsUpperBound {
+		return fmt.Errorf("%w: max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, maxConnsUpperBound, rl.MaxConns)
+	}
+	if rl.MaxBandwidth < 0 || rl.MaxBandwidth > maxBandwidthUpperBound {
+		return fmt.Errorf("%w: max_bandwidth must be 1-%d bytes/sec, got %d", core.ErrTunnelInvalid, maxBandwidthUpperBound, rl.MaxBandwidth)
+	}
+	if rl.MaxConns == 0 && rl.MaxBandwidth == 0 {
+		return fmt.Errorf("%w: rate_limit must have at least one non-zero field, use null to clear", core.ErrTunnelInvalid)
+	}
+	return nil
+}
+
+// validateNodeRateLimit 校验节点级限速配置
+func validateNodeRateLimit(rl *core.NodeRateLimit) error {
+	if rl == nil {
+		return nil
+	}
+	if rl.MaxConns < 0 || rl.MaxConns > maxConnsUpperBound {
+		return fmt.Errorf("%w: node max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, maxConnsUpperBound, rl.MaxConns)
+	}
+	if rl.MaxConns == 0 {
+		return fmt.Errorf("%w: node max_conns must be > 0, use null to clear", core.ErrTunnelInvalid)
 	}
 	return nil
 }
@@ -275,7 +315,7 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		if t.RateLimit != nil {
 			cfg := ratelimit.TunnelRateConfig{
 				MaxConns: t.RateLimit.MaxConns,
-				MaxBPS:   t.RateLimit.MaxBPS,
+				MaxBandwidth:   t.RateLimit.MaxBandwidth,
 			}
 			s.limiter.UpdateTunnelConfig(sKey, cfg)
 		} else {
@@ -472,6 +512,104 @@ func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID st
 	if rbErr := s.applyRuntimeTunnels(ctx, fromNodeID, rollback); rbErr != nil {
 		slog.Error("MoveTunnel: rollback runtime failed", "nodeId", fromNodeID, "error", rbErr)
 	}
+}
+
+// UpdateNodeRateLimit 更新节点级限速配置
+func (s *TunnelConfigService) UpdateNodeRateLimit(ctx context.Context, nodeID string, rl *core.NodeRateLimit) error {
+	if err := validateNodeRateLimit(rl); err != nil {
+		return err
+	}
+	node, ok := s.nodeMgr.Get(ctx, nodeID)
+	if !ok {
+		return core.ErrNodeNotFound
+	}
+	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
+		n.RateLimit = rl
+	}); err != nil {
+		return err
+	}
+	if rl != nil {
+		s.limiter.UpdateNodeConfig(nodeID, ratelimit.NodeRateConfig{MaxConns: rl.MaxConns})
+	} else {
+		s.limiter.UpdateNodeConfig(nodeID, ratelimit.NodeRateConfig{})
+	}
+	// Persist node rate limit
+	if s.nodeRepo != nil {
+		if n, ok := s.nodeMgr.Get(ctx, nodeID); ok {
+			if err := s.nodeRepo.Update(n); err != nil {
+				slog.Warn("Failed to persist node rate limit", "nodeId", nodeID, "error", err)
+			}
+		}
+	}
+	_ = node
+	return nil
+}
+
+// RateLimitItem 批量限速更新条目
+type RateLimitItem struct {
+	NodeID     string                `json:"node_id"`
+	TunnelName string                `json:"tunnel_name"`
+	RateLimit  *core.TunnelRateLimit `json:"rate_limit"`
+}
+
+// BatchUpdateRateLimit 批量更新隧道限速（all-or-nothing）
+func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []RateLimitItem) ([]core.TunnelChangeResult, error) {
+	if len(items) > 100 {
+		return nil, fmt.Errorf("%w: batch size exceeds 100 items", core.ErrTunnelInvalid)
+	}
+	// Phase 1: validate all
+	for _, item := range items {
+		if item.NodeID == "" || item.TunnelName == "" {
+			return nil, fmt.Errorf("%w: node_id and tunnel_name are required", core.ErrTunnelInvalid)
+		}
+		if err := validateRateLimit(item.RateLimit); err != nil {
+			return nil, fmt.Errorf("%w: tunnel %s/%s: %v", core.ErrTunnelInvalid, item.NodeID, item.TunnelName, err)
+		}
+		node, ok := s.nodeMgr.Get(ctx, item.NodeID)
+		if !ok {
+			return nil, fmt.Errorf("node %s not found", item.NodeID)
+		}
+		found := false
+		for _, t := range node.Tunnels {
+			if t.Name == item.TunnelName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("tunnel %s/%s not found", item.NodeID, item.TunnelName)
+		}
+	}
+	// Phase 2: apply all
+	results := make([]core.TunnelChangeResult, len(items))
+	for i, item := range items {
+		node, _ := s.nodeMgr.Get(ctx, item.NodeID)
+		updated := make([]core.Tunnel, 0, len(node.Tunnels))
+		for _, t := range node.Tunnels {
+			if t.Name == item.TunnelName {
+				t.RateLimit = item.RateLimit
+			}
+			updated = append(updated, t)
+		}
+		if _, err := s.ReplaceTunnels(ctx, item.NodeID, updated); err != nil {
+			return nil, fmt.Errorf("tunnel %s/%s: %w", item.NodeID, item.TunnelName, err)
+		}
+		results[i] = core.TunnelChangeResult{Status: "ok", Persisted: true}
+	}
+	return results, nil
+}
+
+// RestoreNodeRateLimit 从持久化恢复节点级限速（节点重连时调用）
+func (s *TunnelConfigService) RestoreNodeRateLimit(ctx context.Context, nodeID string) {
+	if s.nodeRepo == nil {
+		return
+	}
+	node, err := s.nodeRepo.GetByID(nodeID)
+	if err != nil || node == nil || node.RateLimit == nil {
+		return
+	}
+	s.limiter.UpdateNodeConfig(nodeID, ratelimit.NodeRateConfig{MaxConns: node.RateLimit.MaxConns})
+	slog.Info("Restored node rate limit", "nodeId", nodeID, "maxConns", node.RateLimit.MaxConns)
 }
 
 // ReleaseNodeResources 释放离线节点的隧道运行时资源（监听器、路由索引、统计条目）
