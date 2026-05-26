@@ -484,10 +484,13 @@ func (s *TunnelConfigService) ReleaseNodeResources(ctx context.Context, nodeID s
 		if t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP {
 			s.gateway.StopTunnel(t.Name)
 		}
+		sKey := nodeID + "/" + t.Name
 		if s.gateway.Stats() != nil {
-			s.gateway.Stats().Remove(nodeID + "/" + t.Name)
+			s.gateway.Stats().Remove(sKey)
 		}
+		s.limiter.RemoveTunnel(sKey)
 	}
+	s.limiter.RemoveNode(nodeID)
 	s.gateway.RebuildIndex(ctx)
 	slog.Info("Released node tunnel resources", "nodeId", nodeID, "tunnels", len(tunnels))
 }

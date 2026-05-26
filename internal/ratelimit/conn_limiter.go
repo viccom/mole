@@ -57,26 +57,32 @@ func (g *gatewayLimiterImpl) AcquireConn(nodeID, sKey string) bool {
 
 func (g *gatewayLimiterImpl) ReleaseConn(nodeID, sKey string) {
 	g.connMu.Lock()
-	g.nodeConns[nodeID]--
-	g.tunnelConns[sKey]--
-	if g.nodeConns[nodeID] <= 0 {
-		delete(g.nodeConns, nodeID)
+	if n, ok := g.nodeConns[nodeID]; ok {
+		if n <= 1 {
+			delete(g.nodeConns, nodeID)
+		} else {
+			g.nodeConns[nodeID] = n - 1
+		}
 	}
-	if g.tunnelConns[sKey] <= 0 {
-		delete(g.tunnelConns, sKey)
+	if n, ok := g.tunnelConns[sKey]; ok {
+		if n <= 1 {
+			delete(g.tunnelConns, sKey)
+		} else {
+			g.tunnelConns[sKey] = n - 1
+		}
 	}
 	g.connMu.Unlock()
 }
 
 func (g *gatewayLimiterImpl) BWLimiterFor(sKey string) *rate.Limiter {
-	bps := g.effectiveBPS(sKey)
-	if bps <= 0 {
-		return nil
-	}
 	g.bwMu.Lock()
 	defer g.bwMu.Unlock()
 	if l, ok := g.bwLimiters[sKey]; ok {
 		return l
+	}
+	bps := g.effectiveBPSLocked(sKey)
+	if bps <= 0 {
+		return nil
 	}
 	burst := g.bwBurst
 	if burst <= 0 {
@@ -167,12 +173,6 @@ func (g *gatewayLimiterImpl) checkLimits(nodeID, sKey string) bool {
 	}
 
 	return true
-}
-
-func (g *gatewayLimiterImpl) effectiveBPS(sKey string) int64 {
-	g.bwMu.Lock()
-	defer g.bwMu.Unlock()
-	return g.effectiveBPSLocked(sKey)
 }
 
 func (g *gatewayLimiterImpl) effectiveBPSLocked(sKey string) int64 {

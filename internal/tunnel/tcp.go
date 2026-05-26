@@ -123,6 +123,7 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 
 	trackedConn := &countingConn{
 		Conn:      conn,
+		ctx:       ctx,
 		onRead:    func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
 		onWrite:   func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
 		bwLimiter: tg.limiter.BWLimiterFor(sKey),

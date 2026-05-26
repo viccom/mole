@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -21,11 +22,21 @@ func (f JWTVerifierFunc) VerifyToken(tokenString string) (string, bool) {
 	return f(tokenString)
 }
 
+const (
+	apiEntryTTL     = 10 * time.Minute
+	apiCleanupThreshold = 1000
+)
+
+type limiterEntry struct {
+	limiter    *rate.Limiter
+	lastAccess time.Time
+}
+
 // APILimiter rate-limits REST API requests per user and per IP.
 type APILimiter struct {
 	mu      sync.Mutex
-	users   map[string]*rate.Limiter
-	ips     map[string]*rate.Limiter
+	users   map[string]*limiterEntry
+	ips     map[string]*limiterEntry
 	perUser rate.Limit
 	perIP   rate.Limit
 	burst   int
@@ -47,8 +58,8 @@ func NewAPILimiter(cfg APIRateLimitConfig, jwt JWTVerifier) *APILimiter {
 		burst = 20
 	}
 	return &APILimiter{
-		users:   make(map[string]*rate.Limiter),
-		ips:     make(map[string]*rate.Limiter),
+		users:   make(map[string]*limiterEntry),
+		ips:     make(map[string]*limiterEntry),
 		perUser: perUser,
 		perIP:   perIP,
 		burst:   burst,
@@ -62,16 +73,16 @@ func (l *APILimiter) Middleware(next http.Handler) http.Handler {
 		userID, ip := l.extractIdentity(r)
 
 		if userID != "" && l.perUser > 0 {
-			limiter := l.getOrCreate(l.users, userID, l.perUser)
-			if !limiter.Allow() {
+			entry := l.getOrCreate(l.users, userID, l.perUser)
+			if !entry.limiter.Allow() {
 				writeRateLimitExceeded(w)
 				return
 			}
 		}
 
 		if l.perIP > 0 {
-			limiter := l.getOrCreate(l.ips, ip, l.perIP)
-			if !limiter.Allow() {
+			entry := l.getOrCreate(l.ips, ip, l.perIP)
+			if !entry.limiter.Allow() {
 				writeRateLimitExceeded(w)
 				return
 			}
@@ -112,13 +123,30 @@ func remoteIP(r *http.Request) string {
 	return ip
 }
 
-func (l *APILimiter) getOrCreate(m map[string]*rate.Limiter, key string, r rate.Limit) *rate.Limiter {
+func (l *APILimiter) getOrCreate(m map[string]*limiterEntry, key string, r rate.Limit) *limiterEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if limiter, ok := m[key]; ok {
-		return limiter
+	if entry, ok := m[key]; ok {
+		entry.lastAccess = time.Now()
+		return entry
 	}
-	limiter := rate.NewLimiter(r, l.burst)
-	m[key] = limiter
-	return limiter
+	entry := &limiterEntry{
+		limiter:    rate.NewLimiter(r, l.burst),
+		lastAccess: time.Now(),
+	}
+	m[key] = entry
+
+	if len(m) >= apiCleanupThreshold {
+		l.cleanupLocked(m)
+	}
+	return entry
+}
+
+func (l *APILimiter) cleanupLocked(m map[string]*limiterEntry) {
+	now := time.Now()
+	for k, entry := range m {
+		if now.Sub(entry.lastAccess) > apiEntryTTL {
+			delete(m, k)
+		}
+	}
 }

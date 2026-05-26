@@ -248,6 +248,7 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 	// Track bytes + optional bandwidth throttling
 	trackedStream := &countingConn{
 		Conn:      stream,
+		ctx:       r.Context(),
 		onWrite:   func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
 		onRead:    func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
 		bwLimiter: tg.limiter.BWLimiterFor(sKey),
@@ -344,6 +345,7 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 
 	trackedConn := &countingConn{
 		Conn:      clientConn,
+		ctx:       r.Context(),
 		onRead:    func(n int) { tg.stats.RecordBytesIn(sKey, int64(n)) },
 		onWrite:   func(n int) { tg.stats.RecordBytesOut(sKey, int64(n)) },
 		bwLimiter: tg.limiter.BWLimiterFor(sKey),

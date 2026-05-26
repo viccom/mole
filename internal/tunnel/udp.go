@@ -150,7 +150,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				// Connection limiting
 				newSKey := statsKey(node.ID, tunnel.Name)
 				if !tg.limiter.AcquireConn(node.ID, newSKey) {
-					slog.Debug("UDP connection limit exceeded", "tunnel", tunnel.Name)
+					slog.Warn("UDP connection limit exceeded", "tunnel", tunnel.Name)
 					newStream.Close()
 					continue
 				}
@@ -191,6 +191,9 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 						}
 						// 统计出站字节数
 						tg.stats.RecordBytesOut(newSKey, int64(rn))
+						if bwLimiter := tg.limiter.BWLimiterFor(newSKey); bwLimiter != nil {
+							bwLimiter.WaitN(respCtx, rn)
+						}
 						conn.WriteToUDP(respBuf[:rn], addr)
 					}
 				}()
