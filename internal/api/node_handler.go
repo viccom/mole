@@ -192,7 +192,7 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 隧道更新由 TunnelConfigService 负责持久化；仅在纯节点属性更新时直接持久化。
-	if req.Tunnels == nil && nameChanged {
+	if req.Tunnels == nil && (nameChanged || req.RateLimit != nil) {
 		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
 			if err := h.nodeRepo.Update(node); err != nil {
 				slog.Warn("Failed to persist node update", "error", err)
@@ -319,15 +319,13 @@ func (h *NodeHandler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 	id = strings.TrimSuffix(id, "/rate-limit")
 	id = strings.TrimRight(id, "/")
 
-	if _, ok := h.nodeMgr.Get(r.Context(), id); !ok {
+	node, ok := h.nodeMgr.Get(r.Context(), id)
+	if !ok {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 		return
 	}
-	// Ownership check
-	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-		if !checkNodeOwnership(w, r, node) {
-			return
-		}
+	if !checkNodeOwnership(w, r, node) {
+		return
 	}
 
 	var req struct {

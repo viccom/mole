@@ -280,7 +280,15 @@ func (s *TunnelConfigService) LoadPersisted(ctx context.Context, nodeID string) 
 		return nil, nil
 	}
 	persisted, err := s.nodeRepo.GetByID(nodeID)
-	if err != nil || len(persisted.Tunnels) == 0 {
+	if err != nil || persisted == nil {
+		return nil, nil
+	}
+	// Restore node-level rate limit from persisted config
+	if persisted.RateLimit != nil {
+		s.limiter.UpdateNodeConfig(nodeID, ratelimit.NodeRateConfig{MaxConns: persisted.RateLimit.MaxConns})
+		slog.Info("Restored node rate limit", "nodeId", nodeID, "maxConns", persisted.RateLimit.MaxConns)
+	}
+	if len(persisted.Tunnels) == 0 {
 		return nil, nil
 	}
 
@@ -519,7 +527,7 @@ func (s *TunnelConfigService) UpdateNodeRateLimit(ctx context.Context, nodeID st
 	if err := validateNodeRateLimit(rl); err != nil {
 		return err
 	}
-	node, ok := s.nodeMgr.Get(ctx, nodeID)
+	_, ok := s.nodeMgr.Get(ctx, nodeID)
 	if !ok {
 		return core.ErrNodeNotFound
 	}
@@ -533,7 +541,6 @@ func (s *TunnelConfigService) UpdateNodeRateLimit(ctx context.Context, nodeID st
 	} else {
 		s.limiter.UpdateNodeConfig(nodeID, ratelimit.NodeRateConfig{})
 	}
-	// Persist node rate limit
 	if s.nodeRepo != nil {
 		if n, ok := s.nodeMgr.Get(ctx, nodeID); ok {
 			if err := s.nodeRepo.Update(n); err != nil {
@@ -541,19 +548,11 @@ func (s *TunnelConfigService) UpdateNodeRateLimit(ctx context.Context, nodeID st
 			}
 		}
 	}
-	_ = node
 	return nil
 }
 
-// RateLimitItem 批量限速更新条目
-type RateLimitItem struct {
-	NodeID     string                `json:"node_id"`
-	TunnelName string                `json:"tunnel_name"`
-	RateLimit  *core.TunnelRateLimit `json:"rate_limit"`
-}
-
 // BatchUpdateRateLimit 批量更新隧道限速（all-or-nothing）
-func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []RateLimitItem) ([]core.TunnelChangeResult, error) {
+func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []core.RateLimitItem) ([]core.TunnelChangeResult, error) {
 	if len(items) > 100 {
 		return nil, fmt.Errorf("%w: batch size exceeds 100 items", core.ErrTunnelInvalid)
 	}
@@ -580,21 +579,32 @@ func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []
 			return nil, fmt.Errorf("tunnel %s/%s not found", item.NodeID, item.TunnelName)
 		}
 	}
-	// Phase 2: apply all
-	results := make([]core.TunnelChangeResult, len(items))
+	// Phase 2: group by node, apply per-node once
+	nodeItems := make(map[string][]int) // nodeID -> item indices
 	for i, item := range items {
-		node, _ := s.nodeMgr.Get(ctx, item.NodeID)
+		nodeItems[item.NodeID] = append(nodeItems[item.NodeID], i)
+	}
+	results := make([]core.TunnelChangeResult, len(items))
+	for nodeID, indices := range nodeItems {
+		node, _ := s.nodeMgr.Get(ctx, nodeID)
+		// Build rate limit overrides map for this node
+		overrides := make(map[string]*core.TunnelRateLimit, len(indices))
+		for _, idx := range indices {
+			overrides[items[idx].TunnelName] = items[idx].RateLimit
+		}
 		updated := make([]core.Tunnel, 0, len(node.Tunnels))
 		for _, t := range node.Tunnels {
-			if t.Name == item.TunnelName {
-				t.RateLimit = item.RateLimit
+			if rl, ok := overrides[t.Name]; ok {
+				t.RateLimit = rl
 			}
 			updated = append(updated, t)
 		}
-		if _, err := s.ReplaceTunnels(ctx, item.NodeID, updated); err != nil {
-			return nil, fmt.Errorf("tunnel %s/%s: %w", item.NodeID, item.TunnelName, err)
+		if _, err := s.ReplaceTunnels(ctx, nodeID, updated); err != nil {
+			return nil, fmt.Errorf("node %s: %w", nodeID, err)
 		}
-		results[i] = core.TunnelChangeResult{Status: "ok", Persisted: true}
+		for _, idx := range indices {
+			results[idx] = core.TunnelChangeResult{Status: "ok", Persisted: true}
+		}
 	}
 	return results, nil
 }

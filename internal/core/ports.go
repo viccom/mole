@@ -31,6 +31,14 @@ type TunnelConfigManager interface {
 	SyncFromClient(ctx context.Context, nodeID string, tunnels []Tunnel) error
 	LoadPersisted(ctx context.Context, nodeID string) ([]Tunnel, error)
 	UpdateNodeRateLimit(ctx context.Context, nodeID string, rl *NodeRateLimit) error
+	BatchUpdateRateLimit(ctx context.Context, items []RateLimitItem) ([]TunnelChangeResult, error)
+}
+
+// RateLimitItem batch rate limit update entry.
+type RateLimitItem struct {
+	NodeID     string          `json:"node_id"`
+	TunnelName string          `json:"tunnel_name"`
+	RateLimit  *TunnelRateLimit `json:"rate_limit"`
 }
 
 // TunnelManager 隧道管理器接口

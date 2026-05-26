@@ -122,6 +122,10 @@ func (m *testTunnelConfigManager) UpdateNodeRateLimit(context.Context, string, *
 	return nil
 }
 
+func (m *testTunnelConfigManager) BatchUpdateRateLimit(context.Context, []core.RateLimitItem) ([]core.TunnelChangeResult, error) {
+	return nil, nil
+}
+
 func TestNodeHandlerUpdate_SuccessPersistsChanges(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)

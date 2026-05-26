@@ -8,7 +8,6 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/ratelimit"
-	"moleAgent_Serv/internal/service"
 	"moleAgent_Serv/internal/node"
 )
 
@@ -40,7 +39,9 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 		NodeID     string          `json:"node_id"`
 		Status     string          `json:"status"`
 		Para       json.RawMessage `json:"para,omitempty"`
-		RateLimit  *core.TunnelRateLimit `json:"rate_limit,omitempty"`
+		RateLimit         *core.TunnelRateLimit `json:"rate_limit,omitempty"`
+		EffectiveMaxConns int   `json:"effective_max_conns,omitempty"`
+		EffectiveMaxBW    int64 `json:"effective_max_bandwidth,omitempty"`
 	}
 
 	claims := auth.GetClaims(r.Context())
@@ -59,17 +60,26 @@ func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 			if target == "" && len(t.Para) > 0 {
 				target = extractTargetFromPara(string(t.Type), t.Para)
 			}
+			var effConns int
+			var effBW int64
+			if h.limiter != nil {
+				el := h.limiter.EffectiveLimits(n.ID, n.ID+"/"+t.Name)
+				effConns = el.MaxConns
+				effBW = el.MaxBandwidth
+			}
 			items = append(items, tunnelInfo{
-				Name:       t.Name,
-				Type:       string(t.Type),
-				Target:     target,
-				Domain:     t.Domain,
-				ListenPort: t.ListenPort,
-				Enabled:    t.IsEnabled(),
-				NodeID:     n.ID,
-				Status:     "active",
-				Para:       t.Para,
-				RateLimit:  t.RateLimit,
+				Name:              t.Name,
+				Type:              string(t.Type),
+				Target:            target,
+				Domain:            t.Domain,
+				ListenPort:        t.ListenPort,
+				Enabled:           t.IsEnabled(),
+				NodeID:            n.ID,
+				Status:            "active",
+				Para:              t.Para,
+				RateLimit:         t.RateLimit,
+				EffectiveMaxConns: effConns,
+				EffectiveMaxBW:    effBW,
 			})
 		}
 	}
@@ -363,8 +373,10 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 		TotalConns   int64           `json:"total_connections"`
 		ActiveConns  int64           `json:"active_connections"`
 		LastActivity string          `json:"last_activity,omitempty"`
-		Para         json.RawMessage `json:"para,omitempty"`
-		RateLimit   *core.TunnelRateLimit `json:"rate_limit,omitempty"`
+		Para              json.RawMessage `json:"para,omitempty"`
+		RateLimit         *core.TunnelRateLimit `json:"rate_limit,omitempty"`
+		EffectiveMaxConns int   `json:"effective_max_conns,omitempty"`
+		EffectiveMaxBW    int64 `json:"effective_max_bandwidth,omitempty"`
 	}
 
 	items := make([]usageItem, 0)
@@ -382,18 +394,27 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 			if target == "" && len(t.Para) > 0 {
 				target = extractTargetFromPara(string(t.Type), t.Para)
 			}
+			var effConns int
+			var effBW int64
+			if h.limiter != nil {
+				el := h.limiter.EffectiveLimits(n.ID, n.ID+"/"+t.Name)
+				effConns = el.MaxConns
+				effBW = el.MaxBandwidth
+			}
 			item := usageItem{
-				Name:        t.Name,
-				Type:        string(t.Type),
-				Target:      target,
-				Domain:      t.Domain,
-				ListenPort:  t.ListenPort,
-				Enabled:     t.IsEnabled(),
-				NodeID:      n.ID,
-				NodeStatus:  string(n.Status),
-				OwnerUserID: n.OwnerUserID,
-				Para:        t.Para,
-				RateLimit:   t.RateLimit,
+				Name:              t.Name,
+				Type:              string(t.Type),
+				Target:            target,
+				Domain:            t.Domain,
+				ListenPort:        t.ListenPort,
+				Enabled:           t.IsEnabled(),
+				NodeID:            n.ID,
+				NodeStatus:        string(n.Status),
+				OwnerUserID:       n.OwnerUserID,
+				Para:              t.Para,
+				RateLimit:         t.RateLimit,
+				EffectiveMaxConns: effConns,
+				EffectiveMaxBW:    effBW,
 			}
 
 			// 关联运行时统计
@@ -445,7 +466,7 @@ func extractTargetFromPara(tunnelType string, para json.RawMessage) string {
 // BatchRateLimit handles PATCH /api/v1/tunnels/rate-limit — batch update rate limits.
 func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Items []service.RateLimitItem `json:"items"`
+		Items []core.RateLimitItem `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
@@ -466,7 +487,7 @@ func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	results, err := h.tunnelSvc.(*service.TunnelConfigService).BatchUpdateRateLimit(r.Context(), req.Items)
+	results, err := h.tunnelSvc.BatchUpdateRateLimit(r.Context(), req.Items)
 	if err != nil {
 		if err == core.ErrTunnelInvalid || err == core.ErrNodeNotFound {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
