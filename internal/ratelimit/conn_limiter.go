@@ -114,6 +114,8 @@ func (g *gatewayLimiterImpl) UpdateTunnelConfig(sKey string, cfg TunnelRateConfi
 		bps := g.effectiveBPSLocked(sKey)
 		if bps > 0 {
 			l.SetLimit(rate.Limit(bps))
+		} else {
+			delete(g.bwLimiters, sKey)
 		}
 	}
 	g.bwMu.Unlock()

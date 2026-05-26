@@ -73,5 +73,5 @@ ratelimit:
     enabled: false         # Gateway 限流总开关
     max_conns_per_node: 1000     # 每节点最大并发连接 (0=不限，可被 API 按节点覆盖)
     max_conns_per_tunnel: 500    # 每隧道最大并发连接 (0=不限)
-    max_bandwidth_per_tunnel: 0        sec (0=不限)/sec (0=不限)
+    max_bandwidth_per_tunnel: 0        # 默认带宽限制 bytes/sec (0=不限)
     bw_burst: 65536             # 带宽突发桶容量 bytes
