@@ -227,6 +227,7 @@ export function NodesPage() {
                     onDelete={() => setDeleteTarget(node)}
                     onAddTunnel={() => setTunnelModal({ presetNodeId: node.id })}
                     onDeleteTunnel={handleDeleteTunnel}
+                    onNodeUpdated={fetchNodes}
                   />
                 )
               })}
@@ -509,6 +510,7 @@ function NodeRowGroup({
   onDelete,
   onAddTunnel,
   onDeleteTunnel,
+  onNodeUpdated,
 }: {
   node: Node
   expanded: boolean
@@ -516,7 +518,33 @@ function NodeRowGroup({
   onDelete: () => void
   onAddTunnel: () => void
   onDeleteTunnel: (nodeId: string, name: string) => void
+  onNodeUpdated: () => void
 }) {
+  const { toast } = useToast()
+  const [nodeMaxConns, setNodeMaxConns] = useState(node.rate_limit?.max_conns?.toString() || '')
+  const [savingRL, setSavingRL] = useState(false)
+
+  const handleSaveNodeRL = async () => {
+    const val = Number(nodeMaxConns)
+    if (val <= 0 && nodeMaxConns !== '') {
+      toast('最大连接数必须大于 0', 'error')
+      return
+    }
+    if (nodeMaxConns === '') {
+      toast('请输入最大连接数', 'error')
+      return
+    }
+    setSavingRL(true)
+    try {
+      await api.updateNodeRateLimit(node.id, val)
+      toast('节点限速已更新', 'success')
+      onNodeUpdated()
+    } catch (err: unknown) {
+      toast((err as Error).message || '更新失败', 'error')
+    } finally {
+      setSavingRL(false)
+    }
+  }
   return (
     <>
       <tr className="hover:bg-gray-50/50">
@@ -608,6 +636,30 @@ function NodeRowGroup({
                 ) : (
                   <p className="text-sm text-gray-400">暂无隧道</p>
                 )}
+              </div>
+
+              {/* 节点级限速 */}
+              <div className="border-t border-gray-200 pt-3">
+                <span className="text-sm font-medium text-gray-700 mb-2 block">节点级限速</span>
+                <div className="flex items-center gap-3">
+                  <label className="text-sm text-gray-500 shrink-0">最大连接数</label>
+                  <input
+                    type="number"
+                    value={nodeMaxConns}
+                    onChange={e => setNodeMaxConns(e.target.value)}
+                    placeholder="留空 = 使用全局默认"
+                    min="1"
+                    max="100000"
+                    className="w-36 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  />
+                  <button
+                    onClick={handleSaveNodeRL}
+                    disabled={savingRL}
+                    className="px-3 py-1.5 text-xs bg-primary text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
+                  >
+                    {savingRL ? '保存中...' : '保存'}
+                  </button>
+                </div>
               </div>
             </div>
           </td>

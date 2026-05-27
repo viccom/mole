@@ -1,4 +1,4 @@
-import type { User, Role, Node, PersistedNode, Tunnel, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, VersionInfo, VNTConfig } from '../types/api'
+import type { User, Role, Node, PersistedNode, Tunnel, TunnelRateLimit, TunnelStats, TunnelUsageResponse, AccessToken, MQTTStats, MQTTClient, MQTTTopic, SystemMetrics, ServerConfig, VersionInfo, VNTConfig } from '../types/api'
 
 const API = '/api/v1'
 let token = localStorage.getItem('ma_tk')
@@ -75,6 +75,7 @@ interface TunnelPayload {
   enabled?: boolean
   node_id: string
   original_node_id?: string
+  rate_limit?: TunnelRateLimit | null
   para?: {
     enable?: boolean
     broker?: string
@@ -186,6 +187,10 @@ export const api = {
     request('/tunnels', { method: 'POST', body: JSON.stringify(data) }),
   deleteTunnel: (nodeId: string, name: string) =>
     request(`/tunnels/${encodeURIComponent(name)}?node_id=${encodeURIComponent(nodeId)}`, { method: 'DELETE' }),
+  batchUpdateTunnelRateLimit: (items: { node_id: string; tunnel_name: string; rate_limit: TunnelRateLimit }[]) =>
+    request<{ updated: number }>('/tunnels/rate-limit', { method: 'PATCH', body: JSON.stringify({ items }) }),
+  updateNodeRateLimit: (nodeId: string, maxConns: number) =>
+    request<Node>(`/nodes/${encodeURIComponent(nodeId)}/rate-limit`, { method: 'PATCH', body: JSON.stringify({ max_conns: maxConns }) }),
 
   // Access Tokens
   getAccessTokens: () => request<{ items: AccessToken[]; total: number }>('/me/access-tokens'),

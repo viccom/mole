@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter } from 'lucide-react'
+import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter, Gauge } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -9,9 +9,10 @@ import { Empty } from '../components/Empty'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { StatCard } from '../components/StatCard'
 import { TunnelFormModal } from '../components/TunnelFormModal'
+import { BatchRateLimitModal } from '../components/BatchRateLimitModal'
 import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
-import { tunnelAccessUrl, formatBytes, formatTimeAgo, fetchDefaultDomain } from '../lib/utils'
+import { tunnelAccessUrl, formatBytes, formatBandwidth, formatTimeAgo, fetchDefaultDomain } from '../lib/utils'
 
 type TabKey = 'all' | 'web' | 'stream' | 'serial' | 'vpn'
 type FilterKey = 'all' | 'enabled' | 'disabled' | 'active'
@@ -89,6 +90,8 @@ export function TunnelsPage() {
   const [showDetails, setShowDetails] = useState(false)
   useEffect(() => { fetchDefaultDomain() }, [])
   const [filterNodeId, setFilterNodeId] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [batchModal, setBatchModal] = useState(false)
 
   const { data, loading, run: fetchData } = useRequest<TunnelPageData>(
     async () => {
@@ -309,6 +312,15 @@ export function TunnelsPage() {
         {/* Filter bar */}
         <div className="flex items-center justify-between px-6 py-2 gap-4 border-b border-gray-200">
           <div className="flex items-center gap-1">
+            {selectedIds.size > 0 && (
+              <button
+                onClick={() => setBatchModal(true)}
+                className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-full bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors"
+              >
+                <Gauge className="w-3 h-3" />
+                批量限速 ({selectedIds.size})
+              </button>
+            )}
             {filterOptions.map(f => (
               <button
                 key={f.key}
@@ -364,6 +376,24 @@ export function TunnelsPage() {
           <table className="w-full">
             <thead>
               <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-10 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={filteredTunnels.length > 0 && filteredTunnels.every(t => selectedIds.has(`${t.node_id}:${t.name}`))}
+                    onChange={() => {
+                      const allSelected = filteredTunnels.every(t => selectedIds.has(`${t.node_id}:${t.name}`))
+                      setSelectedIds(prev => {
+                        const next = new Set(prev)
+                        filteredTunnels.forEach(t => {
+                          const key = `${t.node_id}:${t.name}`
+                          allSelected ? next.delete(key) : next.add(key)
+                        })
+                        return next
+                      })
+                    }}
+                    className="w-4 h-4 rounded border-gray-300"
+                  />
+                </th>
                 <th className="px-6 py-3">名称</th>
                 <th className="px-6 py-3">状态</th>
                 <th className="px-6 py-3">类型</th>
@@ -372,6 +402,7 @@ export function TunnelsPage() {
                 <th className="px-6 py-3">节点</th>
                 {showDetails && <th className="px-6 py-3">流量</th>}
                 {showDetails && <th className="px-6 py-3">连接</th>}
+                {showDetails && <th className="px-6 py-3">限速</th>}
                 {showDetails && <th className="px-6 py-3">最近活动</th>}
                 <th className="px-6 py-3 text-right">操作</th>
               </tr>
@@ -383,6 +414,22 @@ export function TunnelsPage() {
                 const usage = usageMap[`${tunnel.node_id}:${tunnel.name}`]
                 return (
                   <tr key={`${tunnel.name}-${tunnel.node_id}`} className="hover:bg-gray-50/50">
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(`${tunnel.node_id}:${tunnel.name}`)}
+                        onChange={() => {
+                          const key = `${tunnel.node_id}:${tunnel.name}`
+                          setSelectedIds(prev => {
+                            const next = new Set(prev)
+                            if (next.has(key)) next.delete(key)
+                            else next.add(key)
+                            return next
+                          })
+                        }}
+                        className="w-4 h-4 rounded border-gray-300"
+                      />
+                    </td>
                     <td className="px-6 py-3 text-sm font-medium">{tunnel.name}</td>
                     <td className="px-6 py-3">
                       <Badge variant={tunnel.enabled ? 'success' : 'error'}>
@@ -440,6 +487,23 @@ export function TunnelsPage() {
                             <span>{usage.active_connections}</span>
                             <span className="text-gray-400">/</span>
                             <span className="text-gray-400">{usage.total_connections}</span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                    )}
+                    {showDetails && (
+                      <td className="px-6 py-3 text-sm text-gray-500">
+                        {tunnel.effective_max_conns ? (
+                          <div className="space-y-0.5" title={`有效最大连接数: ${tunnel.effective_max_conns} / 有效最大带宽: ${formatBandwidth(tunnel.effective_max_bandwidth || 0)}`}>
+                            <div className="flex items-center gap-1">
+                              <Gauge className="w-3 h-3 text-gray-400" />
+                              <span>{tunnel.effective_max_conns}</span>
+                            </div>
+                            {tunnel.effective_max_bandwidth ? (
+                              <div className="text-xs text-gray-400">{formatBandwidth(tunnel.effective_max_bandwidth)}</div>
+                            ) : null}
                           </div>
                         ) : (
                           <span className="text-gray-400">-</span>
@@ -511,6 +575,18 @@ export function TunnelsPage() {
           onClose={() => setFormModal(null)}
           onSuccess={() => {
             setFormModal(null)
+            fetchData()
+          }}
+        />
+      )}
+
+      {batchModal && (
+        <BatchRateLimitModal
+          tunnels={tunnels.filter(t => selectedIds.has(`${t.node_id}:${t.name}`))}
+          onClose={() => setBatchModal(false)}
+          onSuccess={() => {
+            setBatchModal(false)
+            setSelectedIds(new Set())
             fetchData()
           }}
         />

@@ -23,6 +23,15 @@ export interface Permission {
   action: string
 }
 
+export interface TunnelRateLimit {
+  max_conns: number
+  max_bandwidth: number
+}
+
+export interface NodeRateLimit {
+  max_conns: number
+}
+
 export interface Node {
   id: string
   name: string
@@ -34,6 +43,7 @@ export interface Node {
   remote_addr?: string
   token?: string
   tunnels?: Tunnel[]
+  rate_limit?: NodeRateLimit
 }
 
 export interface PersistedNode {
@@ -54,6 +64,9 @@ export interface Tunnel {
   enabled: boolean
   node_id?: string
   para?: TunnelPara
+  rate_limit?: TunnelRateLimit
+  effective_max_conns?: number
+  effective_max_bandwidth?: number
 }
 
 export interface TunnelPara {
@@ -149,6 +162,9 @@ export interface TunnelUsageItem {
   total_connections: number
   active_connections: number
   last_activity?: string
+  rate_limit?: TunnelRateLimit
+  effective_max_conns?: number
+  effective_max_bandwidth?: number
 }
 
 export interface TunnelUsageResponse {

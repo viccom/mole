@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { api } from '../api/client'
-import type { Node, Tunnel, TunnelPara, SerialConfig, BinaryConfig, VNTConfig, LifecycleConfig, WatchdogConfig, LogConfig } from '../types/api'
+import type { Node, Tunnel, TunnelPara, TunnelRateLimit, SerialConfig, BinaryConfig, VNTConfig, LifecycleConfig, WatchdogConfig, LogConfig } from '../types/api'
 import { Modal } from './Modal'
 import { FormField } from './FormField'
 import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
+import { formatBandwidth } from '../lib/utils'
 
 interface TunnelFormModalProps {
   tunnel?: Tunnel
@@ -48,6 +49,15 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
   const [nodeId, setNodeId] = useState(presetNodeId || tunnel?.node_id || '')
   const originalNodeId = isEdit ? (tunnel?.node_id || '') : ''
   const [enabled, setEnabled] = useState(tunnel?.enabled !== false)
+
+  // 限速配置 — 根据 bytes/sec 自动选择单位
+  const initBw = tunnel?.rate_limit?.max_bandwidth || 0
+  const initUnit: 'bps' | 'kbps' | 'mbps' = initBw >= 1024 * 1024 ? 'mbps' : initBw >= 1024 ? 'kbps' : 'bps'
+  const initBwDisplay = initBw >= 1024 * 1024 ? (initBw / 1024 / 1024).toFixed(1) : initBw >= 1024 ? String(Math.round(initBw / 1024)) : initBw > 0 ? String(initBw) : ''
+  const [rlMaxConns, setRlMaxConns] = useState(tunnel?.rate_limit?.max_conns?.toString() || '')
+  const [rlMaxBandwidth, setRlMaxBandwidth] = useState(initBwDisplay)
+  const [rlBwUnit, setRlBwUnit] = useState<'bps' | 'kbps' | 'mbps'>(initUnit)
+  const isStandardType = ['http', 'https', 'tcp', 'udp'].includes(type)
 
   // ser2mq 配置
   const [ser2mqBroker, setSer2mqBroker] = useState(tunnel?.para?.broker || '')
@@ -244,6 +254,16 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
     try {
       setSubmitting(true)
       // 构建 payload，支持所有隧道类型
+      const buildRateLimit = (): TunnelRateLimit | null | undefined => {
+        if (!isStandardType) return undefined
+        const conns = Number(rlMaxConns)
+        let bw = Number(rlMaxBandwidth)
+        if (rlBwUnit === 'kbps') bw *= 1024
+        else if (rlBwUnit === 'mbps') bw *= 1024 * 1024
+        if (conns > 0 || bw > 0) return { max_conns: conns || 0, max_bandwidth: bw || 0 }
+        if (isEdit && !rlMaxConns && !rlMaxBandwidth) return null
+        return undefined
+      }
       const payload = {
         name: name.trim(),
         type,
@@ -263,6 +283,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         domain: (type === 'http' || type === 'https') && domain.trim() ? domain.trim() : undefined,
         listen_port: (type === 'tcp' || type === 'udp') ? Number(listenPort) : undefined,
         para: (type === 'ser2mq' || type === 'vpn-manager' || type === 'ser2tcp' || type === 'ser2udp') ? buildPara() : undefined,
+        rate_limit: buildRateLimit(),
       }
 
       if (isEdit) {
@@ -761,6 +782,52 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
             <p className="mt-1 text-xs text-amber-600">暂无{isEdit ? '' : '在线'}节点</p>
           )}
         </FormField>
+
+        {/* 限速配置（仅标准类型） */}
+        {isStandardType && (
+          <div className="border-t border-gray-200 pt-4 mt-2">
+            <h4 className="text-sm font-medium text-gray-700 mb-3">限速配置（可选）</h4>
+            <div className="grid grid-cols-2 gap-4">
+              <FormField label="最大连接数">
+                <input
+                  type="number"
+                  value={rlMaxConns}
+                  onChange={e => setRlMaxConns(e.target.value)}
+                  placeholder="留空 = 使用全局默认"
+                  min="1"
+                  max="100000"
+                  className={inputClass}
+                />
+              </FormField>
+              <FormField label="最大带宽">
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={rlMaxBandwidth}
+                    onChange={e => setRlMaxBandwidth(e.target.value)}
+                    placeholder="留空 = 使用全局默认"
+                    min="1"
+                    className={inputClass}
+                  />
+                  <select
+                    value={rlBwUnit}
+                    onChange={e => setRlBwUnit(e.target.value as 'bps' | 'kbps' | 'mbps')}
+                    className={`${inputClass} w-24 shrink-0`}
+                  >
+                    <option value="kbps">KB/s</option>
+                    <option value="mbps">MB/s</option>
+                    <option value="bps">B/s</option>
+                  </select>
+                </div>
+              </FormField>
+            </div>
+            {isEdit && tunnel?.effective_max_conns ? (
+              <p className="mt-1 text-xs text-gray-400">
+                当前生效：{tunnel.effective_max_conns} 连接 / {tunnel.effective_max_bandwidth ? formatBandwidth(tunnel.effective_max_bandwidth) : '不限'}
+              </p>
+            ) : null}
+          </div>
+        )}
 
         <FormField label="启用">
           <label className="flex items-center gap-2 cursor-pointer">

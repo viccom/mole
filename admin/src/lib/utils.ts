@@ -37,6 +37,13 @@ export function formatBytes(bytes: number): string {
   return val < 10 ? val.toFixed(1) + ' ' + units[i] : Math.round(val) + ' ' + units[i]
 }
 
+export function formatBandwidth(bytesPerSec: number): string {
+  if (bytesPerSec <= 0) return '-'
+  if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`
+  if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+  return `${bytesPerSec} B/s`
+}
+
 export function getGatewayBase(): string {
   const parts = window.location.hostname.split('.')
   return parts.length > 2 ? parts.slice(1).join('.') : window.location.hostname
