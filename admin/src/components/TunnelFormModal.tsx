@@ -932,12 +932,12 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
                     onChange={e => setRlMaxBandwidth(e.target.value)}
                     placeholder="留空 = 使用全局默认"
                     min="1"
-                    className={inputClass}
+                    className={`${inputClass} flex-1 min-w-0`}
                   />
                   <select
                     value={rlBwUnit}
                     onChange={e => setRlBwUnit(e.target.value as 'bps' | 'kbps' | 'mbps')}
-                    className={`${inputClass} w-24 shrink-0`}
+                    className={`${selectClass} w-16 shrink-0`}
                   >
                     <option value="kbps">KB/s</option>
                     <option value="mbps">MB/s</option>
