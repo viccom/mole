@@ -17,6 +17,7 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/config"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
 	"moleAgent_Serv/internal/dingtalk"
 	"moleAgent_Serv/internal/feishu"
 	"moleAgent_Serv/internal/logging"
@@ -57,6 +58,17 @@ func main() {
 	logging.Init(cfg.Logging)
 
 	slog.Info("moleAgent_Serv starting...")
+
+	// 初始化隧道凭证加密器
+	tunnelSecret := cfg.Auth.TunnelSecret
+	if tunnelSecret == "" {
+		tunnelSecret = cfg.Auth.JWTSecret
+	}
+	tunnelEncryptor, err := crypto.NewSecretEncryptor(tunnelSecret)
+	if err != nil {
+		slog.Error("Failed to init tunnel encryptor", "error", err)
+		os.Exit(1)
+	}
 
 	// 初始化数据库
 	if err := storage.Init(cfg.Database); err != nil {
@@ -192,7 +204,7 @@ func main() {
 	}()
 
 	// --- 隧道配置服务（单一变更入口）---
-	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv, gatewayLimiter)
+	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv, gatewayLimiter, tunnelEncryptor)
 	controlSrv.SetTunnelConfigManager(tunnelSvc)
 
 	// --- 节点断开回调：清理隧道运行时资源（监听器、路由索引、统计）---
@@ -232,7 +244,7 @@ func main() {
 	dingtalkBindingRepo := storage.NewDingTalkBindingRepo(db)
 
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, apiLimiter, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr, gatewayLimiter)
+	apiRouter := buildAPIRouter(authMW, apiLimiter, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr, gatewayLimiter, tunnelEncryptor)
 	adminDir, _ := os.Getwd()
 	distDir := filepath.Join(adminDir, "admin", "dist")
 	fileServer := http.FileServer(http.Dir(distDir))
@@ -340,6 +352,7 @@ func buildAPIRouter(
 	dingtalkBindingRepo core.DingTalkBindingRepo,
 	jwtMgr *auth.JWTManager,
 	gatewayLimiter ratelimit.GatewayLimiter,
+	tunnelEncryptor *crypto.SecretEncryptor,
 ) http.Handler {
 	router := api.NewRouter(mw, apiLimiter)
 
@@ -348,13 +361,14 @@ func buildAPIRouter(
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo, nodeMgr)
 	roleH := api.NewRoleHandler(roleRepo)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
-	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats(), gatewayLimiter)
+	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats(), gatewayLimiter, tunnelEncryptor)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
 	feishuH := api.NewFeishuHandler(feishuClient, authSvc, feishuBindingRepo, userRepo, jwtMgr, rbacEngine, storage.DB())
 	dingtalkH := api.NewDingTalkHandler(dingtalkClient, authSvc, dingtalkBindingRepo, userRepo, jwtMgr, rbacEngine, storage.DB())
 	updateH := api.NewUpdateHandler()
+	websshH := api.NewWebSSHHandler(nodeMgr)
 
 	// === 公开端点 ===
 	router.RegisterPublic("POST", "/api/v1/auth/login", authH.Login)
@@ -439,6 +453,9 @@ func buildAPIRouter(
 	router.Register("GET", "/api/v1/check-update", updateH.CheckUpdate, "system", "read")
 	router.Register("POST", "/api/v1/self-update", updateH.SelfUpdate, "system", "admin")
 	router.Register("GET", "/api/v1/update-progress", updateH.UpdateProgress, "system", "read")
+
+	// === WebSSH 终端 ===
+	router.RegisterAuth("GET", "/api/v1/tunnels/", websshH.Handle)
 
 	return router.Build()
 }

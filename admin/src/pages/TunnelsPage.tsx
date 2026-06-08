@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
-import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter, Gauge } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter, Gauge, Terminal } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -14,7 +15,7 @@ import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
 import { tunnelAccessUrl, formatBytes, formatBandwidth, formatTimeAgo, fetchDefaultDomain } from '../lib/utils'
 
-type TabKey = 'all' | 'web' | 'stream' | 'serial' | 'vpn'
+type TabKey = 'all' | 'web' | 'stream' | 'serial' | 'vpn' | 'webssh'
 type FilterKey = 'all' | 'enabled' | 'disabled' | 'active'
 
 const tabFilters: Record<TabKey, (t: Tunnel) => boolean> = {
@@ -23,6 +24,7 @@ const tabFilters: Record<TabKey, (t: Tunnel) => boolean> = {
   stream: (t: Tunnel) => t.type === 'tcp' || t.type === 'udp',
   serial: (t: Tunnel) => ['ser2mq', 'ser2tcp', 'ser2udp'].includes(t.type),
   vpn: (t: Tunnel) => t.type === 'vpn-manager',
+  webssh: (t: Tunnel) => t.type === 'webssh',
 }
 
 const tabs: { key: TabKey; label: string }[] = [
@@ -31,6 +33,7 @@ const tabs: { key: TabKey; label: string }[] = [
   { key: 'stream', label: '透明隧道' },
   { key: 'serial', label: '串口' },
   { key: 'vpn', label: 'VPN' },
+  { key: 'webssh', label: '远程终端' },
 ]
 
 const filterOptions: { key: FilterKey; label: string }[] = [
@@ -78,6 +81,7 @@ export function buildTabStats(
 
 export function TunnelsPage() {
   const { toast } = useToast()
+  const navigate = useNavigate()
   const [formModal, setFormModal] = useState<{
     tunnel?: Tunnel
     presetNodeId?: string
@@ -132,12 +136,13 @@ export function TunnelsPage() {
   )
 
   const allTabCounts = useMemo(() => {
-    const counts: Record<TabKey, number> = { all: tunnels.length, web: 0, stream: 0, serial: 0, vpn: 0 }
+    const counts: Record<TabKey, number> = { all: tunnels.length, web: 0, stream: 0, serial: 0, vpn: 0, webssh: 0 }
     for (const t of tunnels) {
       if (t.type === 'http' || t.type === 'https') counts.web++
       if (t.type === 'tcp' || t.type === 'udp') counts.stream++
       if (['ser2mq', 'ser2tcp', 'ser2udp'].includes(t.type)) counts.serial++
       if (t.type === 'vpn-manager') counts.vpn++
+      if (t.type === 'webssh') counts.webssh++
     }
     return counts
   }, [tunnels])
@@ -217,6 +222,7 @@ export function TunnelsPage() {
     if (type === 'vpn-manager') return 'pink'
     if (type === 'ser2tcp') return 'cyan'
     if (type === 'ser2udp') return 'purple'
+    if (type === 'webssh') return 'info'
     return 'warning'
   }
 
@@ -225,6 +231,7 @@ export function TunnelsPage() {
     if (type === 'vpn-manager') return 'VPN'
     if (type === 'ser2tcp') return 'Ser2TCP'
     if (type === 'ser2udp') return 'Ser2UDP'
+    if (type === 'webssh') return 'WebSSH'
     return type.toUpperCase()
   }
 
@@ -517,6 +524,15 @@ export function TunnelsPage() {
                     )}
                     <td className="px-6 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        {tunnel.type === 'webssh' && tunnel.enabled && (
+                          <button
+                            onClick={() => window.open(`/admin/webssh/${encodeURIComponent(tunnel.name)}`, '_blank')}
+                            title="打开终端"
+                            className="p-1.5 text-gray-400 hover:text-green-600 rounded-md hover:bg-green-50"
+                          >
+                            <Terminal className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           onClick={() => handleToggle(tunnel)}
                           title={tunnel.enabled ? '禁用' : '启用'}

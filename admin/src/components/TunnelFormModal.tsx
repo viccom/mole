@@ -15,7 +15,7 @@ interface TunnelFormModalProps {
   onSuccess: () => void
 }
 
-type TunnelType = 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp'
+type TunnelType = 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp' | 'webssh'
 
 const BAUDRATE_OPTIONS = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]
 const DATABITS_OPTIONS = [5, 6, 7, 8]
@@ -35,6 +35,7 @@ const tunnelTypeOptions: { value: TunnelType; label: string }[] = [
   { value: 'vpn-manager', label: 'VPN' },
   { value: 'ser2tcp', label: 'Ser2TCP' },
   { value: 'ser2udp', label: 'Ser2UDP' },
+  { value: 'webssh', label: 'WebSSH' },
 ]
 
 export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, onSuccess }: TunnelFormModalProps) {
@@ -103,6 +104,14 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
   const [snStopbits, setSnStopbits] = useState(tunnel?.para?.serial?.stopbits?.toString() || '1')
   const [snParity, setSnParity] = useState(tunnel?.para?.serial?.parity || 'N')
   const [snTimeout, setSnTimeout] = useState(tunnel?.para?.serial?.timeout?.toString() || '3000')
+
+  // webssh 配置
+  const [sshHost, setSshHost] = useState(tunnel?.para?.host || '')
+  const [sshPort, setSshPort] = useState(tunnel?.para?.port?.toString() || '22')
+  const [sshUser, setSshUser] = useState(tunnel?.para?.user || 'root')
+  const [sshAuthType, setSshAuthType] = useState<'password' | 'key'>(tunnel?.para?.auth_type || 'password')
+  const [sshPassword, setSshPassword] = useState(tunnel?.para?.password || '')
+  const [sshPrivKey, setSshPrivKey] = useState(tunnel?.para?.priv_key || '')
 
   const [submitting, setSubmitting] = useState(false)
 
@@ -190,6 +199,17 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         },
       }
     }
+    if (type === 'webssh') {
+      return {
+        enable: enabled,
+        host: sshHost,
+        port: Number(sshPort) || 22,
+        user: sshUser,
+        auth_type: sshAuthType,
+        password: sshAuthType === 'password' ? sshPassword : undefined,
+        priv_key: sshAuthType === 'key' ? sshPrivKey : undefined,
+      }
+    }
     return undefined
   }
 
@@ -242,6 +262,24 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         return
       }
     }
+    if (type === 'webssh') {
+      if (!sshHost.trim()) {
+        toast('请输入 SSH 主机地址', 'error')
+        return
+      }
+      if (!sshUser.trim()) {
+        toast('请输入用户名', 'error')
+        return
+      }
+      if (sshAuthType === 'password' && !sshPassword) {
+        toast('请输入密码', 'error')
+        return
+      }
+      if (sshAuthType === 'key' && !sshPrivKey.trim()) {
+        toast('请输入私钥', 'error')
+        return
+      }
+    }
     if (!isEdit && !nodeId) {
       toast('请选择节点', 'error')
       return
@@ -277,12 +315,13 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
             case 'ser2mq': return ser2mqSerialPort
             case 'vpn-manager': return vpnBinaryName
             case 'ser2tcp': case 'ser2udp': return snSerialPort
+            case 'webssh': return `${sshHost}:${sshPort}`
             default: return target.trim()
           }
         })(),
         domain: (type === 'http' || type === 'https') && domain.trim() ? domain.trim() : undefined,
         listen_port: (type === 'tcp' || type === 'udp') ? Number(listenPort) : undefined,
-        para: (type === 'ser2mq' || type === 'vpn-manager' || type === 'ser2tcp' || type === 'ser2udp') ? buildPara() : undefined,
+        para: (type === 'ser2mq' || type === 'vpn-manager' || type === 'ser2tcp' || type === 'ser2udp' || type === 'webssh') ? buildPara() : undefined,
         rate_limit: buildRateLimit(),
       }
 
@@ -761,6 +800,70 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
                 </FormField>
               </div>
             </div>
+          </>
+        )}
+
+        {/* WebSSH 配置 */}
+        {type === 'webssh' && (
+          <>
+            <div className="bg-blue-50 rounded-lg p-3 text-sm text-blue-700">
+              通过 Web 浏览器访问远程 SSH 终端，支持密码和密钥认证。
+            </div>
+            <FormField label="SSH 主机">
+              <input
+                type="text"
+                value={sshHost}
+                onChange={e => setSshHost(e.target.value)}
+                placeholder="例如: 192.168.1.100"
+                className={inputClass}
+              />
+            </FormField>
+            <div className="grid grid-cols-2 gap-4">
+              <FormField label="SSH 端口">
+                <input
+                  type="number"
+                  value={sshPort}
+                  onChange={e => setSshPort(e.target.value)}
+                  placeholder="22"
+                  className={inputClass}
+                />
+              </FormField>
+              <FormField label="用户名">
+                <input
+                  type="text"
+                  value={sshUser}
+                  onChange={e => setSshUser(e.target.value)}
+                  placeholder="root"
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <FormField label="认证方式">
+              <select value={sshAuthType} onChange={e => setSshAuthType(e.target.value as 'password' | 'key')} className={selectClass}>
+                <option value="password">密码认证</option>
+                <option value="key">密钥认证</option>
+              </select>
+            </FormField>
+            {sshAuthType === 'password' ? (
+              <FormField label="密码">
+                <input
+                  type="password"
+                  value={sshPassword}
+                  onChange={e => setSshPassword(e.target.value)}
+                  placeholder="SSH 密码"
+                  className={inputClass}
+                />
+              </FormField>
+            ) : (
+              <FormField label="私钥">
+                <textarea
+                  value={sshPrivKey}
+                  onChange={e => setSshPrivKey(e.target.value)}
+                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                  className={inputClass + ' h-32 font-mono text-xs'}
+                />
+              </FormField>
+            )}
           </>
         )}
 

@@ -96,6 +96,14 @@ func (am *AuthMiddleware) authenticate(r *http.Request) (*core.Claims, bool) {
 		}
 	}
 
+	// 4. Query parameter（WebSocket 连接使用）
+	if token := r.URL.Query().Get("token"); token != "" {
+		claims, err := am.jwtMgr.VerifyToken(token)
+		if err == nil {
+			return claims, true
+		}
+	}
+
 	return nil, false
 }
 

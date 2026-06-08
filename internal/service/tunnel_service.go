@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
 
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
 	"moleAgent_Serv/internal/ratelimit"
 	"moleAgent_Serv/internal/tunnel"
 )
@@ -27,24 +29,26 @@ type tunnelPusher interface {
 
 // TunnelConfigService 隧道配置应用服务（单一变更入口）
 type TunnelConfigService struct {
-	nodeMgr  core.NodeManager
-	nodeRepo core.NodeRepo
-	gateway  routeIndexer
-	pusher   tunnelPusher
-	limiter  ratelimit.GatewayLimiter
+	nodeMgr   core.NodeManager
+	nodeRepo  core.NodeRepo
+	gateway   routeIndexer
+	pusher    tunnelPusher
+	limiter   ratelimit.GatewayLimiter
+	encryptor *crypto.SecretEncryptor // nil = 不加解密
 }
 
 // NewTunnelConfigService creates a tunnel config service.
-func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway routeIndexer, pusher tunnelPusher, limiter ratelimit.GatewayLimiter) *TunnelConfigService {
+func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway routeIndexer, pusher tunnelPusher, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor) *TunnelConfigService {
 	if limiter == nil {
 		limiter = ratelimit.NopLimiter{}
 	}
 	return &TunnelConfigService{
-		nodeMgr:  nodeMgr,
-		nodeRepo: nodeRepo,
-		gateway:  gateway,
-		pusher:   pusher,
-		limiter:  limiter,
+		nodeMgr:   nodeMgr,
+		nodeRepo:  nodeRepo,
+		gateway:   gateway,
+		pusher:    pusher,
+		limiter:   limiter,
+		encryptor: encryptor,
 	}
 }
 
@@ -73,7 +77,7 @@ func validateTunnel(t core.Tunnel) error {
 		}
 
 	// 客户端本地类型：服务端不验证 target 格式，只做基本校验
-	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp":
+	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp", "webssh":
 		// 这些类型的配置在 Para 字段中，客户端自己处理
 		// 服务端只需要确保 Name 不为空即可
 
@@ -648,5 +652,51 @@ func (s *TunnelConfigService) pushToClient(ctx context.Context, nodeID string, t
 	if s.pusher == nil {
 		return nil
 	}
+	// 解密 webssh 凭证后再推送给客户端
+	if s.encryptor != nil {
+		decrypted := make([]core.Tunnel, len(tunnels))
+		for i, t := range tunnels {
+			decrypted[i] = t
+			if t.Type == "webssh" && len(t.Para) > 0 {
+				decrypted[i].Para = decryptWebSSHPara(t.Para, s.encryptor)
+			}
+		}
+		return s.pusher.PushTunnelUpdate(ctx, nodeID, decrypted)
+	}
 	return s.pusher.PushTunnelUpdate(ctx, nodeID, tunnels)
+}
+
+// decryptWebSSHPara decrypts sensitive fields in webssh Para for client delivery.
+func decryptWebSSHPara(para json.RawMessage, enc *crypto.SecretEncryptor) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(para, &m); err != nil {
+		slog.Warn("decryptWebSSHPara: failed to unmarshal para", "error", err)
+		return para
+	}
+	changed := false
+	if v, ok := m["password"].(string); ok && crypto.IsEncrypted(v) {
+		decrypted := enc.Decrypt(v)
+		if crypto.IsEncrypted(decrypted) {
+			slog.Error("decryptWebSSHPara: failed to decrypt password")
+		}
+		m["password"] = decrypted
+		changed = true
+	}
+	if v, ok := m["priv_key"].(string); ok && crypto.IsEncrypted(v) {
+		decrypted := enc.Decrypt(v)
+		if crypto.IsEncrypted(decrypted) {
+			slog.Error("decryptWebSSHPara: failed to decrypt priv_key")
+		}
+		m["priv_key"] = decrypted
+		changed = true
+	}
+	if !changed {
+		return para
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		slog.Warn("decryptWebSSHPara: failed to marshal para", "error", err)
+		return para
+	}
+	return out
 }

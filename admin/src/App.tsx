@@ -16,6 +16,7 @@ const UsersPage = lazy(() => import('./pages/UsersPage').then(module => ({ defau
 const AccessTokensPage = lazy(() => import('./pages/AccessTokensPage').then(module => ({ default: module.AccessTokensPage })))
 const MQTTPage = lazy(() => import('./pages/MQTTPage').then(module => ({ default: module.MQTTPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(module => ({ default: module.SettingsPage })))
+const WebSSHPage = lazy(() => import('./pages/WebSSHPage').then(module => ({ default: module.WebSSHPage })))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -46,6 +47,7 @@ export default function App() {
           <Route path="/mqtt" element={<LazyPage><MQTTPage /></LazyPage>} />
           <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
         </Route>
+        <Route path="/webssh/:tunnelName" element={<ProtectedRoute><LazyPage><WebSSHPage /></LazyPage></ProtectedRoute>} />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

@@ -57,7 +57,7 @@ export interface PersistedNode {
 
 export interface Tunnel {
   name: string
-  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp'
+  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp' | 'webssh'
   target: string
   domain?: string
   listen_port?: number
@@ -87,6 +87,13 @@ export interface TunnelPara {
   mode?: string
   address?: string
   max_conn?: number
+  // webssh 配置
+  host?: string
+  port?: number
+  user?: string
+  auth_type?: 'password' | 'key'
+  password?: string
+  priv_key?: string
 }
 
 export interface SerialConfig {
@@ -149,7 +156,7 @@ export interface TunnelStats {
 
 export interface TunnelUsageItem {
   name: string
-  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'ser2tcp' | 'ser2udp' | 'vpn-manager'
+  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'ser2tcp' | 'ser2udp' | 'vpn-manager' | 'webssh'
   target: string
   domain?: string
   listen_port?: number

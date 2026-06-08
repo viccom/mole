@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bufio"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 
@@ -130,4 +132,8 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return rw.ResponseWriter.(http.Hijacker).Hijack()
 }

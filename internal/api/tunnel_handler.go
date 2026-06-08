@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
 	"moleAgent_Serv/internal/ratelimit"
 	"moleAgent_Serv/internal/node"
 )
@@ -16,14 +18,16 @@ type TunnelHandler struct {
 	tunnelSvc core.TunnelConfigManager // 隧道配置单一变更入口
 	stats     core.TunnelStatsReader   // 运行时统计读取
 	limiter   ratelimit.GatewayLimiter // 限速配置读取
+	encryptor *crypto.SecretEncryptor  // 隧道凭证加密（nil=不加密）
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader, limiter ratelimit.GatewayLimiter) *TunnelHandler {
+func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor) *TunnelHandler {
 	return &TunnelHandler{
 		nodeMgr:   nodeMgr,
 		tunnelSvc: tunnelSvc,
 		stats:     stats,
 		limiter:   limiter,
+		encryptor: encryptor,
 	}
 }
 
@@ -140,6 +144,8 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 				ser2tcpCount++
 			case "ser2udp":
 				ser2udpCount++
+			case "webssh":
+				// webssh tunnels counted in total
 			}
 		}
 	}
@@ -186,7 +192,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
-	clientLocalTypes := map[string]bool{"ser2mq": true, "vpn-manager": true, "ser2tcp": true, "ser2udp": true}
+	clientLocalTypes := map[string]bool{"ser2mq": true, "vpn-manager": true, "ser2tcp": true, "ser2udp": true, "webssh": true}
 	if req.Name == "" || req.Type == "" || req.NodeID == "" {
 		ResponseError(w, http.StatusBadRequest, 400, "name, type, node_id are required")
 		return
@@ -218,7 +224,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	switch tunnelType {
 	case core.TunnelTypeHTTP, core.TunnelTypeHTTPS, core.TunnelTypeTCP, core.TunnelTypeUDP:
 		// 标准隧道类型
-	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp":
+	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp", "webssh":
 		// 客户端本地类型，配置在 Para 字段中
 	default:
 		ResponseError(w, http.StatusBadRequest, 400, "unsupported tunnel type: "+req.Type)
@@ -234,6 +240,11 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Enabled:    req.Enabled,
 		RateLimit:  req.RateLimit,
 		Para:       req.Para,
+	}
+
+	// 加密 webssh 凭证
+	if tunnelType == "webssh" && h.encryptor != nil && len(req.Para) > 0 {
+		newTunnel.Para = encryptWebSSHPara(req.Para, h.encryptor)
 	}
 
 	if h.tunnelSvc == nil {
@@ -500,4 +511,25 @@ func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 		"updated": len(results),
 		"items":   results,
 	})
+}
+
+// encryptWebSSHPara encrypts sensitive fields (password, priv_key) in webssh Para.
+func encryptWebSSHPara(para json.RawMessage, enc *crypto.SecretEncryptor) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(para, &m); err != nil {
+		slog.Warn("encryptWebSSHPara: failed to unmarshal para", "error", err)
+		return para
+	}
+	if v, ok := m["password"].(string); ok && v != "" && !crypto.IsEncrypted(v) {
+		m["password"] = enc.Encrypt(v)
+	}
+	if v, ok := m["priv_key"].(string); ok && v != "" && !crypto.IsEncrypted(v) {
+		m["priv_key"] = enc.Encrypt(v)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		slog.Warn("encryptWebSSHPara: failed to marshal para", "error", err)
+		return para
+	}
+	return out
 }

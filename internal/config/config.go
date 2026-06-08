@@ -82,9 +82,10 @@ type MQTTConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret  string `yaml:"jwt_secret"`  // 必须配置
-	JWTExpiry  string `yaml:"jwt_expiry"`  // 如 24h
-	BcryptCost int    `yaml:"bcrypt_cost"` // 默认 12
+	JWTSecret    string `yaml:"jwt_secret"`     // 必须配置
+	JWTExpiry    string `yaml:"jwt_expiry"`     // 如 24h
+	BcryptCost   int    `yaml:"bcrypt_cost"`    // 默认 12
+	TunnelSecret string `yaml:"tunnel_secret"`  // 隧道凭证加密密钥（空=使用 jwt_secret）
 }
 
 type DatabaseConfig struct {
