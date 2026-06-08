@@ -23,7 +23,8 @@ func (f JWTVerifierFunc) VerifyToken(tokenString string) (string, bool) {
 }
 
 const (
-	apiEntryTTL     = 10 * time.Minute
+	apiEntryTTL        = 10 * time.Minute
+	apiCleanupInterval = 2 * time.Minute
 	apiCleanupThreshold = 1000
 )
 
@@ -41,6 +42,8 @@ type APILimiter struct {
 	perIP   rate.Limit
 	burst   int
 	jwt     JWTVerifier
+
+	stopCh chan struct{}
 }
 
 // NewAPILimiter creates an API rate limiter. perUser/perIP of 0 means unlimited.
@@ -57,14 +60,22 @@ func NewAPILimiter(cfg APIRateLimitConfig, jwt JWTVerifier) *APILimiter {
 	if burst <= 0 {
 		burst = 20
 	}
-	return &APILimiter{
-		users:   make(map[string]*limiterEntry),
-		ips:     make(map[string]*limiterEntry),
+	l := &APILimiter{
+		users:  make(map[string]*limiterEntry),
+		ips:    make(map[string]*limiterEntry),
 		perUser: perUser,
 		perIP:   perIP,
 		burst:   burst,
 		jwt:     jwt,
+		stopCh:  make(chan struct{}),
 	}
+	go l.cleanupLoop()
+	return l
+}
+
+// Close stops the background cleanup goroutine.
+func (l *APILimiter) Close() {
+	close(l.stopCh)
 }
 
 // Middleware returns an HTTP middleware that enforces rate limits.
@@ -100,13 +111,11 @@ func writeRateLimitExceeded(w http.ResponseWriter) {
 }
 
 func (l *APILimiter) extractIdentity(r *http.Request) (userID, ip string) {
-	// Try Bearer token
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		if uid, ok := l.jwt.VerifyToken(strings.TrimPrefix(h, "Bearer ")); ok {
 			return uid, remoteIP(r)
 		}
 	}
-	// Try Cookie
 	if c, err := r.Cookie("token"); err == nil {
 		if uid, ok := l.jwt.VerifyToken(c.Value); ok {
 			return uid, remoteIP(r)
@@ -147,6 +156,22 @@ func (l *APILimiter) cleanupLocked(m map[string]*limiterEntry) {
 	for k, entry := range m {
 		if now.Sub(entry.lastAccess) > apiEntryTTL {
 			delete(m, k)
+		}
+	}
+}
+
+func (l *APILimiter) cleanupLoop() {
+	ticker := time.NewTicker(apiCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-l.stopCh:
+			return
+		case <-ticker.C:
+			l.mu.Lock()
+			l.cleanupLocked(l.users)
+			l.cleanupLocked(l.ips)
+			l.mu.Unlock()
 		}
 	}
 }

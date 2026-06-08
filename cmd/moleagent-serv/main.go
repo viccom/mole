@@ -327,6 +327,9 @@ func main() {
 		_ = mqttBroker.Stop(shutdownCtx)
 	}
 	gateway.Stop()
+	if apiLimiter != nil {
+		apiLimiter.Close()
+	}
 
 	slog.Info("moleAgent_Serv stopped gracefully")
 }

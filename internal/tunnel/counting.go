@@ -20,7 +20,7 @@ func (c *countingConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
 		if c.bwLimiter != nil {
-			c.bwLimiter.WaitN(c.ctx, n)
+			waitBurst(c.ctx, c.bwLimiter, n)
 		}
 		if c.onRead != nil {
 			c.onRead(n)
@@ -30,14 +30,28 @@ func (c *countingConn) Read(p []byte) (int, error) {
 }
 
 func (c *countingConn) Write(p []byte) (int, error) {
+	if c.bwLimiter != nil && len(p) > 0 {
+		waitBurst(c.ctx, c.bwLimiter, len(p))
+	}
 	n, err := c.Conn.Write(p)
-	if n > 0 {
-		if c.bwLimiter != nil {
-			c.bwLimiter.WaitN(c.ctx, n)
-		}
-		if c.onWrite != nil {
-			c.onWrite(n)
-		}
+	if n > 0 && c.onWrite != nil {
+		c.onWrite(n)
 	}
 	return n, err
+}
+
+// waitBurst waits for n tokens from the limiter, splitting into burst-sized
+// chunks to handle cases where n exceeds the limiter's burst capacity.
+func waitBurst(ctx context.Context, l *rate.Limiter, n int) {
+	burst := l.Burst()
+	for n > 0 {
+		chunk := n
+		if chunk > burst {
+			chunk = burst
+		}
+		if err := l.WaitN(ctx, chunk); err != nil {
+			return
+		}
+		n -= chunk
+	}
 }
