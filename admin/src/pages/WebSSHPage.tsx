@@ -92,7 +92,8 @@ export function WebSSHPage() {
         cursor: '#d4d4d4',
         selectionBackground: '#264f78',
       },
-      allowProposedApi: true,
+      smoothScrollDuration: 0,
+      fastScrollSensitivity: 5,
     })
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
