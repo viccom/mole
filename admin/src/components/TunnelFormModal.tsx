@@ -861,7 +861,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
               </FormField>
             </div>
             <FormField label="认证方式">
-              <select value={sshAuthType} onChange={e => setSshAuthType(e.target.value as 'password' | 'key')} className={selectClass}>
+              <select value={sshAuthType} onChange={e => setSshAuthType(e.target.value as 'password' | 'key')} className={`${selectClass} max-w-48`}>
                 <option value="password">密码认证</option>
                 <option value="key">密钥认证</option>
               </select>
@@ -937,7 +937,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
                   <select
                     value={rlBwUnit}
                     onChange={e => setRlBwUnit(e.target.value as 'bps' | 'kbps' | 'mbps')}
-                    className={`${selectClass} w-16 shrink-0`}
+                    className={`${selectClass} w-20 shrink-0`}
                   >
                     <option value="kbps">KB/s</option>
                     <option value="mbps">MB/s</option>
