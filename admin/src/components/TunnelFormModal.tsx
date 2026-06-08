@@ -26,16 +26,19 @@ const PARITY_OPTIONS = [
   { value: 'O', label: '奇 (O)' },
 ]
 
-const tunnelTypeOptions: { value: TunnelType; label: string }[] = [
+const tunnelTypeRow1: { value: TunnelType; label: string }[] = [
   { value: 'http', label: 'HTTP' },
   { value: 'https', label: 'HTTPS' },
   { value: 'tcp', label: 'TCP' },
   { value: 'udp', label: 'UDP' },
+  { value: 'webssh', label: 'WebSSH' },
+]
+
+const tunnelTypeRow2: { value: TunnelType; label: string }[] = [
   { value: 'ser2mq', label: 'Ser2MQ' },
   { value: 'vpn-manager', label: 'VPN' },
   { value: 'ser2tcp', label: 'Ser2TCP' },
   { value: 'ser2udp', label: 'Ser2UDP' },
-  { value: 'webssh', label: 'WebSSH' },
 ]
 
 export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, onSuccess }: TunnelFormModalProps) {
@@ -360,22 +363,41 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         </FormField>
 
         <FormField label="类型">
-          <div className="flex flex-wrap gap-2">
-            {tunnelTypeOptions.map(opt => (
-              <button
-                key={opt.value}
-                type="button"
-                disabled={isEdit}
-                onClick={() => setType(opt.value)}
-                className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                  type === opt.value
-                    ? 'bg-primary text-white border-primary'
-                    : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                } ${isEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
-              >
-                {opt.label}
-              </button>
-            ))}
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {tunnelTypeRow1.map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={isEdit}
+                  onClick={() => setType(opt.value)}
+                  className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                    type === opt.value
+                      ? 'bg-primary text-white border-primary'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  } ${isEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {tunnelTypeRow2.map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={isEdit}
+                  onClick={() => setType(opt.value)}
+                  className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                    type === opt.value
+                      ? 'bg-primary text-white border-primary'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  } ${isEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
         </FormField>
 
