@@ -927,12 +927,12 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
               <FormField label="最大带宽">
                 <div className="flex gap-2">
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={rlMaxBandwidth}
                     onChange={e => setRlMaxBandwidth(e.target.value)}
                     placeholder="留空 = 使用全局默认"
-                    min="1"
-                    className={`${inputClass} flex-1 min-w-0`}
+                    className={`${inputClass} flex-1 min-w-[80px]`}
                   />
                   <select
                     value={rlBwUnit}
