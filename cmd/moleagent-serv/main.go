@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,7 +34,12 @@ import (
 func main() {
 	configPath := flag.String("config", "", "配置文件路径 (YAML)，默认查找顺序: config.yaml → configs/config.yaml")
 	nodeToken := flag.String("nodetoken", "", "节点认证令牌")
+	verFlag := flag.Bool("version", false, "打印版本信息并退出")
 	flag.Parse()
+	if *verFlag {
+		fmt.Println(version.VersionString())
+		os.Exit(0)
+	}
 
 	slog.Info("Starting moleAgent-Serv", "version", version.VersionString())
 
