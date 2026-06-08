@@ -44,6 +44,7 @@ func main() {
 	transportFlag := flag.String("transport", "", "传输协议: tcp, ws, kcp")
 	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)")
 	tunnelsFlag := flag.Bool("tunnels", false, "隧道管理子命令 (见: moleagent-client -tunnels -h)")
+	versionFlag := flag.Bool("version", false, "打印版本信息并退出")
 	flag.CommandLine.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: moleagent-client [options]
 
@@ -68,6 +69,10 @@ Examples:
 `)
 	}
 	flag.Parse()
+	if *versionFlag {
+		fmt.Println(version.VersionString())
+		os.Exit(0)
+	}
 	_ = *tunnelsFlag // 仅用于帮助信息展示
 
 	// 加载配置
