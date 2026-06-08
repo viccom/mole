@@ -8,9 +8,9 @@ require (
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/viccom/go-selfupdater v0.0.0-20260519015723-18c3e4632e06
 	github.com/xtaci/kcp-go/v5 v5.6.72
-	github.com/xtaci/smux v1.5.19
+	github.com/xtaci/smux v1.5.57
 	go.bug.st/serial v1.6.4
-	golang.org/x/crypto v0.45.0
+	golang.org/x/crypto v0.52.0
 )
 
 require (
@@ -26,8 +26,8 @@ require (
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
