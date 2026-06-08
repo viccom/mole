@@ -347,7 +347,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
 
   return (
     <Modal title={isEdit ? '编辑隧道' : '创建隧道'} onClose={onClose} size="lg">
-      <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto">
+      <form onSubmit={handleSubmit} className="space-y-4">
         <FormField label="隧道名称">
           <input
             type="text"
