@@ -20,7 +20,7 @@ export function Modal({ title, onClose, children, size = 'md' }: ModalProps) {
               <X className="w-5 h-5" />
             </button>
           </div>
-          <div className="p-6 overflow-y-auto">{children}</div>
+          <div className="p-6 overflow-y-auto overflow-x-hidden">{children}</div>
         </DialogPanel>
       </div>
     </Dialog>
