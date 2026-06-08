@@ -119,7 +119,12 @@ func (h *Handler) HandleStream(stream io.ReadWriteCloser) {
 
 	// 请求 PTY（默认 80x24，客户端会立即发送 resize）
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
+		ssh.ECHO:          1, // 回显输入
+		ssh.ICRNL:         1, // 输入 CR 转 NL
+		ssh.ONLCR:         1, // 输出 NL 转 CR-NL
+		ssh.OPOST:         1, // 启用输出处理
+		ssh.ISIG:          1, // 启用信号字符 (^C, ^Z)
+		ssh.IUTF8:         1, // UTF-8 输入模式 (RFC 8160)
 		ssh.TTY_OP_ISPEED: 115200,
 		ssh.TTY_OP_OSPEED: 115200,
 	}
