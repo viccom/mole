@@ -20,6 +20,7 @@ import (
 	"moleAgent_client/internal/proxy/ser2mq"
 	"moleAgent_client/internal/proxy/ser2net"
 	"moleAgent_client/internal/proxy/vpn"
+	"moleAgent_client/internal/proxy/webssh"
 	"moleAgent_client/internal/transport"
 )
 
@@ -47,6 +48,9 @@ type Client struct {
 
 	// vpn-manager 进程管理器
 	vpnMgr *vpn.Manager
+
+	// webssh 远程终端管理器
+	websshMgr *webssh.Manager
 }
 
 type tunnelMutationKind int
@@ -106,6 +110,7 @@ func New(cfg *Config) (*Client, error) {
 	ser2mqMgr := ser2mq.NewManager(context.Background(), cfg.NodeID)
 	ser2netMgr := ser2net.NewManager(context.Background())
 	vpnMgr := vpn.NewManager(context.Background())
+	websshMgr := webssh.NewManager()
 
 	sm := transport.NewSessionManager(dial)
 	if cfg.Transport == "kcp" {
@@ -128,6 +133,7 @@ func New(cfg *Config) (*Client, error) {
 		ser2mqMgr:  ser2mqMgr,
 		ser2netMgr: ser2netMgr,
 		vpnMgr:     vpnMgr,
+		websshMgr:  websshMgr,
 	}, nil
 }
 
@@ -208,6 +214,9 @@ func (c *Client) Close() {
 	}
 	if c.vpnMgr != nil {
 		c.vpnMgr.Close()
+	}
+	if c.websshMgr != nil {
+		c.websshMgr.Close()
 	}
 }
 
@@ -324,6 +333,7 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 	ser2mqConfigs := make(map[string]ser2mq.Ser2MQConfig)
 	ser2netConfigs := make(map[string]ser2net.TunnelConfig)
 	vpnConfigs := make(map[string]vpn.Config)
+	websshConfigs := make(map[string]webssh.WebSSHConfig)
 	for _, t := range tunnels {
 		if !t.IsEnabled() {
 			continue
@@ -354,6 +364,15 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 				vpnConfigs[t.Name] = cfg
 			}
 		}
+		if t.Type == TunnelTypeWebSSH && t.Para != nil {
+			var cfg webssh.WebSSHConfig
+			if err := json.Unmarshal(t.Para, &cfg); err != nil {
+				log.Printf("notifyManagers: unmarshal webssh %q failed: %v", t.Name, err)
+			} else {
+				cfg.Enable = t.IsEnabled()
+				websshConfigs[t.Name] = cfg
+			}
+		}
 	}
 
 	if c.ser2mqMgr != nil {
@@ -368,6 +387,9 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 			vpnTypes = append(vpnTypes, name)
 		}
 		c.vpnMgr.OnTunnelUpdate(vpnTypes, vpnConfigs)
+	}
+	if c.websshMgr != nil {
+		c.websshMgr.OnTunnelUpdate(websshConfigs)
 	}
 }
 
@@ -563,6 +585,13 @@ func (c *Client) acceptLoop(ctx context.Context) {
 	}
 }
 
+// readerStream wraps bufio reader + smux stream as io.ReadWriteCloser
+type readerStream struct {
+	io.Reader
+	io.Writer
+	io.Closer
+}
+
 // dispatchStream 分发服务端发来的流
 // 启发式检测：
 //   - 首字节 '{' 且 JSON 含 cmd:"tunnel_push" → 控制推送
@@ -603,6 +632,22 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 				}
 				return ""
 			}, tunnelName)
+			return
+		}
+	}
+
+	// 检查 WebSSH 代理协议头：<tunnel-name>
+
+	if peek[0] == 0x01 {
+		line, err := br.ReadBytes('\n')
+		if err == nil && len(line) > 1 {
+			tunnelName := string(line[1 : len(line)-1])
+			stream.SetReadDeadline(time.Time{})
+			c.websshMgr.HandleStream(tunnelName, &readerStream{
+				Reader: io.MultiReader(br, stream),
+				Writer: stream,
+				Closer: stream,
+			})
 			return
 		}
 	}
@@ -834,6 +879,13 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 				}
 			}
 			ts.Status = status
+		}
+	case TunnelTypeWebSSH:
+		if stats, err := c.websshMgr.Status(t.Name); err == nil {
+			ts.Connected = stats.Running
+			ts.BytesIn = stats.BytesIn
+			ts.BytesOut = stats.BytesOut
+			ts.Status = stats
 		}
 	}
 	return ts

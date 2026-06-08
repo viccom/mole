@@ -19,6 +19,7 @@ const (
 	TunnelTypeSer2TCP TunnelType = "ser2tcp"     // 串口转 TCP
 	TunnelTypeSer2UDP TunnelType = "ser2udp"     // 串口转 UDP
 	TunnelTypeVPNMgr  TunnelType = "vpn-manager"  // VPN 程序管理
+	TunnelTypeWebSSH  TunnelType = "webssh"       // WebSSH 远程终端
 )
 
 // Tunnel 隧道配置（统一类型，替代原 tunnelConfig 和 protocol.Tunnel 两套定义）
@@ -48,7 +49,7 @@ func (t Tunnel) Validate() error {
 		return fmt.Errorf("tunnel name is required")
 	}
 	switch t.Type {
-	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeSer2TCP, TunnelTypeSer2UDP, TunnelTypeVPNMgr:
+	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeSer2TCP, TunnelTypeSer2UDP, TunnelTypeVPNMgr, TunnelTypeWebSSH:
 	default:
 		return fmt.Errorf("invalid tunnel type: %s", t.Type)
 	}

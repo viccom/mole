@@ -4,6 +4,7 @@ import { initTunnels } from './tunnels.js';
 import { initSer2MQ } from './ser2mq.js';
 import { initSer2Net } from './ser2net.js';
 import { initVPN } from './vpn.js';
+import { initWebSSH } from './webssh.js';
 
 // ===== 工具函数 =====
 export function fmtBytes(b) {
@@ -199,6 +200,7 @@ async function refreshData() {
     if (window.__ser2mqRefresh) window.__ser2mqRefresh(tunnelList);
     if (window.__ser2netRefresh) window.__ser2netRefresh(tunnelList);
     if (window.__vpnRefresh) window.__vpnRefresh(tunnelList);
+    if (window.__websshRefresh) window.__websshRefresh(tunnelList);
 
     setText('refresh-info', '最近刷新: ' + new Date().toLocaleTimeString('zh-CN'));
   } catch (e) {
@@ -231,6 +233,7 @@ initTunnels();
 initSer2MQ();
 initSer2Net();
 initVPN();
+initWebSSH();
 refreshData().then(scheduleRefresh);
 
 // ===== 版本更新检测 =====

@@ -30,6 +30,7 @@
         <button class="tab" data-tab="stream">透明隧道</button>
         <button class="tab" data-tab="serial">串口</button>
         <button class="tab" data-tab="vpn">VPN</button>
+        <button class="tab" data-tab="webssh">远程终端</button>
       </nav>
       <div class="header-right">
         <span class="header-pill">自动刷新</span>
@@ -751,6 +752,125 @@
           <button class="vpn-tab-btn" data-vpn-tab="chart">流量统计</button>
         </div>
         <div id="vpn-detail-content"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 远程终端 (WebSSH) -->
+  <section id="panel-webssh" class="panel">
+    <div class="subnav">
+      <button class="subnav-item active" data-panel="webssh" data-target="webssh-overview">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 6h7v5H4zM13 6h7v8h-7zM4 13h7v5H4zM13 16h7v2h-7z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">总览</span>
+      </button>
+      <button class="subnav-item" data-panel="webssh" data-target="webssh-list-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M5 6h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">隧道列表</span>
+      </button>
+      <button class="subnav-item" data-panel="webssh" data-target="webssh-form-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M6 4h12v2H6zm0 4h12v12H6zm2 2v2h8v-2zm0 4v2h5v-2z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">配置表单</span>
+      </button>
+    </div>
+
+    <div id="webssh-overview" class="subview active" data-panel="webssh">
+      <div class="card overview-card">
+        <div class="card-header">
+          <div>
+            <div class="section-kicker">WebSSH Overview</div>
+            <h2>远程终端概览</h2>
+          </div>
+          <span class="section-note">通过浏览器访问远程 SSH 终端。</span>
+        </div>
+        <div class="overview-metrics">
+          <div class="metric-card"><span class="metric-label">隧道总数</span><span id="webssh-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">在线</span><span id="webssh-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">已启用</span><span id="webssh-enabled" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">活跃会话</span><span id="webssh-sessions" class="metric-value">0</span></div>
+        </div>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <div class="viz-title">在线分布</div>
+            <div id="webssh-state-chart" class="viz-list"></div>
+          </div>
+          <div class="viz-card viz-card-center">
+            <div class="viz-title">在线率</div>
+            <div id="webssh-health-ring" class="viz-ring">0%</div>
+            <div id="webssh-health-note" class="viz-note">等待隧道数据</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="webssh-list-view" class="subview" data-panel="webssh">
+      <div class="card">
+        <div class="card-header">
+          <h2>WebSSH 隧道列表</h2>
+          <div class="actions">
+            <button id="btn-refresh-webssh" class="btn">刷新</button>
+            <button id="btn-add-webssh" class="btn btn-primary">新增 WebSSH</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>名称</th><th>主机</th><th>用户</th><th>状态</th><th>会话</th><th>流入</th><th>流出</th><th>操作</th>
+            </tr></thead>
+            <tbody id="webssh-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="webssh-form-view" class="subview" data-panel="webssh">
+      <div class="card helper-card">
+        <div class="card-header">
+          <h2>配置入口</h2>
+          <button id="btn-add-webssh-secondary" class="btn btn-primary">新增 WebSSH</button>
+        </div>
+        <p class="section-desc">创建 WebSSH 隧道后，可通过服务端管理面板的浏览器终端访问远程 SSH 主机。</p>
+      </div>
+
+      <div id="webssh-form" class="card form-shell" style="display:none">
+        <h2 id="webssh-form-title">新增 WebSSH 隧道</h2>
+        <div class="form-hint-box">通过 Web 浏览器访问远程 SSH 终端，支持密码和密钥认证。隧道创建后在服务端管理面板打开终端连接。</div>
+        <div class="form-section-title">基本信息</div>
+        <div class="form-row">
+          <label>名称</label>
+          <input id="wf-name" type="text" placeholder="如: prod-server" style="max-width:200px">
+        </div>
+        <div class="form-section-title">SSH 连接</div>
+        <div class="form-grid">
+          <div class="form-row"><label>主机地址</label><input id="wf-host" type="text" placeholder="192.168.1.100"></div>
+          <div class="form-row"><label>端口</label><input id="wf-port" type="number" value="22" style="max-width:100px"></div>
+          <div class="form-row"><label>用户名</label><input id="wf-user" type="text" placeholder="root"></div>
+          <div class="form-row">
+            <label>认证方式</label>
+            <select id="wf-auth-type">
+              <option value="password">密码认证</option>
+              <option value="key">密钥认证</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row" id="wf-password-row">
+          <label>密码</label>
+          <input id="wf-password" type="password" placeholder="SSH 密码">
+        </div>
+        <div class="form-row" id="wf-privkey-row" style="display:none">
+          <label>私钥（PEM 格式）</label>
+          <textarea id="wf-privkey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" rows="6" style="font-family:monospace;font-size:12px"></textarea>
+        </div>
+        <div class="form-check"><input type="checkbox" id="wf-enable" checked> 启用</div>
+        <div class="form-actions">
+          <button id="btn-save-webssh" class="btn btn-primary">保存</button>
+          <button id="btn-cancel-webssh" class="btn">取消</button>
+        </div>
       </div>
     </div>
   </section>
