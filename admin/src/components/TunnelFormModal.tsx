@@ -937,7 +937,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
                   <select
                     value={rlBwUnit}
                     onChange={e => setRlBwUnit(e.target.value as 'bps' | 'kbps' | 'mbps')}
-                    className={`${selectClass} w-20 shrink-0`}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary shrink-0"
                   >
                     <option value="kbps">KB/s</option>
                     <option value="mbps">MB/s</option>
