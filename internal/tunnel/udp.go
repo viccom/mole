@@ -189,12 +189,13 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 							}
 							return
 						}
-						// 统计出站字节数
-						tg.stats.RecordBytesOut(newSKey, int64(rn))
 						if bwLimiter := tg.limiter.BWLimiterFor(newSKey); bwLimiter != nil {
-							bwLimiter.WaitN(respCtx, rn)
+							if err := bwLimiter.WaitN(respCtx, rn); err != nil {
+								return
+							}
 						}
 						conn.WriteToUDP(respBuf[:rn], addr)
+						tg.stats.RecordBytesOut(newSKey, int64(rn))
 					}
 				}()
 
@@ -213,16 +214,18 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			}
 
 			// 在锁外转发数据（使用锁内捕获的 stream 引用，避免竞态）
-			// 统计入站字节数（使用复合键）
-			tg.stats.RecordBytesIn(curSKey, int64(n))
-				if bwLimiter := tg.limiter.BWLimiterFor(curSKey); bwLimiter != nil {
-					bwLimiter.WaitN(tunnelCtx, n)
+			if bwLimiter := tg.limiter.BWLimiterFor(curSKey); bwLimiter != nil {
+				if err := bwLimiter.WaitN(tunnelCtx, n); err != nil {
+					continue
 				}
+			}
 			if fwdStream != nil {
 				if _, err := fwdStream.Write(buf[:n]); err != nil {
 					slog.Debug("UDP write to stream failed", "tunnel", tunnel.Name, "error", err)
+					continue
 				}
 			}
+			tg.stats.RecordBytesIn(curSKey, int64(n))
 		}
 
 		// 清理所有会话

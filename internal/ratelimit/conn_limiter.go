@@ -31,6 +31,7 @@ type connOverride struct {
 }
 
 // NewGatewayLimiter creates a combined connection and bandwidth limiter.
+// When Enabled is false the caller should not create a limiter and use NopLimiter instead.
 func NewGatewayLimiter(cfg GatewayRateLimitConfig) *gatewayLimiterImpl {
 	return &gatewayLimiterImpl{
 		nodeConns:        make(map[string]int64),

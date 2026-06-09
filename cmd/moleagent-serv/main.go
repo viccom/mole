@@ -216,7 +216,6 @@ func main() {
 	// --- 节点断开回调：清理隧道运行时资源（监听器、路由索引、统计）---
 	disconnectHandler := func(nodeID string, tunnels []core.Tunnel) {
 		tunnelSvc.ReleaseNodeResources(context.Background(), nodeID, tunnels)
-		gatewayLimiter.RemoveNode(nodeID)
 	}
 	controlSrv.SetOnNodeDisconnect(disconnectHandler)
 

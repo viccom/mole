@@ -335,6 +335,19 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		}
 	}
 
+	// 清理已删除隧道的 override（不再出现在新 tunnel 列表中）
+	{ oldNames := make(map[string]bool, len(oldTunnels))
+	for _, t := range oldTunnels {
+		oldNames[t.Name] = true
+	}
+	for _, t := range tunnels {
+		delete(oldNames, t.Name)
+	}
+	for name := range oldNames {
+		s.limiter.RemoveTunnel(nodeID + "/" + name)
+	}
+		}
+
 	if s.gateway != nil {
 		s.gateway.RebuildIndex(ctx)
 
@@ -611,19 +624,6 @@ func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []
 		}
 	}
 	return results, nil
-}
-
-// RestoreNodeRateLimit 从持久化恢复节点级限速（节点重连时调用）
-func (s *TunnelConfigService) RestoreNodeRateLimit(ctx context.Context, nodeID string) {
-	if s.nodeRepo == nil {
-		return
-	}
-	node, err := s.nodeRepo.GetByID(nodeID)
-	if err != nil || node == nil || node.RateLimit == nil {
-		return
-	}
-	s.limiter.UpdateNodeConfig(nodeID, ratelimit.NodeRateConfig{MaxConns: node.RateLimit.MaxConns})
-	slog.Info("Restored node rate limit", "nodeId", nodeID, "maxConns", node.RateLimit.MaxConns)
 }
 
 // ReleaseNodeResources 释放离线节点的隧道运行时资源（监听器、路由索引、统计条目）
