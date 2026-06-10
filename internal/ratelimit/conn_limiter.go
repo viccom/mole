@@ -15,6 +15,7 @@ type gatewayLimiterImpl struct {
 	tunnelConns     map[string]int64 // sKey -> active connection count
 	tunnelOverrides map[string]connOverride
 	nodeOverrides   map[string]connOverride // nodeID -> per-node MaxConns override
+	tunnelGens      map[string]uint64       // sKey -> generation for ReleaseConn validation
 
 	maxConnsPerNode   int64
 	maxConnsPerTunnel int64
@@ -38,6 +39,7 @@ func NewGatewayLimiter(cfg GatewayRateLimitConfig) *gatewayLimiterImpl {
 		tunnelConns:      make(map[string]int64),
 		tunnelOverrides:  make(map[string]connOverride),
 		nodeOverrides:    make(map[string]connOverride),
+		tunnelGens:       make(map[string]uint64),
 		maxConnsPerNode:  int64(cfg.MaxConnsPerNode),
 		maxConnsPerTunnel: int64(cfg.MaxConnsPerTunnel),
 		bwLimiters:       make(map[string]*rate.Limiter),
@@ -47,31 +49,33 @@ func NewGatewayLimiter(cfg GatewayRateLimitConfig) *gatewayLimiterImpl {
 	}
 }
 
-func (g *gatewayLimiterImpl) AcquireConn(nodeID, sKey string) bool {
+func (g *gatewayLimiterImpl) AcquireConn(nodeID, sKey string) (bool, uint64) {
 	g.connMu.Lock()
 	defer g.connMu.Unlock()
 	if !g.checkLimits(nodeID, sKey) {
-		return false
+		return false, 0
 	}
 	g.nodeConns[nodeID]++
 	g.tunnelConns[sKey]++
-	return true
+	return true, g.tunnelGens[sKey]
 }
 
-func (g *gatewayLimiterImpl) ReleaseConn(nodeID, sKey string) {
+func (g *gatewayLimiterImpl) ReleaseConn(nodeID, sKey string, gen uint64) {
 	g.connMu.Lock()
-	if n, ok := g.nodeConns[nodeID]; ok {
-		if n <= 1 {
-			delete(g.nodeConns, nodeID)
-		} else {
-			g.nodeConns[nodeID] = n - 1
+	if g.tunnelGens[sKey] == gen {
+		if n, ok := g.nodeConns[nodeID]; ok {
+			if n <= 1 {
+				delete(g.nodeConns, nodeID)
+			} else {
+				g.nodeConns[nodeID] = n - 1
+			}
 		}
-	}
-	if n, ok := g.tunnelConns[sKey]; ok {
-		if n <= 1 {
-			delete(g.tunnelConns, sKey)
-		} else {
-			g.tunnelConns[sKey] = n - 1
+		if n, ok := g.tunnelConns[sKey]; ok {
+			if n <= 1 {
+				delete(g.tunnelConns, sKey)
+			} else {
+				g.tunnelConns[sKey] = n - 1
+			}
 		}
 	}
 	g.connMu.Unlock()
@@ -89,7 +93,7 @@ func (g *gatewayLimiterImpl) BWLimiterFor(sKey string) *rate.Limiter {
 	}
 	burst := g.bwBurst
 	if burst <= 0 {
-		burst = int(bps) // default burst = 1 second of bandwidth
+		burst = safeBurst(bps)
 	}
 	l := rate.NewLimiter(rate.Limit(bps), burst)
 	g.bwLimiters[sKey] = l
@@ -115,6 +119,7 @@ func (g *gatewayLimiterImpl) UpdateTunnelConfig(sKey string, cfg TunnelRateConfi
 		bps := g.effectiveBPSLocked(sKey)
 		if bps > 0 {
 			l.SetLimit(rate.Limit(bps))
+			l.SetBurst(safeBurst(bps))
 		} else {
 			delete(g.bwLimiters, sKey)
 		}
@@ -156,6 +161,7 @@ func (g *gatewayLimiterImpl) RemoveTunnel(sKey string) {
 	g.connMu.Lock()
 	delete(g.tunnelConns, sKey)
 	delete(g.tunnelOverrides, sKey)
+	g.tunnelGens[sKey]++
 	g.connMu.Unlock()
 
 	g.bwMu.Lock()
@@ -172,6 +178,11 @@ func (g *gatewayLimiterImpl) RemoveNode(nodeID string) {
 		if strings.HasPrefix(sKey, nodeID+"/") {
 			delete(g.tunnelConns, sKey)
 			delete(g.tunnelOverrides, sKey)
+		}
+	}
+	for sKey := range g.tunnelGens {
+		if strings.HasPrefix(sKey, nodeID+"/") {
+			delete(g.tunnelGens, sKey)
 		}
 	}
 	g.connMu.Unlock()
@@ -227,6 +238,15 @@ func (g *gatewayLimiterImpl) effectiveBPSLocked(sKey string) int64 {
 		return override
 	}
 	return g.defaultBPS
+}
+
+// safeBurst converts bps to a safe burst value, capping at MaxInt.
+func safeBurst(bps int64) int {
+	const maxInt = int64(^uint(0) >> 1)
+	if bps > maxInt {
+		return int(maxInt)
+	}
+	return int(bps)
 }
 
 func minPositive(a, b int64) int64 {

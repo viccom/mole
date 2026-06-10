@@ -4,18 +4,19 @@ import "golang.org/x/time/rate"
 
 // EffectiveLimits returns the computed rate limits for a given node/tunnel pair.
 type EffectiveLimits struct {
-	MaxConns      int   // effective max concurrent connections
-	MaxBandwidth  int64 // effective bandwidth limit (bytes/sec), 0 = unlimited
+	MaxConns      int   // effective max concurrent connections (0 = unlimited)
+	MaxBandwidth  int64 // effective bandwidth limit in bytes/sec (0 = unlimited)
 }
 
 // GatewayLimiter controls connection count and bandwidth for gateway traffic.
 // Injected into TunnelGateway; NopLimiter provides zero-overhead when disabled.
 type GatewayLimiter interface {
 	// AcquireConn reserves a connection slot (non-blocking, returns false if over limit).
-	AcquireConn(nodeID, sKey string) bool
+	// Returns the generation token for ReleaseConn validation.
+	AcquireConn(nodeID, sKey string) (bool, uint64)
 
-	// ReleaseConn frees a connection slot.
-	ReleaseConn(nodeID, sKey string)
+	// ReleaseConn frees a connection slot. gen must match the value returned by AcquireConn.
+	ReleaseConn(nodeID, sKey string, gen uint64)
 
 	// BWLimiterFor returns the bandwidth limiter for the given tunnel key, nil if unlimited.
 	BWLimiterFor(sKey string) *rate.Limiter
@@ -42,8 +43,8 @@ type GatewayLimiter interface {
 // NopLimiter is a zero-overhead no-op implementation.
 type NopLimiter struct{}
 
-func (NopLimiter) AcquireConn(_, _ string) bool                              { return true }
-func (NopLimiter) ReleaseConn(_, _ string)                                   {}
+func (NopLimiter) AcquireConn(_, _ string) (bool, uint64)                    { return true, 0 }
+func (NopLimiter) ReleaseConn(_, _ string, _ uint64)                         {}
 func (NopLimiter) BWLimiterFor(_ string) *rate.Limiter                       { return nil }
 func (NopLimiter) UpdateTunnelConfig(_ string, _ TunnelRateConfig)           {}
 func (NopLimiter) UpdateNodeConfig(_ string, _ NodeRateConfig)               {}

@@ -11,7 +11,8 @@ type APIRateLimitConfig struct {
 	Enabled bool `yaml:"enabled"` // master switch
 	PerUser int  `yaml:"per_user"` // requests/sec per user (0 = unlimited)
 	PerIP   int  `yaml:"per_ip"`   // requests/sec per IP (0 = unlimited)
-	Burst   int  `yaml:"burst"`    // token bucket burst size
+	Burst          int      `yaml:"burst"`                  // token bucket burst size
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty"` // CIDRs of trusted reverse proxies for X-Forwarded-For
 }
 
 // GatewayRateLimitConfig controls gateway connection and bandwidth limiting.

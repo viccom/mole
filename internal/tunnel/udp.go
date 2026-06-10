@@ -21,6 +21,7 @@ type udpSession struct {
 	cancel   context.CancelFunc
 	sKey     string // stats composite key (nodeID/tunnelName)
 	nodeID   string // nodeID for connection limiter release
+	gen      uint64 // generation token for ReleaseConn validation
 }
 
 // StartUDP 启动 UDP 隧道监听（异步，与 StartTCP 行为一致）
@@ -72,7 +73,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 							s.cancel()
 							s.stream.Close()
 							tg.stats.ConnClosed(s.sKey)
-						tg.limiter.ReleaseConn(s.nodeID, s.sKey)
+						tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
 							delete(sessions, key)
 							slog.Debug("UDP session expired", "tunnel", tunnel.Name, "src", key)
 						}
@@ -149,7 +150,8 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 
 				// Connection limiting
 				newSKey := statsKey(node.ID, tunnel.Name)
-				if !tg.limiter.AcquireConn(node.ID, newSKey) {
+				ok, gen := tg.limiter.AcquireConn(node.ID, newSKey)
+				if !ok {
 					slog.Warn("UDP connection limit exceeded", "tunnel", tunnel.Name)
 					newStream.Close()
 					continue
@@ -166,6 +168,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					cancel:   respCancel,
 					sKey:     newSKey,
 					nodeID:   node.ID,
+					gen:      gen,
 				}
 
 				// 读取响应协程（带 context 取消支持）
@@ -190,7 +193,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 							return
 						}
 						if bwLimiter := tg.limiter.BWLimiterFor(newSKey); bwLimiter != nil {
-							if err := bwLimiter.WaitN(respCtx, rn); err != nil {
+							if err := waitBurst(respCtx, bwLimiter, rn); err != nil {
 								return
 							}
 						}
@@ -215,7 +218,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 
 			// 在锁外转发数据（使用锁内捕获的 stream 引用，避免竞态）
 			if bwLimiter := tg.limiter.BWLimiterFor(curSKey); bwLimiter != nil {
-				if err := bwLimiter.WaitN(tunnelCtx, n); err != nil {
+				if err := waitBurst(tunnelCtx, bwLimiter, n); err != nil {
 					continue
 				}
 			}
@@ -234,7 +237,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			s.cancel()
 			s.stream.Close()
 			tg.stats.ConnClosed(s.sKey)
-				tg.limiter.ReleaseConn(s.nodeID, s.sKey)
+				tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
 		}
 		sessions = make(map[string]*udpSession)
 		mu.Unlock()

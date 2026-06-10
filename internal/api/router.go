@@ -92,7 +92,14 @@ func (r *Router) Build() http.Handler {
 	}))
 
 	if r.limiter != nil {
-		core = r.limiter.Middleware(core)
+		mw := r.limiter.Middleware(core)
+		core = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.URL.Path == "/api/v1/health" {
+				core.ServeHTTP(w, req)
+				return
+			}
+			mw.ServeHTTP(w, req)
+		})
 	}
 	return core
 }

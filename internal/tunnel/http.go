@@ -216,11 +216,13 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
 	sKey := statsKey(node.ID, tunnelName)
 
-	if !tg.limiter.AcquireConn(node.ID, sKey) {
+	if ok, gen := tg.limiter.AcquireConn(node.ID, sKey); !ok {
+		slog.Warn("HTTP connection limit exceeded", "tunnel", tunnelName, "nodeId", node.ID, "remote", r.RemoteAddr)
 		http.Error(w, "Too many connections", http.StatusTooManyRequests)
 		return
+	} else {
+		defer tg.limiter.ReleaseConn(node.ID, sKey, gen)
 	}
-	defer tg.limiter.ReleaseConn(node.ID, sKey)
 
 	tg.stats.ConnOpened(sKey)
 	defer tg.stats.ConnClosed(sKey)
@@ -281,11 +283,13 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.Request, node *core.Node, tunnelName string) {
 	sKey := statsKey(node.ID, tunnelName)
 
-	if !tg.limiter.AcquireConn(node.ID, sKey) {
+	if ok, gen := tg.limiter.AcquireConn(node.ID, sKey); !ok {
+		slog.Warn("WebSocket connection limit exceeded", "tunnel", tunnelName, "nodeId", node.ID, "remote", r.RemoteAddr)
 		http.Error(w, "Too many connections", http.StatusTooManyRequests)
 		return
+	} else {
+		defer tg.limiter.ReleaseConn(node.ID, sKey, gen)
 	}
-	defer tg.limiter.ReleaseConn(node.ID, sKey)
 
 	tg.stats.ConnOpened(sKey)
 	defer tg.stats.ConnClosed(sKey)
@@ -304,7 +308,12 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 	}
 	defer stream.Close()
 
-	if err := r.Write(stream); err != nil {
+	upgradedStream := &countingConn{
+		Conn:      stream,
+		ctx:       r.Context(),
+		bwLimiter: tg.limiter.BWLimiterFor(sKey),
+	}
+	if err := r.Write(upgradedStream); err != nil {
 		http.Error(w, "Failed to forward upgrade", http.StatusBadGateway)
 		return
 	}

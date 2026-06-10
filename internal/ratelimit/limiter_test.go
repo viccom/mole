@@ -4,10 +4,10 @@ import "testing"
 
 func TestNopLimiter_AcquireReleaseConn(t *testing.T) {
 	var l GatewayLimiter = NopLimiter{}
-	if !l.AcquireConn("node1", "node1/t1") {
+	if ok, _ := l.AcquireConn("node1", "node1/t1"); !ok {
 		t.Error("NopLimiter.AcquireConn should return true")
 	}
-	l.ReleaseConn("node1", "node1/t1")
+	l.ReleaseConn("node1", "node1/t1", 0)
 }
 
 func TestNopLimiter_BWLimiterFor(t *testing.T) {

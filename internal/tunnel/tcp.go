@@ -71,14 +71,12 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 
 	// Connection limiting
 	sKey := statsKey(node.ID, tunnel.Name)
-	if !tg.limiter.AcquireConn(node.ID, sKey) {
+	if ok, gen := tg.limiter.AcquireConn(node.ID, sKey); !ok {
 		slog.Warn("TCP connection limit exceeded", "tunnel", tunnel.Name, "nodeId", node.ID)
 		return
+	} else {
+		defer tg.limiter.ReleaseConn(node.ID, sKey, gen)
 	}
-	defer tg.limiter.ReleaseConn(node.ID, sKey)
-
-	tg.stats.ConnOpened(sKey)
-	defer tg.stats.ConnClosed(sKey)
 
 	// 检查隧道是否仍启用（索引可能过时）
 	tunnelEnabled := false
@@ -104,6 +102,9 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 		return
 	}
 	defer stream.Close()
+
+	tg.stats.ConnOpened(sKey)
+	defer tg.stats.ConnClosed(sKey)
 
 	// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
 	if _, err := stream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
