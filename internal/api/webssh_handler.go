@@ -17,11 +17,25 @@ import (
 	"moleAgent_Serv/internal/node"
 )
 
-// WebSocket 消息类型（与客户端 webssh handler 一致）
+// 消息类型（与客户端 webssh handler 一致）
 const (
-	websshMsgData   byte = 0x01 // 终端输入数据
+	websshMsgData   byte = 0x01 // 终端数据
 	websshMsgResize byte = 0x02 // 窗口大小调整
 	websshMsgKeep   byte = 0x03 // 心跳
+
+	// 文件操作请求（浏览器 → 客户端）
+	websshMsgFileListReq     byte = 0x04
+	websshMsgFileUploadReq   byte = 0x05
+	websshMsgFileUploadData  byte = 0x06
+	websshMsgFileUploadEnd   byte = 0x07
+	websshMsgFileDownloadReq byte = 0x08
+	websshMsgFileDeleteReq   byte = 0x09
+	websshMsgFileMkdirReq    byte = 0x0A
+
+	// 文件操作响应（客户端 → 浏览器）
+	websshMsgFileListResp byte = 0x0C
+	websshMsgFileDataResp byte = 0x0D
+	websshMsgFileAckResp  byte = 0x0E
 )
 
 var websshUpgrader = websocket.Upgrader{
@@ -142,10 +156,14 @@ func (h *WebSSHHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var once sync.Once
 	closeDone := func() { once.Do(func() { close(done) }) }
 
+	// 保护 smux stream 并发写入（wsToSmux + 心跳）
+	var streamMu sync.Mutex
+	lockedStream := &lockWriter{mu: &streamMu, w: stream}
+
 	// WS → smux（解析消息类型后转发）
 	go func() {
 		defer closeDone()
-		h.wsToSmux(ws, stream, tunnelName)
+		h.wsToSmux(ws, lockedStream, tunnelName)
 	}()
 
 	// smux → WS（SSH 输出直接透传）
@@ -163,8 +181,10 @@ func (h *WebSSHHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			case <-done:
 				return
 			case <-ticker.C:
-				// 发送心跳到客户端（通过 smux stream）
-				if err := writeWebSSHMsg(stream, websshMsgKeep, nil); err != nil {
+				streamMu.Lock()
+				err := writeWebSSHMsg(stream, websshMsgKeep, nil)
+				streamMu.Unlock()
+				if err != nil {
 					return
 				}
 			}
@@ -177,10 +197,10 @@ func (h *WebSSHHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 // wsToSmux 从 WebSocket 读取消息，解析类型后写入 smux 流
 func (h *WebSSHHandler) wsToSmux(ws *websocket.Conn, stream io.Writer, tunnelName string) {
-	ws.SetReadLimit(32 * 1024) // 单消息最大 32KB（终端输入不应超过此值）
+	ws.SetReadLimit(64 * 1024) // 文件上传数据块可达 32KB+
 	const idleTimeout = 4 * time.Hour
 	for {
-		ws.SetReadDeadline(time.Now().Add(idleTimeout)) // 刷新空闲超时
+		ws.SetReadDeadline(time.Now().Add(idleTimeout))
 		msgType, data, err := ws.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
@@ -193,7 +213,6 @@ func (h *WebSSHHandler) wsToSmux(ws *websocket.Conn, stream io.Writer, tunnelNam
 			continue
 		}
 
-		// 第一个字节是消息类型
 		msgFlag := data[0]
 		payload := data[1:]
 
@@ -210,29 +229,56 @@ func (h *WebSSHHandler) wsToSmux(ws *websocket.Conn, stream io.Writer, tunnelNam
 			}
 		case websshMsgKeep:
 			// 客户端心跳，忽略
+		case websshMsgFileListReq, websshMsgFileUploadReq, websshMsgFileUploadData,
+			websshMsgFileUploadEnd, websshMsgFileDownloadReq, websshMsgFileDeleteReq,
+			websshMsgFileMkdirReq:
+			// 文件操作消息透传到客户端
+			if err := writeWebSSHMsg(stream, msgFlag, payload); err != nil {
+				slog.Debug("WebSSH: smux write file msg error", "tunnel", tunnelName, "error", err)
+				return
+			}
 		}
 	}
 }
 
-// smuxToWs 从 smux 流读取 SSH 输出，直接作为 WebSocket BinaryMessage 发送
+// smuxToWs 从 smux 流读取结构化消息，解析后转发到 WebSocket
+// 消息格式: [type 1B][len 2B BE][payload]，转发到 WS 时只发 [type 1B][payload]
 func (h *WebSSHHandler) smuxToWs(ws *websocket.Conn, stream io.Reader, tunnelName string) {
-	buf := make([]byte, 32*1024)
 	for {
-		n, err := stream.Read(buf)
-		if n > 0 {
-			ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if writeErr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
-				slog.Debug("WebSSH: ws write error", "tunnel", tunnelName, "error", writeErr)
-				return
-			}
-		}
+		msgType, payload, err := readWebSSHMsgPayload(stream)
 		if err != nil {
 			if err != io.EOF {
 				slog.Debug("WebSSH: smux read error", "tunnel", tunnelName, "error", err)
 			}
 			return
 		}
+		ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		// 构建 WS 消息: [type 1B][payload]
+		msg := make([]byte, 1+len(payload))
+		msg[0] = msgType
+		copy(msg[1:], payload)
+		if writeErr := ws.WriteMessage(websocket.BinaryMessage, msg); writeErr != nil {
+			slog.Debug("WebSSH: ws write error", "tunnel", tunnelName, "error", writeErr)
+			return
+		}
 	}
+}
+
+// readWebSSHMsgPayload 从流读取 [type 1B][len 2B BE][payload]，返回 type 和 payload
+func readWebSSHMsgPayload(r io.Reader) (byte, []byte, error) {
+	var hdr [3]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return 0, nil, err
+	}
+	length := binary.BigEndian.Uint16(hdr[1:3])
+	if length == 0 {
+		return hdr[0], nil, nil
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return 0, nil, err
+	}
+	return hdr[0], payload, nil
 }
 
 // writeWebSSHMsg 写入一条 WebSSH 协议消息到 smux 流
@@ -254,4 +300,16 @@ func writeWebSSHMsg(w io.Writer, msgType byte, payload []byte) error {
 		}
 	}
 	return nil
+}
+
+// lockWriter 保护并发写入 io.Writer
+type lockWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (lw *lockWriter) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.w.Write(p)
 }

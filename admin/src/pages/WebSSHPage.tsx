@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getToken } from '../api/client'
+import { FilePanel } from '../components/FilePanel'
 
 // 右键菜单组件
 function ContextMenu({ x, y, onCopy, onPaste, onClose }: { x: number; y: number; onCopy: () => void; onPaste: () => void; onClose: () => void }) {
@@ -28,6 +29,11 @@ const MSG_DATA = 0x01
 const MSG_RESIZE = 0x02
 const MSG_KEEP = 0x03
 
+// 文件操作响应
+const MSG_FILE_LIST_RESP = 0x0C
+const MSG_FILE_DATA_RESP = 0x0D
+const MSG_FILE_ACK_RESP = 0x0E
+
 export function WebSSHPage() {
   const { tunnelName } = useParams<{ tunnelName: string }>()
   const navigate = useNavigate()
@@ -39,6 +45,8 @@ export function WebSSHPage() {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
   const [errorMsg, setErrorMsg] = useState('')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [showFilePanel, setShowFilePanel] = useState(false)
+  const fileMsgHandlerRef = useRef<((msgType: number, payload: Uint8Array) => void) | null>(null)
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {
@@ -120,9 +128,23 @@ export function WebSSHPage() {
 
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
-        // SSH 输出 → 写入终端
-        const decoder = new TextDecoder('utf-8')
-        term.write(decoder.decode(ev.data))
+        const buf = new Uint8Array(ev.data)
+        if (buf.length === 0) return
+        const msgType = buf[0]
+        const payload = buf.slice(1)
+
+        switch (msgType) {
+        case MSG_DATA:
+          term.write(new TextDecoder('utf-8').decode(payload))
+          break
+        case MSG_FILE_LIST_RESP:
+        case MSG_FILE_DATA_RESP:
+        case MSG_FILE_ACK_RESP:
+          if (fileMsgHandlerRef.current) {
+            fileMsgHandlerRef.current(msgType, payload)
+          }
+          break
+        }
       }
     }
 
@@ -215,6 +237,20 @@ export function WebSSHPage() {
     }
   }, [tunnelName, cleanup])
 
+  const registerFileHandler = useCallback((handler: ((msgType: number, payload: Uint8Array) => void) | null) => {
+    fileMsgHandlerRef.current = handler
+  }, [])
+
+  // 文件面板开关时重新 fit 终端
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (fitRef.current && termRef.current) {
+        fitRef.current.fit()
+      }
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [showFilePanel])
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#1e1e1e]" onClick={() => setContextMenu(null)}>
       {/* 顶部状态栏 */}
@@ -245,6 +281,13 @@ export function WebSSHPage() {
           {status === 'connected' && (
             <>
               <button
+                onClick={() => setShowFilePanel(v => !v)}
+                className={`px-2 py-1 rounded transition-colors text-xs ${showFilePanel ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 hover:bg-gray-600'}`}
+                title="文件管理"
+              >
+                📁 文件
+              </button>
+              <button
                 onClick={handleCopy}
                 className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 transition-colors text-xs"
                 title="复制 (Ctrl+Shift+C)"
@@ -271,8 +314,15 @@ export function WebSSHPage() {
         </div>
       </div>
 
-      {/* 终端区域 */}
-      <div ref={containerRef} className="flex-1 overflow-hidden p-1" />
+      {/* 终端 + 文件面板 */}
+      <div className="flex flex-1 min-h-0">
+        <div ref={containerRef} className="flex-1 overflow-hidden p-1" />
+        {showFilePanel && status === 'connected' && (
+          <div className="w-72 border-l border-gray-700 bg-gray-800 flex flex-col shrink-0">
+            <FilePanel ws={wsRef.current} onRegister={registerFileHandler} />
+          </div>
+        )}
+      </div>
 
       {/* 右键菜单 */}
       {contextMenu && (
