@@ -14,15 +14,30 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-// WebSocket 消息类型
+// 消息类型
 const (
-	msgData   byte = 0x01 // 终端输入数据
+	msgData   byte = 0x01 // 终端数据
 	msgResize byte = 0x02 // 窗口大小调整
 	msgKeep   byte = 0x03 // 心跳
+
+	// 文件操作请求（浏览器 → 客户端）
+	msgFileListReq     byte = 0x04
+	msgFileUploadReq   byte = 0x05
+	msgFileUploadData  byte = 0x06
+	msgFileUploadEnd   byte = 0x07
+	msgFileDownloadReq byte = 0x08
+	msgFileDeleteReq   byte = 0x09
+	msgFileMkdirReq    byte = 0x0A
+
+	// 文件操作响应（客户端 → 浏览器）
+	msgFileListResp byte = 0x0C
+	msgFileDataResp byte = 0x0D
+	msgFileAckResp  byte = 0x0E
 )
 
 // Handler 管理单个 WebSSH 隧道的 SSH 连接和数据桥接
@@ -30,8 +45,10 @@ type Handler struct {
 	name string
 	cfg  WebSSHConfig
 
-	sshClient *ssh.Client
-	sshMu     sync.Mutex
+	sshClient  *ssh.Client
+	sshMu      sync.Mutex
+	sftpClient *sftp.Client
+	sftpMu     sync.Mutex
 
 	// TOFU 主机密钥缓存（跨连接复用，避免每次重连都是"首次信任"）
 	hostKeys   map[string]ssh.PublicKey
@@ -140,8 +157,11 @@ func (h *Handler) HandleStream(stream io.ReadWriteCloser) {
 		slog.Error("webssh stdin pipe failed", "name", h.name, "error", err)
 		return
 	}
-	session.Stdout = &byteCounter{w: stream, counter: &h.bytesIn, lastMs: &h.lastRxMs}
-	session.Stderr = &byteCounter{w: stream, counter: &h.bytesIn, lastMs: &h.lastRxMs}
+	// mutexWriter 保护 stream 写入：终端输出和文件响应可能并发写同一 stream
+	writeMu := &sync.Mutex{}
+	sw := &mutexWriter{mu: writeMu, w: stream}
+	session.Stdout = &byteCounter{mu: writeMu, w: stream, counter: &h.bytesIn, lastMs: &h.lastRxMs}
+	session.Stderr = &byteCounter{mu: writeMu, w: stream, counter: &h.bytesIn, lastMs: &h.lastRxMs}
 
 	if err := session.Shell(); err != nil {
 		slog.Error("webssh shell start failed", "name", h.name, "error", err)
@@ -157,7 +177,7 @@ func (h *Handler) HandleStream(stream io.ReadWriteCloser) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		h.readLoop(stream, stdin, session)
+		h.readLoop(stream, stdin, session, sw)
 	}()
 
 	// 等待 session 结束或 stream 关闭
@@ -266,7 +286,14 @@ func (h *Handler) buildHostKeyCallback() ssh.HostKeyCallback {
 }
 
 // readLoop 从 smux 流读取消息，解析类型后分发
-func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.Session) {
+func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.Session, sw *mutexWriter) {
+	var uploadFile *sftp.File
+	var uploadErr error
+	defer func() {
+		if uploadFile != nil {
+			uploadFile.Close()
+		}
+	}()
 	for {
 		// 读取消息类型（1 字节）
 		var msgType [1]byte
@@ -279,51 +306,33 @@ func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.
 
 		switch msgType[0] {
 		case msgData:
-			// 读取 2 字节大端序长度
-			var lenBuf [2]byte
-			if _, err := io.ReadFull(stream, lenBuf[:]); err != nil {
-				slog.Debug("webssh read data length error", "name", h.name, "error", err)
+			payload, err := readPayload(stream)
+			if err != nil {
 				return
 			}
-			length := binary.BigEndian.Uint16(lenBuf[:])
-			if length == 0 {
+			if len(payload) == 0 {
 				continue
 			}
-
-			// 读取数据并写入 SSH stdin
-			buf := make([]byte, length)
-			if _, err := io.ReadFull(stream, buf); err != nil {
-				slog.Debug("webssh read data error", "name", h.name, "error", err)
-				return
-			}
-			if _, err := stdin.Write(buf); err != nil {
+			if _, err := stdin.Write(payload); err != nil {
 				slog.Debug("webssh write stdin error", "name", h.name, "error", err)
 				return
 			}
-			h.bytesOut.Add(uint64(len(buf)))
+			h.bytesOut.Add(uint64(len(payload)))
 			h.lastTxMs.Store(time.Now().UnixMilli())
 
 		case msgResize:
-			// 读取 2 字节大端序 JSON 长度
-			var lenBuf [2]byte
-			if _, err := io.ReadFull(stream, lenBuf[:]); err != nil {
-				slog.Debug("webssh read resize length error", "name", h.name, "error", err)
+			payload, err := readPayload(stream)
+			if err != nil {
 				return
 			}
-			length := binary.BigEndian.Uint16(lenBuf[:])
-			if length == 0 || length > 256 {
+			if len(payload) == 0 || len(payload) > 256 {
 				continue
-			}
-			buf := make([]byte, length)
-			if _, err := io.ReadFull(stream, buf); err != nil {
-				slog.Debug("webssh read resize data error", "name", h.name, "error", err)
-				return
 			}
 			var size struct {
 				Cols int `json:"cols"`
 				Rows int `json:"rows"`
 			}
-			if err := json.Unmarshal(buf, &size); err != nil {
+			if err := json.Unmarshal(payload, &size); err != nil {
 				slog.Debug("webssh parse resize error", "name", h.name, "error", err)
 				continue
 			}
@@ -334,20 +343,87 @@ func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.
 			}
 
 		case msgKeep:
-			// 消费 2 字节长度前缀（writeWebSSHMsg 总是写入 [type][len 2B][payload]）
+			// 消费 2 字节长度前缀
 			var keepLen [2]byte
 			if _, err := io.ReadFull(stream, keepLen[:]); err != nil {
 				return
 			}
 
+		case msgFileListReq:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			h.handleFileListReq(payload, sw)
+
+		case msgFileUploadReq:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			uploadFile = h.handleFileUploadReq(payload, sw)
+			uploadErr = nil
+
+		case msgFileUploadData:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			if uploadErr == nil {
+				if _, uploadErr = h.handleFileUploadData(payload, uploadFile); uploadErr != nil {
+					slog.Warn("webssh upload write error", "name", h.name, "error", uploadErr)
+				}
+			}
+
+		case msgFileUploadEnd:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			h.handleFileUploadEnd(payload, uploadFile, sw, uploadErr)
+			uploadFile = nil
+			uploadErr = nil
+
+		case msgFileDownloadReq:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			go h.handleFileDownloadReq(payload, sw)
+
+		case msgFileDeleteReq:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			h.handleFileDeleteReq(payload, sw)
+
+		case msgFileMkdirReq:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			h.handleFileMkdirReq(payload, sw)
+
 		default:
+			// 消费 [len 2B][payload]，避免流损坏
+			if _, err := readPayload(stream); err != nil {
+				return
+			}
 			slog.Debug("webssh unknown msg type", "name", h.name, "type", fmt.Sprintf("0x%02x", msgType[0]))
 		}
 	}
 }
 
-// Close 关闭 SSH 连接
+// Close 关闭 SSH 和 SFTP 连接
 func (h *Handler) Close() {
+	h.sftpMu.Lock()
+	if h.sftpClient != nil {
+		h.sftpClient.Close()
+		h.sftpClient = nil
+	}
+	h.sftpMu.Unlock()
+
 	h.sshMu.Lock()
 	defer h.sshMu.Unlock()
 	if h.sshClient != nil {
@@ -357,18 +433,80 @@ func (h *Handler) Close() {
 	h.running.Store(false)
 }
 
-// byteCounter 包装 io.Writer 统计写入字节数
+// mutexWriter 保护并发写入同一 stream
+type mutexWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (mw *mutexWriter) Write(p []byte) (int, error) {
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+	return mw.w.Write(p)
+}
+
+// byteCounter 包装 io.Writer 统计写入字节数，用 writeWebSSHMsg 封装终端输出
+// 自行持锁保证 writeWebSSHMsg 的 header+payload 原子写入，避免与文件 handler 交错
 type byteCounter struct {
-	w       io.Writer
+	mu      *sync.Mutex
+	w       io.Writer // 原始 stream（非 mutexWriter）
 	counter *atomic.Uint64
 	lastMs  *atomic.Int64
 }
 
 func (bc *byteCounter) Write(p []byte) (int, error) {
-	n, err := bc.w.Write(p)
-	if n > 0 {
-		bc.counter.Add(uint64(n))
-		bc.lastMs.Store(time.Now().UnixMilli())
+	bc.mu.Lock()
+	err := writeWebSSHMsg(bc.w, msgData, p)
+	bc.mu.Unlock()
+	if err != nil {
+		return 0, err
 	}
-	return n, err
+	n := len(p)
+	bc.counter.Add(uint64(n))
+	bc.lastMs.Store(time.Now().UnixMilli())
+	return n, nil
+}
+
+// writeWebSSHMsg 写入 [type 1B][len 2B BE][payload] 到流
+func writeWebSSHMsg(w io.Writer, msgType byte, payload []byte) error {
+	if len(payload) > 65535 {
+		return fmt.Errorf("payload too large: %d bytes (max 65535)", len(payload))
+	}
+	var hdr [3]byte
+	hdr[0] = msgType
+	binary.BigEndian.PutUint16(hdr[1:3], uint16(len(payload)))
+	if _, err := w.Write(hdr[:]); err != nil {
+		return err
+	}
+	if len(payload) > 0 {
+		if _, err := w.Write(payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readPayload 从流读取 [len 2B BE][payload]，已消费完 type 字节后调用
+func readPayload(r io.Reader) ([]byte, error) {
+	var lenBuf [2]byte
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+		return nil, err
+	}
+	length := binary.BigEndian.Uint16(lenBuf[:])
+	if length == 0 {
+		return nil, nil
+	}
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// writeFileAck 发送操作确认/错误响应
+func writeFileAck(w *mutexWriter, ok bool, msg string) {
+	resp, _ := json.Marshal(map[string]any{"ok": ok, "msg": msg})
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	writeWebSSHMsg(w.w, msgFileAckResp, resp)
 }
