@@ -10,7 +10,7 @@ import (
 	"github.com/pkg/sftp"
 )
 
-// handleFileReadReq 处理文件内容读取请求（用于文本预览，限制 64KB）
+// handleFileReadReq 处理文件内容读取请求（分块传输，复用 download 消息通道）
 func (h *Handler) handleFileReadReq(payload []byte, sw *mutexWriter) {
 	var req struct {
 		Path string `json:"path"`
@@ -37,30 +37,42 @@ func (h *Handler) handleFileReadReq(payload []byte, sw *mutexWriter) {
 	}
 	defer f.Close()
 
-	const maxSize = 65000 // 预留 ~500B 给 JSON 包装，避免超出 uint16 协议上限
-	buf := make([]byte, maxSize)
-	n := 0
-	for n < maxSize {
-		nn, err := f.Read(buf[n:])
-		n += nn
-		if err != nil {
-			if err != io.EOF {
-				writeFileAck(sw, false, fmt.Sprintf("read file: %v", err))
+	stat, err := f.Stat()
+	if err != nil {
+		writeFileAck(sw, false, fmt.Sprintf("stat file: %v", err))
+		return
+	}
+
+	buf := make([]byte, 32768)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			sw.mu.Lock()
+			writeErr := writeWebSSHMsg(sw.w, msgFileDataResp, buf[:n])
+			sw.mu.Unlock()
+			if writeErr != nil {
 				return
 			}
+		}
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			writeFileAck(sw, false, fmt.Sprintf("read file: %v", err))
+			return
 		}
 	}
 
 	resp, _ := json.Marshal(map[string]any{
 		"ok":   true,
-		"path": req.Path,
-		"data": string(buf[:n]),
-		"truncated": n == maxSize,
+		"msg":  "read completed",
+		"size": stat.Size(),
+		"name": stat.Name(),
+		"mode": "read",
 	})
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	writeWebSSHMsg(sw.w, msgFileReadResp, resp)
+	writeWebSSHMsg(sw.w, msgFileAckResp, resp)
 }
 
 // getSFTPClient 懒创建 SFTP 客户端（复用现有 SSH 连接）
