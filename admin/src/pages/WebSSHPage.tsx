@@ -36,7 +36,6 @@ const MSG_FILE_READ_REQ = 0x0B
 const MSG_FILE_LIST_RESP = 0x0C
 const MSG_FILE_DATA_RESP = 0x0D
 const MSG_FILE_ACK_RESP = 0x0E
-const MSG_FILE_READ_RESP = 0x0F
 
 export function WebSSHPage() {
   const { tunnelName } = useParams<{ tunnelName: string }>()
@@ -144,7 +143,6 @@ export function WebSSHPage() {
         case MSG_FILE_LIST_RESP:
         case MSG_FILE_DATA_RESP:
         case MSG_FILE_ACK_RESP:
-        case MSG_FILE_READ_RESP:
           if (fileMsgHandlerRef.current) {
             fileMsgHandlerRef.current(msgType, payload)
           }

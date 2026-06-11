@@ -160,6 +160,7 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
 
   const downloadChunks = useRef<Uint8Array[]>([])
   const downloading = useRef(false)
+  const readingRef = useRef<{ name: string; mode: PreviewMode } | null>(null)
   const uploadingRef = useRef(false)
 
   // 首次渲染时居中
@@ -207,36 +208,36 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
           downloadChunks.current.push(new Uint8Array(payload))
           break
         }
-        case MSG_FILE_READ_RESP: {
-          const resp = JSON.parse(text())
-          setPreviewLoading(false)
-          if (resp.ok) {
-            const fileName = resp.path?.split('/').pop() || ''
-            setPreview({ name: fileName, content: resp.data, truncated: resp.truncated, mode: getPreviewMode(fileName) || 'text' })
-          } else {
-            setError(resp.msg || 'read failed')
-          }
-          break
-        }
         case MSG_FILE_ACK_RESP: {
           const ack = JSON.parse(text())
+          setPreviewLoading(false)
           if (ack.ok && downloading.current && downloadChunks.current.length > 0) {
-            const parts = downloadChunks.current.map(c => new Uint8Array(c) as BlobPart)
-            const blob = new Blob(parts)
-            const url = URL.createObjectURL(blob)
-            const a = document.createElement('a')
-            a.href = url
-            a.download = ack.name || 'download'
-            document.body.appendChild(a)
-            a.click()
-            a.remove()
-            URL.revokeObjectURL(url)
+            if (readingRef.current) {
+              // 文件预览：拼接 chunks 为文本
+              const content = downloadChunks.current.map(c => new TextDecoder().decode(c)).join('')
+              const { name, mode } = readingRef.current
+              setPreview({ name, content, truncated: false, mode })
+              readingRef.current = null
+            } else {
+              // 文件下载：组装 Blob
+              const parts = downloadChunks.current.map(c => new Uint8Array(c) as BlobPart)
+              const blob = new Blob(parts)
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = ack.name || 'download'
+              document.body.appendChild(a)
+              a.click()
+              a.remove()
+              URL.revokeObjectURL(url)
+            }
             downloadChunks.current = []
             downloading.current = false
           } else if (!ack.ok) {
             setError(ack.msg || 'operation failed')
             downloadChunks.current = []
             downloading.current = false
+            readingRef.current = null
           }
           if (uploadingRef.current) {
             setUploading(false)
@@ -281,6 +282,9 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
     } else if (getPreviewMode(file.name)) {
       // 可预览文件 → 预览
       const filePath = currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name
+      readingRef.current = { name: file.name, mode: getPreviewMode(file.name) || 'text' }
+      downloadChunks.current = []
+      downloading.current = true
       setPreviewLoading(true)
       sendMsg(MSG_FILE_READ_REQ, JSON.stringify({ path: filePath }))
     } else if (!downloading.current) {
