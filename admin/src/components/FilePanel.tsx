@@ -3,7 +3,6 @@ import { marked } from 'marked'
 import { markedHighlight } from 'marked-highlight'
 import hljs from 'highlight.js/lib/core'
 import DOMPurify from 'dompurify'
-import 'highlight.js/styles/tokyo-night-dark.css'
 
 // 按需加载 highlight.js 语言（控制包体积）
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -151,6 +150,7 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
   const [isDraggingOver, setIsDraggingOver] = useState(false)
   const [preview, setPreview] = useState<{ name: string; content: string; truncated: boolean; mode: PreviewMode } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
 
   // 面板位置和大小
   const [pos, setPos] = useState({ x: -1, y: -1 }) // -1 表示未初始化
@@ -440,7 +440,7 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
 
   return (
     <div
-      className="fixed z-[60] flex flex-col bg-gray-800 shadow-2xl border border-gray-600 overflow-hidden"
+      className={`fixed z-[60] flex flex-col shadow-2xl border overflow-hidden theme-${theme} ${theme === 'dark' ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-300'}`}
       style={panelStyle}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -455,24 +455,31 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
 
       {/* 标题栏 - 可拖拽 */}
       <div
-        className="flex items-center justify-between px-3 py-2 bg-gray-900 border-b border-gray-700 shrink-0 select-none"
+        className={`flex items-center justify-between px-3 py-2 border-b shrink-0 select-none ${theme === 'dark' ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-300'}`}
         onMouseDown={handleDragStart}
         style={{ cursor: isFullscreen ? 'default' : 'move' }}
       >
-        <span className="text-xs font-semibold text-gray-300">
+        <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
           {preview ? `预览: ${preview.name}` : 'SFTP 文件管理'}
         </span>
         <div className="flex items-center gap-1">
           <button
+            onClick={(e) => { e.stopPropagation(); setTheme(t => t === 'dark' ? 'light' : 'dark') }}
+            className={`w-6 h-5 flex items-center justify-center rounded text-xs ${theme === 'dark' ? 'hover:bg-gray-700 text-gray-400 hover:text-white' : 'hover:bg-gray-200 text-gray-500 hover:text-gray-800'}`}
+            title={theme === 'dark' ? '切换亮色主题' : '切换暗色主题'}
+          >
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
+          <button
             onClick={(e) => { e.stopPropagation(); setIsFullscreen(v => !v) }}
-            className="w-6 h-5 flex items-center justify-center rounded hover:bg-gray-700 text-gray-400 hover:text-white text-xs"
+            className={`w-6 h-5 flex items-center justify-center rounded text-xs ${theme === 'dark' ? 'hover:bg-gray-700 text-gray-400 hover:text-white' : 'hover:bg-gray-200 text-gray-500 hover:text-gray-800'}`}
             title={isFullscreen ? '退出全屏' : '全屏'}
           >
             {isFullscreen ? '⊡' : '⊞'}
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); onClose() }}
-            className="w-6 h-5 flex items-center justify-center rounded hover:bg-red-700 text-gray-400 hover:text-white text-xs"
+            className={`w-6 h-5 flex items-center justify-center rounded text-xs ${theme === 'dark' ? 'hover:bg-red-700 text-gray-400 hover:text-white' : 'hover:bg-red-100 text-gray-500 hover:text-red-600'}`}
             title="关闭"
           >
             ✕
@@ -484,23 +491,23 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
       {preview ? (
         /* 文本预览 */
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="flex items-center gap-1 px-2 py-1.5 border-b border-gray-700 shrink-0">
-            <button onClick={() => setPreview(null)} className="px-2 py-0.5 rounded hover:bg-gray-700 text-xs text-gray-300">
+          <div className={`flex items-center gap-1 px-2 py-1.5 border-b shrink-0 ${theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}>
+            <button onClick={() => setPreview(null)} className={`px-2 py-0.5 rounded text-xs ${theme === 'dark' ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-200 text-gray-600'}`}>
               ← 返回列表
             </button>
-            <span className="text-xs text-gray-500 truncate flex-1">{preview.name}</span>
+            <span className={`text-xs truncate flex-1 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>{preview.name}</span>
             {preview.truncated && <span className="text-xs text-yellow-500">(已截断)</span>}
           </div>
           {preview.mode === 'markdown' ? (
             <div
-              className="flex-1 overflow-auto p-5 prose prose-invert max-w-none file-preview-prose"
-              style={{ fontSize: '14px', lineHeight: '1.8', background: '#1a1b26' }}
+              className={`flex-1 overflow-auto p-5 max-w-none file-preview-prose ${theme === 'dark' ? 'prose prose-invert' : 'prose'}`}
+              style={{ fontSize: '14px', lineHeight: '1.8', background: 'var(--fp-bg)', color: 'var(--fp-text)' }}
               dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(preview.content) as string) }}
             />
           ) : preview.mode === 'code' ? (
-            <pre className="flex-1 overflow-auto p-4" style={{ background: '#1a1b26', margin: 0 }}>
+            <pre className="flex-1 overflow-auto p-4" style={{ background: 'var(--fp-bg)', margin: 0 }}>
               <code
-                className="hljs"
+                className={`hljs hljs-${theme}`}
                 style={{ fontSize: '13px', lineHeight: '1.7', fontFamily: 'Menlo, Monaco, Consolas, "Courier New", monospace' }}
                 dangerouslySetInnerHTML={{
                   __html: (() => {
@@ -522,7 +529,7 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
               />
             </pre>
           ) : (
-            <pre className="flex-1 overflow-auto p-4 text-gray-200 font-mono" style={{ fontSize: '13px', lineHeight: '1.7', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            <pre className={`flex-1 overflow-auto p-4 font-mono ${theme === 'dark' ? 'text-gray-200' : 'text-gray-800'}`} style={{ fontSize: '13px', lineHeight: '1.7', whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--fp-bg)' }}>
               {preview.content}
             </pre>
           )}
@@ -531,28 +538,28 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
         /* 文件列表 */
         <>
           {/* 路径栏 + 操作按钮 */}
-          <div className="flex items-center gap-1 px-2 py-1.5 border-b border-gray-700 shrink-0">
+          <div className={`flex items-center gap-1 px-2 py-1.5 border-b shrink-0 ${theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}>
+            <button onClick={goUp} className={`px-1.5 py-1 rounded text-xs ${theme === 'dark' ? 'hover:bg-gray-600' : 'hover:bg-gray-200'}`} title="上级目录">⬆</button>
             <input
-              className="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+              className={`flex-1 min-w-0 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 ${theme === 'dark' ? 'bg-gray-700 border border-gray-600 text-gray-200' : 'bg-gray-100 border border-gray-300 text-gray-800'}`}
               value={currentPath}
               onChange={e => setCurrentPath(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && navigateTo(currentPath)}
             />
-            <button onClick={() => navigateTo(homePath)} className="px-1.5 py-1 rounded hover:bg-gray-600 text-xs" title="主目录">🏠</button>
-            <button onClick={goUp} className="px-1.5 py-1 rounded hover:bg-gray-600 text-xs" title="上级目录">⬆</button>
-            <button onClick={() => getFileList(currentPath)} className="px-1.5 py-1 rounded hover:bg-gray-600 text-xs" title="刷新">🔄</button>
-            <label className={`px-1.5 py-1 rounded hover:bg-gray-600 text-xs cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`} title="上传文件">
+            <button onClick={() => navigateTo(homePath)} className={`px-1.5 py-1 rounded text-xs ${theme === 'dark' ? 'hover:bg-gray-600' : 'hover:bg-gray-200'}`} title="主目录">🏠</button>
+            <button onClick={() => getFileList(currentPath)} className={`px-1.5 py-1 rounded text-xs ${theme === 'dark' ? 'hover:bg-gray-600' : 'hover:bg-gray-200'}`} title="刷新">🔄</button>
+            <label className={`px-1.5 py-1 rounded text-xs cursor-pointer ${theme === 'dark' ? 'hover:bg-gray-600' : 'hover:bg-gray-200'} ${uploading ? 'opacity-50 pointer-events-none' : ''}`} title="上传文件">
               ⬆📁
               <input type="file" className="hidden" onChange={handleUpload} disabled={uploading} />
             </label>
-            <button onClick={handleMkdir} className="px-1.5 py-1 rounded hover:bg-gray-600 text-xs" title="新建目录">📁+</button>
+            <button onClick={handleMkdir} className={`px-1.5 py-1 rounded text-xs ${theme === 'dark' ? 'hover:bg-gray-600' : 'hover:bg-gray-200'}`} title="新建目录">📁+</button>
           </div>
 
           {/* 上传进度 */}
           {uploadProgress && (
-            <div className="px-2 py-1 text-xs text-blue-300 border-b border-gray-700 shrink-0">
+            <div className={`px-2 py-1 text-xs text-blue-300 border-b shrink-0 ${theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}>
               {uploadProgress.name}: {formatSize(uploadProgress.loaded)} / {formatSize(uploadProgress.total)} ({Math.round(uploadProgress.loaded / uploadProgress.total * 100)}%)
-              <div className="w-full bg-gray-700 rounded-full h-1 mt-1">
+              <div className={`w-full rounded-full h-1 mt-1 ${theme === 'dark' ? 'bg-gray-700' : 'bg-gray-200'}`}>
                 <div className="bg-blue-500 h-1 rounded-full" style={{ width: `${(uploadProgress.loaded / uploadProgress.total) * 100}%` }} />
               </div>
             </div>
@@ -560,7 +567,7 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
 
           {/* 错误提示 */}
           {error && (
-            <div className="px-2 py-1 text-xs text-red-400 bg-red-900/20 border-b border-gray-700 shrink-0">
+            <div className={`px-2 py-1 text-xs text-red-400 border-b shrink-0 ${theme === 'dark' ? 'bg-red-900/20 border-gray-700' : 'bg-red-50 border-gray-200'}`}>
               {error}
             </div>
           )}
@@ -568,7 +575,7 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
           {/* 文件列表 */}
           <div className="flex-1 overflow-y-auto">
             <table className="w-full">
-              <thead className="sticky top-0 bg-gray-800 text-xs text-gray-400">
+              <thead className={`sticky top-0 text-xs ${theme === 'dark' ? 'bg-gray-800 text-gray-400' : 'bg-white text-gray-500'}`}>
                 <tr>
                   <th className="text-left px-2 py-1 font-normal">名称</th>
                   <th className="text-right px-2 py-1 font-normal w-16">大小</th>
@@ -580,25 +587,25 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
                 {files.map(f => (
                   <tr
                     key={f.name}
-                    className="hover:bg-gray-700/50 cursor-pointer border-t border-gray-800"
+                    className={`cursor-pointer ${theme === 'dark' ? 'hover:bg-gray-700/50 border-t border-gray-800' : 'hover:bg-gray-100 border-t border-gray-200'}`}
                     onClick={() => handleRowClick(f)}
                   >
                     <td className="px-2 py-0.5 truncate max-w-[200px]">
-                      <span className={f.is_dir ? 'text-blue-400' : 'text-gray-300'}>
+                      <span className={f.is_dir ? 'text-blue-400' : theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}>
                         {f.is_dir ? '📁 ' : '📄 '}{f.name}
                       </span>
                     </td>
-                    <td className="px-2 py-0.5 text-right text-gray-400 text-xs">
+                    <td className={`px-2 py-0.5 text-right text-xs ${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
                       {f.is_dir ? '-' : formatSize(f.size)}
                     </td>
-                    <td className="px-2 py-0.5 text-right text-gray-500 text-xs">
+                    <td className={`px-2 py-0.5 text-right text-xs ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>
                       {f.mod_time?.slice(5, 16) || '-'}
                     </td>
                     <td className="px-1 py-0.5 text-center" onClick={e => e.stopPropagation()}>
                       {!f.is_dir && (
                         <button
                           onClick={() => handleDelete(f)}
-                          className="text-gray-600 hover:text-red-400 text-xs"
+                          className={`${theme === 'dark' ? 'text-gray-600 hover:text-red-400' : 'text-gray-400 hover:text-red-500'} text-xs`}
                           title="删除"
                         >✕</button>
                       )}
@@ -606,14 +613,14 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
                   </tr>
                 ))}
                 {files.length === 0 && !error && (
-                  <tr><td colSpan={4} className="text-center py-4 text-gray-500 text-xs">空目录</td></tr>
+                  <tr><td colSpan={4} className={`text-center py-4 text-xs ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>空目录</td></tr>
                 )}
               </tbody>
             </table>
           </div>
 
           {/* 底部提示 */}
-          <div className="px-2 py-1 text-[10px] text-gray-500 border-t border-gray-700 shrink-0">
+          <div className={`px-2 py-1 text-[10px] border-t shrink-0 ${theme === 'dark' ? 'text-gray-500 border-gray-700' : 'text-gray-400 border-gray-200'}`}>
             拖放文件到面板上传 · 文本文件点击预览 · 其他文件点击下载
           </div>
         </>
@@ -633,8 +640,8 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
 
       {/* 预览加载中 */}
       {previewLoading && (
-        <div className="absolute inset-0 bg-gray-900/60 flex items-center justify-center z-20">
-          <span className="text-gray-300 text-sm">加载中...</span>
+        <div className={`absolute inset-0 flex items-center justify-center z-20 ${theme === 'dark' ? 'bg-gray-900/60' : 'bg-white/60'}`}>
+          <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-600'}`}>加载中...</span>
         </div>
       )}
     </div>
