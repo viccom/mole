@@ -29,10 +29,14 @@ const MSG_DATA = 0x01
 const MSG_RESIZE = 0x02
 const MSG_KEEP = 0x03
 
+// 文件操作请求
+const MSG_FILE_READ_REQ = 0x0B
+
 // 文件操作响应
 const MSG_FILE_LIST_RESP = 0x0C
 const MSG_FILE_DATA_RESP = 0x0D
 const MSG_FILE_ACK_RESP = 0x0E
+const MSG_FILE_READ_RESP = 0x0F
 
 export function WebSSHPage() {
   const { tunnelName } = useParams<{ tunnelName: string }>()
@@ -140,6 +144,7 @@ export function WebSSHPage() {
         case MSG_FILE_LIST_RESP:
         case MSG_FILE_DATA_RESP:
         case MSG_FILE_ACK_RESP:
+        case MSG_FILE_READ_RESP:
           if (fileMsgHandlerRef.current) {
             fileMsgHandlerRef.current(msgType, payload)
           }
@@ -257,11 +262,11 @@ export function WebSSHPage() {
       <div className="flex items-center justify-between px-4 py-2 bg-gray-900 text-white text-sm shrink-0">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate(-1)}
-            className="px-2 py-1 rounded hover:bg-gray-700 transition-colors"
-            title="返回"
+            onClick={() => { cleanup(); navigate(-1) }}
+            className="px-2 py-1 rounded hover:bg-red-700 transition-colors"
+            title="断开连接"
           >
-            ← 返回
+            ✕ 断开
           </button>
           <span className="text-gray-400">|</span>
           <span className="font-mono">{tunnelName}</span>
@@ -314,15 +319,13 @@ export function WebSSHPage() {
         </div>
       </div>
 
-      {/* 终端 + 文件面板 */}
-      <div className="flex flex-1 min-h-0">
-        <div ref={containerRef} className="flex-1 overflow-hidden p-1" />
-        {showFilePanel && status === 'connected' && (
-          <div className="w-72 border-l border-gray-700 bg-gray-800 flex flex-col shrink-0">
-            <FilePanel ws={wsRef.current} onRegister={registerFileHandler} />
-          </div>
-        )}
-      </div>
+      {/* 终端 */}
+      <div ref={containerRef} className="flex-1 overflow-hidden p-1" />
+
+      {/* 浮动文件面板 */}
+      {showFilePanel && status === 'connected' && (
+        <FilePanel ws={wsRef.current} onRegister={registerFileHandler} onClose={() => setShowFilePanel(false)} />
+      )}
 
       {/* 右键菜单 */}
       {contextMenu && (

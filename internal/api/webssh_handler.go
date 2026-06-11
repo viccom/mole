@@ -31,11 +31,13 @@ const (
 	websshMsgFileDownloadReq byte = 0x08
 	websshMsgFileDeleteReq   byte = 0x09
 	websshMsgFileMkdirReq    byte = 0x0A
+	websshMsgFileReadReq     byte = 0x0B // 文件内容读取请求
 
 	// 文件操作响应（客户端 → 浏览器）
 	websshMsgFileListResp byte = 0x0C
 	websshMsgFileDataResp byte = 0x0D
 	websshMsgFileAckResp  byte = 0x0E
+	websshMsgFileReadResp byte = 0x0F // 文件内容读取响应
 )
 
 var websshUpgrader = websocket.Upgrader{
@@ -231,7 +233,7 @@ func (h *WebSSHHandler) wsToSmux(ws *websocket.Conn, stream io.Writer, tunnelNam
 			// 客户端心跳，忽略
 		case websshMsgFileListReq, websshMsgFileUploadReq, websshMsgFileUploadData,
 			websshMsgFileUploadEnd, websshMsgFileDownloadReq, websshMsgFileDeleteReq,
-			websshMsgFileMkdirReq:
+			websshMsgFileMkdirReq, websshMsgFileReadReq:
 			// 文件操作消息透传到客户端
 			if err := writeWebSSHMsg(stream, msgFlag, payload); err != nil {
 				slog.Debug("WebSSH: smux write file msg error", "tunnel", tunnelName, "error", err)
