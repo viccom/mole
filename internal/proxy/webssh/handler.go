@@ -33,11 +33,13 @@ const (
 	msgFileDownloadReq byte = 0x08
 	msgFileDeleteReq   byte = 0x09
 	msgFileMkdirReq    byte = 0x0A
+	msgFileReadReq     byte = 0x0B // 文件内容读取请求
 
 	// 文件操作响应（客户端 → 浏览器）
 	msgFileListResp byte = 0x0C
 	msgFileDataResp byte = 0x0D
 	msgFileAckResp  byte = 0x0E
+	msgFileReadResp byte = 0x0F // 文件内容读取响应
 )
 
 // Handler 管理单个 WebSSH 隧道的 SSH 连接和数据桥接
@@ -404,6 +406,13 @@ func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.
 				return
 			}
 			h.handleFileMkdirReq(payload, sw)
+
+		case msgFileReadReq:
+			payload, err := readPayload(stream)
+			if err != nil {
+				return
+			}
+			go h.handleFileReadReq(payload, sw)
 
 		default:
 			// 消费 [len 2B][payload]，避免流损坏

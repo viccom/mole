@@ -10,6 +10,59 @@ import (
 	"github.com/pkg/sftp"
 )
 
+// handleFileReadReq 处理文件内容读取请求（用于文本预览，限制 64KB）
+func (h *Handler) handleFileReadReq(payload []byte, sw *mutexWriter) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		writeFileAck(sw, false, "invalid request")
+		return
+	}
+	if req.Path == "" {
+		writeFileAck(sw, false, "empty path")
+		return
+	}
+
+	sc, err := h.getSFTPClient()
+	if err != nil {
+		writeFileAck(sw, false, err.Error())
+		return
+	}
+
+	f, err := sc.Open(req.Path)
+	if err != nil {
+		writeFileAck(sw, false, fmt.Sprintf("open file: %v", err))
+		return
+	}
+	defer f.Close()
+
+	const maxSize = 64 * 1024 // 64KB 限制
+	buf := make([]byte, maxSize)
+	n := 0
+	for n < maxSize {
+		nn, err := f.Read(buf[n:])
+		n += nn
+		if err != nil {
+			if err != io.EOF {
+				writeFileAck(sw, false, fmt.Sprintf("read file: %v", err))
+				return
+			}
+			break
+		}
+	}
+
+	resp, _ := json.Marshal(map[string]any{
+		"ok":   true,
+		"path": req.Path,
+		"data": string(buf[:n]),
+		"truncated": n == maxSize,
+	})
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	writeWebSSHMsg(sw.w, msgFileReadResp, resp)
+}
+
 // getSFTPClient 懒创建 SFTP 客户端（复用现有 SSH 连接）
 // SSH 重连后旧 sftpClient 会失效，通过 Getwd 探测自动重建
 func (h *Handler) getSFTPClient() (*sftp.Client, error) {
