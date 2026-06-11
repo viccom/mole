@@ -37,7 +37,7 @@ func (h *Handler) handleFileReadReq(payload []byte, sw *mutexWriter) {
 	}
 	defer f.Close()
 
-	const maxSize = 64 * 1024 // 64KB 限制
+	const maxSize = 65000 // 预留 ~500B 给 JSON 包装，避免超出 uint16 协议上限
 	buf := make([]byte, maxSize)
 	n := 0
 	for n < maxSize {
