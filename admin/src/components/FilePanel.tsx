@@ -1,4 +1,71 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { marked } from 'marked'
+import { markedHighlight } from 'marked-highlight'
+import hljs from 'highlight.js/lib/core'
+import 'highlight.js/styles/github-dark.css'
+
+// 按需加载 highlight.js 语言（控制包体积）
+import javascript from 'highlight.js/lib/languages/javascript'
+import typescript from 'highlight.js/lib/languages/typescript'
+import python from 'highlight.js/lib/languages/python'
+import go from 'highlight.js/lib/languages/go'
+import rust from 'highlight.js/lib/languages/rust'
+import java from 'highlight.js/lib/languages/java'
+import cpp from 'highlight.js/lib/languages/cpp'
+import c from 'highlight.js/lib/languages/c'
+import csharp from 'highlight.js/lib/languages/csharp'
+import bash from 'highlight.js/lib/languages/bash'
+import sql from 'highlight.js/lib/languages/sql'
+import json from 'highlight.js/lib/languages/json'
+import yaml from 'highlight.js/lib/languages/yaml'
+import xml from 'highlight.js/lib/languages/xml'
+import css from 'highlight.js/lib/languages/css'
+import markdown from 'highlight.js/lib/languages/markdown'
+import ini from 'highlight.js/lib/languages/ini'
+import dockerfile from 'highlight.js/lib/languages/dockerfile'
+import makefile from 'highlight.js/lib/languages/makefile'
+import lua from 'highlight.js/lib/languages/lua'
+import php from 'highlight.js/lib/languages/php'
+import ruby from 'highlight.js/lib/languages/ruby'
+import shell from 'highlight.js/lib/languages/shell'
+import plaintext from 'highlight.js/lib/languages/plaintext'
+
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('go', go)
+hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('java', java)
+hljs.registerLanguage('cpp', cpp)
+hljs.registerLanguage('c', c)
+hljs.registerLanguage('csharp', csharp)
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('shell', shell)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('yaml', yaml)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('markdown', markdown)
+hljs.registerLanguage('ini', ini)
+hljs.registerLanguage('dockerfile', dockerfile)
+hljs.registerLanguage('makefile', makefile)
+hljs.registerLanguage('lua', lua)
+hljs.registerLanguage('php', php)
+hljs.registerLanguage('ruby', ruby)
+hljs.registerLanguage('plaintext', plaintext)
+
+// 配置 marked + highlight.js
+marked.use(markedHighlight({
+  langPrefix: 'hljs language-',
+  highlight(code: string, lang: string) {
+    if (lang && hljs.getLanguage(lang)) {
+      return hljs.highlight(code, { language: lang }).value
+    }
+    return hljs.highlightAuto(code).value
+  },
+}))
+marked.use({ breaks: true, gfm: true } as any)
 
 // 消息类型常量
 const MSG_FILE_LIST_REQ = 0x04
@@ -35,25 +102,41 @@ interface FilePanelProps {
   onClose: () => void
 }
 
-const TEXT_EXTENSIONS = new Set([
-  'txt', 'md', 'json', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg',
-  'sh', 'bash', 'zsh', 'fish', 'py', 'rb', 'js', 'ts', 'jsx', 'tsx',
-  'go', 'rs', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'swift', 'kt',
-  'html', 'htm', 'css', 'scss', 'less', 'sql', 'csv', 'log',
-  'env', 'gitignore', 'dockerfile', 'makefile', 'cmake',
-  'properties', 'env', 'service', 'socket', 'timer',
-  'r', 'lua', 'perl', 'php', 'ex', 'exs', 'erl', 'hs', 'ml',
-  'vue', 'svelte', 'astro', 'tf', 'hcl', 'nomad',
+const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdx'])
+
+const CODE_EXTENSIONS = new Set([
+  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+  'py', 'rb', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'hpp', 'cc', 'cxx',
+  'cs', 'swift', 'kt', 'scala', 'ex', 'exs', 'erl', 'hs', 'ml', 'r', 'lua',
+  'php', 'perl', 'pl',
+  'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+  'html', 'htm', 'css', 'scss', 'sass', 'less', 'vue', 'svelte', 'astro',
+  'json', 'yaml', 'yml', 'toml', 'xml', 'svg',
+  'sql', 'graphql', 'gql',
+  'tf', 'hcl', 'nomad',
+  'dockerfile', 'makefile', 'cmake', 'gradle',
+  'ini', 'conf', 'cfg', 'properties', 'env', 'service', 'socket', 'timer',
+  'gitignore', 'dockerignore', 'editorconfig',
 ])
 
-function isTextFile(name: string): boolean {
+const PLAIN_TEXT_EXTENSIONS = new Set([
+  'txt', 'log', 'csv', 'tsv', 'readme', 'license', 'changelog',
+])
+
+type PreviewMode = 'markdown' | 'code' | 'text' | null
+
+function getPreviewMode(name: string): PreviewMode {
   const lower = name.toLowerCase()
-  // 无扩展名的常见文本文件
-  if (['makefile', 'dockerfile', 'vagrantfile', 'gemfile', 'rakefile', 'procfile', 'license', 'readme', 'changelog'].some(f => lower === f || lower.startsWith(f + '.'))) return true
+  // 无扩展名的特殊文件
+  if (['makefile', 'dockerfile', 'vagrantfile', 'gemfile', 'rakefile', 'procfile'].some(f => lower === f)) return 'code'
+  if (['license', 'readme', 'changelog'].some(f => lower === f)) return 'markdown'
   const dot = lower.lastIndexOf('.')
-  if (dot < 0) return false
+  if (dot < 0) return null
   const ext = lower.slice(dot + 1)
-  return TEXT_EXTENSIONS.has(ext)
+  if (MARKDOWN_EXTS.has(ext)) return 'markdown'
+  if (CODE_EXTENSIONS.has(ext)) return 'code'
+  if (PLAIN_TEXT_EXTENSIONS.has(ext)) return 'text'
+  return null
 }
 
 export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
@@ -65,7 +148,7 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isDraggingOver, setIsDraggingOver] = useState(false)
-  const [preview, setPreview] = useState<{ name: string; content: string; truncated: boolean } | null>(null)
+  const [preview, setPreview] = useState<{ name: string; content: string; truncated: boolean; mode: PreviewMode } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
 
   // 面板位置和大小
@@ -127,7 +210,8 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
           const resp = JSON.parse(text())
           setPreviewLoading(false)
           if (resp.ok) {
-            setPreview({ name: resp.path?.split('/').pop() || '', content: resp.data, truncated: resp.truncated })
+            const fileName = resp.path?.split('/').pop() || ''
+            setPreview({ name: fileName, content: resp.data, truncated: resp.truncated, mode: getPreviewMode(fileName) || 'text' })
           } else {
             setError(resp.msg || 'read failed')
           }
@@ -193,8 +277,8 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
     if (file.is_dir) {
       const newPath = currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name
       navigateTo(newPath)
-    } else if (isTextFile(file.name)) {
-      // 文本文件 → 预览
+    } else if (getPreviewMode(file.name)) {
+      // 可预览文件 → 预览
       const filePath = currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name
       setPreviewLoading(true)
       sendMsg(MSG_FILE_READ_REQ, JSON.stringify({ path: filePath }))
@@ -402,9 +486,20 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
             <span className="text-xs text-gray-500 truncate flex-1">{preview.name}</span>
             {preview.truncated && <span className="text-xs text-yellow-500">(已截断)</span>}
           </div>
-          <pre className="flex-1 overflow-auto p-3 text-xs text-gray-200 whitespace-pre-wrap break-all font-mono leading-relaxed">
-            {preview.content}
-          </pre>
+          {preview.mode === 'markdown' ? (
+            <div
+              className="flex-1 overflow-auto p-4 prose prose-invert prose-sm max-w-none"
+              dangerouslySetInnerHTML={{ __html: marked.parse(preview.content) as string }}
+            />
+          ) : preview.mode === 'code' ? (
+            <pre className="flex-1 overflow-auto p-3 text-xs font-mono leading-relaxed">
+              <code dangerouslySetInnerHTML={{ __html: hljs.highlightAuto(preview.content).value }} />
+            </pre>
+          ) : (
+            <pre className="flex-1 overflow-auto p-3 text-xs text-gray-200 whitespace-pre-wrap break-all font-mono leading-relaxed">
+              {preview.content}
+            </pre>
+          )}
         </div>
       ) : (
         /* 文件列表 */
