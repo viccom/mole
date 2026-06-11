@@ -42,16 +42,85 @@ func isValidNodeID(id string) bool {
 
 // ControlProtocol 命令类型
 type ControlCmd struct {
-	Cmd     string        `json:"cmd"`               // register, ping, tunnel_update
-	NodeID  string        `json:"node_id,omitempty"` // 注册时使用
-	Name    string        `json:"name,omitempty"`    // 节点名称
-	Token   string        `json:"token,omitempty"`   // 节点令牌
-	Tunnels []core.Tunnel `json:"tunnels,omitempty"` // 隧道配置
+	Cmd      string          `json:"cmd"`               // register, ping, tunnel_update, tunnel_status, sysinfo, tunnel_action, restart
+	NodeID   string          `json:"node_id,omitempty"` // 注册时使用
+	Name     string          `json:"name,omitempty"`    // 节点名称 / 隧道名称
+	Token    string          `json:"token,omitempty"`   // 节点令牌
+	Tunnels  []core.Tunnel   `json:"tunnels,omitempty"` // 隧道配置
+	Ts       int64           `json:"ts,omitempty"`            // Unix 毫秒（ping RTT）
+	Action   string          `json:"action,omitempty"`        // tunnel_action: start/stop/restart
+	Delay    int             `json:"delay_seconds,omitempty"` // restart 延迟秒数
+	Reason   string          `json:"reason,omitempty"`        // restart 原因
+	Statuses []TunnelStatus  `json:"statuses,omitempty"`      // tunnel_status 上报
+	SysInfo  *SysInfo        `json:"sysinfo,omitempty"`       // 系统信息上报
 }
 
 type ControlResponse struct {
-	Cmd string `json:"cmd"` // ok, pong, err
-	Msg string `json:"msg,omitempty"`
+	Cmd  string          `json:"cmd"` // ok, pong, err
+	Msg  string          `json:"msg,omitempty"`
+	Ts   int64           `json:"ts,omitempty"`    // 原样回传（ping RTT）
+	Data json.RawMessage `json:"data,omitempty"`  // 结构化数据
+}
+
+// TunnelStatus 客户端上报的隧道运行时状态
+type TunnelStatus struct {
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Running       bool   `json:"running"`
+	Connected     bool   `json:"connected,omitempty"`
+	SerialOpen    bool   `json:"serial_open,omitempty"`
+	MQTTConnected bool   `json:"mqtt_connected,omitempty"`
+	Clients       int    `json:"clients,omitempty"`
+	PID           int    `json:"pid,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+	BytesIn       uint64 `json:"bytes_in,omitempty"`
+	BytesOut      uint64 `json:"bytes_out,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
+// SysInfo 客户端上报的系统信息
+type SysInfo struct {
+	OS           string `json:"os,omitempty"`
+	Hostname     string `json:"hostname,omitempty"`
+	Uptime       int64  `json:"uptime_seconds,omitempty"`
+	GoVersion    string `json:"go_version,omitempty"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	NumCPU       int    `json:"num_cpu,omitempty"`
+	MemTotalMB   int64  `json:"mem_total_mb,omitempty"`
+	MemUsedMB    int64  `json:"mem_used_mb,omitempty"`
+}
+
+func (s *SysInfo) toCore() *core.SysInfo {
+	if s == nil {
+		return nil
+	}
+	return &core.SysInfo{
+		OS:           s.OS,
+		Hostname:     s.Hostname,
+		Uptime:       s.Uptime,
+		GoVersion:    s.GoVersion,
+		AgentVersion: s.AgentVersion,
+		NumCPU:       s.NumCPU,
+		MemTotalMB:   s.MemTotalMB,
+		MemUsedMB:    s.MemUsedMB,
+	}
+}
+
+func (s *TunnelStatus) toCore() core.ClientTunnelStatus {
+	return core.ClientTunnelStatus{
+		Name:          s.Name,
+		Type:          s.Type,
+		Running:       s.Running,
+		Connected:     s.Connected,
+		SerialOpen:    s.SerialOpen,
+		MQTTConnected: s.MQTTConnected,
+		Clients:       s.Clients,
+		PID:           s.PID,
+		UptimeSeconds: s.UptimeSeconds,
+		BytesIn:       s.BytesIn,
+		BytesOut:      s.BytesOut,
+		Error:         s.Error,
+	}
 }
 
 // connState 连接状态，用 mutex 保护节点指针的并发访问
@@ -416,11 +485,39 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 			cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
 				now := time.Now()
 				n.LastHeartbeat = &now
+				if cmd.Ts > 0 {
+					n.RTT = now.UnixMilli() - cmd.Ts
+				}
 			})
 		}
-		writeControlResp(stream, "pong", "")
+		writeControlRespTs(stream, "pong", "", cmd.Ts)
 	case "tunnel_update":
 		cs.handleTunnelUpdate(ctx, cmd, state, stream)
+	case "sysinfo":
+		node := state.get()
+		if node != nil && cmd.SysInfo != nil {
+			si := cmd.SysInfo.toCore()
+			if err := cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
+				n.SysInfo = si
+			}); err != nil {
+				slog.Debug("sysinfo update failed", "node", node.ID, "error", err)
+			}
+		}
+		writeControlResp(stream, "ok", "sysinfo received")
+	case "tunnel_status":
+		node := state.get()
+		if node != nil && len(cmd.Statuses) > 0 {
+			statuses := make([]core.ClientTunnelStatus, len(cmd.Statuses))
+			for i, s := range cmd.Statuses {
+				statuses[i] = s.toCore()
+			}
+			if err := cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
+				n.ClientStatuses = statuses
+			}); err != nil {
+				slog.Debug("tunnel_status update failed", "node", node.ID, "error", err)
+			}
+		}
+		writeControlResp(stream, "ok", "status received")
 	default:
 		writeControlResp(stream, "err", "unknown command")
 	}
@@ -449,6 +546,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		RemoteAddr:    state.remoteAddr,
 		ConnectedAt:   &now,
 		LastHeartbeat: &now,
+		SysInfo:       cmd.SysInfo.toCore(),
 	}
 
 	// 从认证结果中读取归属信息
@@ -574,6 +672,90 @@ func writeControlResp(w interface{ Write([]byte) (int, error) }, cmd, msg string
 	if err := writeJSONLine(w, resp); err != nil {
 		slog.Debug("Failed to write control response", "cmd", cmd, "error", err)
 	}
+}
+
+// writeControlRespTs 向控制流写入带时间戳的 JSON 响应行（ping RTT 用）
+func writeControlRespTs(w interface{ Write([]byte) (int, error) }, cmd, msg string, ts int64) {
+	resp := ControlResponse{Cmd: cmd, Msg: msg, Ts: ts}
+	if err := writeJSONLine(w, resp); err != nil {
+		slog.Debug("Failed to write control response", "cmd", cmd, "error", err)
+	}
+}
+
+// sendToNode 向指定节点发送命令并等待响应（通用 S→C 方法）
+func (cs *ControlServer) sendToNode(ctx context.Context, nodeID string, cmd ControlCmd, timeout time.Duration) (*ControlResponse, error) {
+	session, err := cs.nodeMgr.GetSession(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		return nil, fmt.Errorf("open stream: %w", err)
+	}
+	defer stream.Close()
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	if _, err := stream.Write(append(data, '\n')); err != nil {
+		return nil, fmt.Errorf("send: %w", err)
+	}
+
+	stream.SetReadDeadline(time.Now().Add(timeout))
+	scanner := bufio.NewScanner(io.LimitReader(stream, 1<<20)) // 1MB max response
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+		return nil, fmt.Errorf("read response: EOF")
+	}
+
+	var resp ControlResponse
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	return &resp, nil
+}
+
+// TriggerTunnelAction 向指定节点发送隧道操作命令（start/stop/restart）
+func (cs *ControlServer) TriggerTunnelAction(ctx context.Context, nodeID, name, action string) error {
+	cmd := ControlCmd{
+		Cmd:    "tunnel_action",
+		Name:   name,
+		Action: action,
+	}
+	resp, err := cs.sendToNode(ctx, nodeID, cmd, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if resp.Cmd != "ok" {
+		return fmt.Errorf("action rejected: %s", resp.Msg)
+	}
+	return nil
+}
+
+// RestartNode 向指定节点发送重启命令
+func (cs *ControlServer) RestartNode(ctx context.Context, nodeID string, delay int, reason string) error {
+	if delay < 0 {
+		delay = 0
+	} else if delay > 300 {
+		delay = 300
+	}
+	cmd := ControlCmd{
+		Cmd:    "restart",
+		Delay:  delay,
+		Reason: reason,
+	}
+	resp, err := cs.sendToNode(ctx, nodeID, cmd, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if resp.Cmd != "ok" {
+		return fmt.Errorf("restart rejected: %s", resp.Msg)
+	}
+	return nil
 }
 
 func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd, state *connState, stream *smux.Stream) {

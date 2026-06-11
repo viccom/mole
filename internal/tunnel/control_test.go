@@ -401,7 +401,7 @@ func TestControlResponse_JSON(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got != resp {
+	if got.Cmd != resp.Cmd || got.Msg != resp.Msg || got.Ts != resp.Ts {
 		t.Errorf("round-trip mismatch: expected %+v, got %+v", resp, got)
 	}
 }

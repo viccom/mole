@@ -368,8 +368,8 @@ func buildAPIRouter(
 	authH := api.NewAuthHandler(authSvc)
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo, nodeMgr)
 	roleH := api.NewRoleHandler(roleRepo)
-	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
-	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats(), gatewayLimiter, tunnelEncryptor)
+	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc, controlSrv)
+	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats(), gatewayLimiter, tunnelEncryptor, controlSrv)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)
 	tokenH := api.NewAccessTokenHandler(accessTokenRepo)
@@ -434,6 +434,7 @@ func buildAPIRouter(
 	router.Register("PUT", "/api/v1/nodes/", nodeH.Update, "nodes", "write")
 	router.Register("DELETE", "/api/v1/nodes/", nodeH.Delete, "nodes", "delete")
 	router.Register("PATCH", "/api/v1/nodes/", nodeH.UpdateRateLimit, "nodes", "write")
+	router.Register("POST", "/api/v1/nodes/", nodeH.Restart, "nodes", "admin")
 
 	// === 隧道管理 ===
 	router.Register("GET", "/api/v1/tunnels", tunnelH.List, "tunnels", "read")
@@ -442,6 +443,7 @@ func buildAPIRouter(
 	router.Register("POST", "/api/v1/tunnels", tunnelH.Create, "tunnels", "write")
 	router.Register("PATCH", "/api/v1/tunnels/rate-limit", tunnelH.BatchRateLimit, "tunnels", "write")
 	router.Register("DELETE", "/api/v1/tunnels/", tunnelH.Delete, "tunnels", "delete")
+	router.Register("POST", "/api/v1/tunnels/", tunnelH.Action, "tunnels", "admin")
 
 	// === MQTT 管理 ===
 	router.Register("GET", "/api/v1/mqtt/clients", mqttH.Clients, "mqtt", "read")
