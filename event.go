@@ -17,6 +17,7 @@ const (
 	EventHeartbeatOK       EventType = "heartbeat_ok"
 	EventHeartbeatFail     EventType = "heartbeat_fail"
 	EventTunnelUpdated     EventType = "tunnel_updated" // 服务端推送
+	EventRTT               EventType = "rtt"            // ping RTT 测量结果
 	EventTunnelSynced      EventType = "tunnel_synced"  // 客户端发起同步完成
 	EventError             EventType = "error"
 

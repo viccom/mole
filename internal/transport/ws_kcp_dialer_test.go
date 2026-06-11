@@ -137,6 +137,10 @@ func TestKCPDialer_ConnectAndEcho(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		// Consume probe byte (\x00) sent by KCPDialer to trigger Accept
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		conn.Read(make([]byte, 1))
+		// Echo subsequent data
 		buf := make([]byte, 64)
 		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		n, err := conn.Read(buf)
@@ -189,6 +193,9 @@ func TestKCPDialer_WithEncryption(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		// Consume probe byte
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		conn.Read(make([]byte, 1))
 		buf := make([]byte, 64)
 		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		n, _ := conn.Read(buf)
@@ -236,6 +243,9 @@ func TestKCPDialer_WithFEC(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		// Consume probe byte
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		conn.Read(make([]byte, 1))
 		buf := make([]byte, 64)
 		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		n, _ := conn.Read(buf)

@@ -2,6 +2,7 @@ package moleAgent_client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -9,8 +10,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -23,6 +27,12 @@ import (
 	"moleAgent_client/internal/proxy/webssh"
 	"moleAgent_client/internal/transport"
 )
+
+// Version 客户端版本，编译时通过 -ldflags 注入
+var Version = "dev"
+
+// startTime 进程启动时间，供 sysinfo uptime 使用
+var startTime = time.Now()
 
 // ===== 公共 API =====
 
@@ -39,6 +49,8 @@ type Client struct {
 	ctrlMu  sync.Mutex        // 控制命令发送锁
 	tunReqs chan tunnelReq    // 隧道更新请求队列
 	cancel  context.CancelFunc
+
+	restartRequested atomic.Bool // 服务端请求重启，Run() 不再重连
 
 	// ser2mq 隧道管理器
 	ser2mqMgr *ser2mq.Manager
@@ -178,6 +190,9 @@ func (c *Client) Run(ctx context.Context) error {
 		go c.heartbeat(hbCtx)
 		go c.processTunnelUpdates(updCtx)
 
+		// 注册后立即上报一次隧道状态
+		go c.sendTunnelStatus()
+
 		// 接受服务端数据流（含 panic recovery）
 		func() {
 			defer func() {
@@ -193,6 +208,11 @@ func (c *Client) Run(ctx context.Context) error {
 		hbCancel()
 		c.close()
 		c.events.Emit(Event{Type: EventDisconnected})
+
+		if c.restartRequested.Load() {
+			log.Println("Restart requested by server, exiting Run()")
+			return nil
+		}
 		log.Printf("Disconnected, reconnecting in %s...", c.cfg.ReconnectInterval)
 		c.sleep(ctx, c.cfg.ReconnectInterval)
 	}
@@ -453,6 +473,7 @@ func (c *Client) register(ctx context.Context) error {
 		NodeID:  c.cfg.NodeID,
 		Name:    c.cfg.NodeName,
 		Tunnels: tunnels,
+		SysInfo: collectSysInfo(),
 	}
 	if err := writeCmd(stream, cmd); err != nil {
 		return fmt.Errorf("send register: %w", err)
@@ -513,6 +534,10 @@ func (c *Client) heartbeat(ctx context.Context) {
 	ticker := time.NewTicker(c.cfg.HeartbeatInterval)
 	defer ticker.Stop()
 
+	beatCount := 0
+	sysinfoInterval := 5 // 每 5 次心跳上报一次 sysinfo
+	statusInterval := 2  // 每 2 次心跳上报一次 tunnel_status（约 60s）
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -528,6 +553,13 @@ func (c *Client) heartbeat(ctx context.Context) {
 				return
 			}
 			c.events.Emit(Event{Type: EventHeartbeatOK})
+			beatCount++
+			if beatCount%sysinfoInterval == 0 {
+				go c.sendSysInfo()
+			}
+			if beatCount%statusInterval == 0 {
+				go c.sendTunnelStatus()
+			}
 		}
 	}
 }
@@ -548,7 +580,7 @@ func (c *Client) sendPing() error {
 	}
 	defer stream.Close()
 
-	cmd := protocol.ControlCmd{Cmd: "ping"}
+	cmd := protocol.ControlCmd{Cmd: "ping", Ts: time.Now().UnixMilli()}
 	if err := writeCmd(stream, cmd); err != nil {
 		return fmt.Errorf("send ping: %w", err)
 	}
@@ -560,7 +592,140 @@ func (c *Client) sendPing() error {
 	if resp.Cmd != "pong" {
 		return fmt.Errorf("unexpected pong response: %s", resp.Cmd)
 	}
+	if resp.Ts > 0 {
+		rtt := time.Now().UnixMilli() - resp.Ts
+		c.events.Emit(Event{Type: EventRTT, Data: map[string]any{"rtt": rtt}})
+	}
 	return nil
+}
+
+// collectSysInfo 收集系统信息
+func collectSysInfo() *protocol.SysInfo {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	hostname, _ := os.Hostname()
+	return &protocol.SysInfo{
+		OS:           runtime.GOOS + "/" + runtime.GOARCH,
+		Hostname:     hostname,
+		Uptime:       int64(time.Since(startTime).Seconds()),
+		GoVersion:    runtime.Version(),
+		AgentVersion: Version,
+		NumCPU:       runtime.NumCPU(),
+		MemTotalMB:   int64(m.Sys / 1024 / 1024),
+		MemUsedMB:    int64(m.Alloc / 1024 / 1024),
+	}
+}
+
+// sendSysInfo 上报系统信息
+func (c *Client) sendSysInfo() {
+	c.ctrlMu.Lock()
+	defer c.ctrlMu.Unlock()
+
+	session := c.transport.Session()
+	if session == nil || session.IsClosed() {
+		return
+	}
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+
+	cmd := protocol.ControlCmd{
+		Cmd:     "sysinfo",
+		NodeID:  c.cfg.NodeID,
+		SysInfo: collectSysInfo(),
+	}
+	if err := writeCmd(stream, cmd); err != nil {
+		return
+	}
+
+	readResponse(stream, c.cfg.HeartbeatTimeout)
+}
+
+// collectTunnelStatuses 收集各 Manager 的隧道运行时状态
+func (c *Client) collectTunnelStatuses() []protocol.TunnelStatus {
+	c.mu.RLock()
+	tunnels := c.tunnels
+	c.mu.RUnlock()
+
+	statuses := make([]protocol.TunnelStatus, 0, len(tunnels))
+	for _, t := range tunnels {
+		st := protocol.TunnelStatus{
+			Name: t.Name,
+			Type: string(t.Type),
+		}
+		switch t.Type {
+		case TunnelTypeSer2MQ:
+			if stats, err := c.ser2mqMgr.Status(t.Name); err == nil {
+				st.Running = stats.Running
+				st.Connected = stats.MQTTConnected && stats.SerialOpen
+				st.SerialOpen = stats.SerialOpen
+				st.MQTTConnected = stats.MQTTConnected
+				st.BytesIn = stats.BytesIn
+				st.BytesOut = stats.BytesOut
+				st.Error = stats.Error
+			}
+		case TunnelTypeSer2TCP, TunnelTypeSer2UDP:
+			if stats, err := c.ser2netMgr.Status(t.Name); err == nil {
+				st.Running = stats.Running
+				st.Connected = stats.SerialOpen
+				st.SerialOpen = stats.SerialOpen
+				st.Clients = stats.Clients
+				st.BytesIn = stats.BytesIn
+				st.BytesOut = stats.BytesOut
+			}
+		case TunnelTypeVPNMgr:
+			if stats, err := c.vpnMgr.Status(t.Name); err == nil {
+				st.Running = stats.Running
+				st.Connected = stats.Running
+				st.PID = stats.PID
+				if stats.StartTime > 0 {
+					st.UptimeSeconds = time.Now().Unix() - stats.StartTime
+				}
+				st.Error = stats.Error
+			}
+		case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP:
+			st.Running = true
+			st.Connected = true
+		case TunnelTypeWebSSH:
+			if stats, err := c.websshMgr.Status(t.Name); err == nil {
+				st.Running = stats.Running
+				st.Connected = stats.Running
+			}
+		}
+		statuses = append(statuses, st)
+	}
+	return statuses
+}
+
+// sendTunnelStatus 上报隧道运行时状态
+func (c *Client) sendTunnelStatus() {
+	c.ctrlMu.Lock()
+	defer c.ctrlMu.Unlock()
+
+	session := c.transport.Session()
+	if session == nil || session.IsClosed() {
+		return
+	}
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+
+	cmd := protocol.ControlCmd{
+		Cmd:      "tunnel_status",
+		NodeID:   c.cfg.NodeID,
+		Statuses: c.collectTunnelStatuses(),
+	}
+	if err := writeCmd(stream, cmd); err != nil {
+		return
+	}
+
+	readResponse(stream, c.cfg.HeartbeatTimeout)
 }
 
 // acceptLoop 接受服务端流（数据转发 + 控制推送）
@@ -611,7 +776,7 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 
 	// 尝试作为控制命令（tunnel_push）
 	if peek[0] == '{' {
-		if c.handlePossiblePush(stream, br) {
+		if c.handleServerCmd(stream, br) {
 			return
 		}
 	}
@@ -700,40 +865,211 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	}, "")
 }
 
-// handlePossiblePush 尝试处理 tunnel_push 控制推送
-func (c *Client) handlePossiblePush(stream *smux.Stream, br *bufio.Reader) bool {
+// handleServerCmd 处理服务端推送的控制命令（tunnel_push / tunnel_action / restart）
+func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	line, err := br.ReadBytes('\n')
 	if err != nil {
-		// 可能没有换行符，尝试读取剩余数据
-		rest, _ := br.ReadBytes(0)
-		line = append(line, rest...)
+		// No newline found — use whatever we have so far (trimmed).
+		// Don't wait for \x00 which would block until deadline.
+		line = bytes.TrimRight(line, "\x00")
+		if len(line) == 0 {
+			return false
+		}
 	}
 
 	var cmd struct {
 		Cmd     string            `json:"cmd"`
+		Name    string            `json:"name"`
+		Action  string            `json:"action"`
+		Delay   int               `json:"delay_seconds"`
+		Reason  string            `json:"reason"`
 		Tunnels []protocol.Tunnel `json:"tunnels"`
 	}
-	if json.Unmarshal(line, &cmd) != nil || cmd.Cmd != "tunnel_push" {
-		return false // 不是控制推送，交给后续处理
+	if json.Unmarshal(line, &cmd) != nil {
+		return false
 	}
 
-	// 更新本地隧道配置
-	tunnels := fromProtocols(cmd.Tunnels)
-	c.mu.Lock()
-	c.tunnels = make([]Tunnel, len(tunnels))
-	copy(c.tunnels, tunnels)
-	c.mu.Unlock()
+	switch cmd.Cmd {
+	case "tunnel_push":
+		tunnels := fromProtocols(cmd.Tunnels)
+		c.mu.Lock()
+		c.tunnels = make([]Tunnel, len(tunnels))
+		copy(c.tunnels, tunnels)
+		c.mu.Unlock()
 
-	c.notifyManagers(tunnels)
+		c.notifyManagers(tunnels)
 
-	log.Printf("Received tunnel_push from server: %d tunnel(s)", len(tunnels))
-	c.events.Emit(Event{Type: EventTunnelUpdated, Data: map[string]any{"tunnels": len(tunnels)}})
+		log.Printf("Received tunnel_push from server: %d tunnel(s)", len(tunnels))
+		c.events.Emit(Event{Type: EventTunnelUpdated, Data: map[string]any{"tunnels": len(tunnels)}})
 
-	// 响应成功
-	resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": "tunnels updated"})
+		resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": "tunnels updated"})
+		stream.Write(resp)
+
+		// 配置变更后上报最新隧道状态
+		go c.sendTunnelStatus()
+		return true
+
+	case "tunnel_action":
+		c.handleTunnelAction(stream, cmd.Name, cmd.Action)
+		return true
+
+	case "restart":
+		c.handleRestart(stream, cmd.Delay, cmd.Reason)
+		return true
+
+	default:
+		return false
+	}
+}
+
+// findTunnel 按名称查找隧道配置
+func (c *Client) findTunnel(name string) (Tunnel, bool) {
+	for _, t := range c.tunnels {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return Tunnel{}, false
+}
+
+// handleTunnelAction 处理服务端远程隧道操作
+func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
+	c.mu.RLock()
+	t, found := c.findTunnel(name)
+	c.mu.RUnlock()
+
+	if !found {
+		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": "tunnel not found: " + name})
+		stream.Write(resp)
+		return
+	}
+
+	tunnelType := string(t.Type)
+	var err error
+	switch tunnelType {
+	case "vpn-manager":
+		switch action {
+		case "start":
+			err = c.vpnMgr.Start(name)
+		case "stop":
+			err = c.vpnMgr.Stop(name)
+		case "restart":
+			c.vpnMgr.Stop(name)
+			err = c.vpnMgr.Start(name)
+		}
+	case "ser2mq":
+		switch action {
+		case "stop":
+			c.mu.RLock()
+			configs := c.buildSer2MQConfigs()
+			delete(configs, name)
+			c.mu.RUnlock()
+			c.ser2mqMgr.OnTunnelUpdate(configs)
+		case "restart":
+			// Stop first by removing from configs, then re-add
+			c.mu.RLock()
+			configs := c.buildSer2MQConfigs()
+			c.mu.RUnlock()
+			delete(configs, name)
+			c.ser2mqMgr.OnTunnelUpdate(configs)
+			// Now start with full configs
+			c.mu.RLock()
+			configs = c.buildSer2MQConfigs()
+			c.mu.RUnlock()
+			c.ser2mqMgr.OnTunnelUpdate(configs)
+		case "start":
+			c.mu.RLock()
+			configs := c.buildSer2MQConfigs()
+			c.mu.RUnlock()
+			c.ser2mqMgr.OnTunnelUpdate(configs)
+		}
+	case "ser2tcp", "ser2udp":
+		switch action {
+		case "stop":
+			c.mu.RLock()
+			configs := c.buildSer2NetConfigs()
+			delete(configs, name)
+			c.mu.RUnlock()
+			c.ser2netMgr.OnTunnelUpdate(configs)
+		case "restart":
+			// Stop first by removing from configs, then re-add
+			c.mu.RLock()
+			configs := c.buildSer2NetConfigs()
+			c.mu.RUnlock()
+			delete(configs, name)
+			c.ser2netMgr.OnTunnelUpdate(configs)
+			// Now start with full configs
+			c.mu.RLock()
+			configs = c.buildSer2NetConfigs()
+			c.mu.RUnlock()
+			c.ser2netMgr.OnTunnelUpdate(configs)
+		case "start":
+			c.mu.RLock()
+			configs := c.buildSer2NetConfigs()
+			c.mu.RUnlock()
+			c.ser2netMgr.OnTunnelUpdate(configs)
+		}
+	default:
+		err = fmt.Errorf("action not supported for type: %s", tunnelType)
+	}
+
+	if err != nil {
+		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": err.Error()})
+		stream.Write(resp)
+	} else {
+		log.Printf("Tunnel action: %s %s (type=%s)", action, name, tunnelType)
+		resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": action + " done"})
+		stream.Write(resp)
+	}
+}
+
+// handleRestart 处理服务端远程重启请求
+func (c *Client) handleRestart(stream *smux.Stream, delay int, reason string) {
+	resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": fmt.Sprintf("restarting in %ds", delay)})
 	stream.Write(resp)
-	return true
+
+	log.Printf("Server requested restart (delay=%ds, reason=%s)", delay, reason)
+	c.restartRequested.Store(true)
+
+	go func() {
+		time.Sleep(time.Duration(delay) * time.Second)
+		c.ser2mqMgr.Close()
+		c.ser2netMgr.Close()
+		c.vpnMgr.Close()
+		c.websshMgr.Close()
+		c.transport.Close() // triggers acceptLoop return → Run() exits
+	}()
+}
+
+// buildSer2MQConfigs 从当前隧道列表构建 ser2mq 配置 map
+func (c *Client) buildSer2MQConfigs() map[string]ser2mq.Ser2MQConfig {
+	configs := make(map[string]ser2mq.Ser2MQConfig)
+	for _, t := range c.tunnels {
+		if t.Type == TunnelTypeSer2MQ && t.IsEnabled() && t.Para != nil {
+			var cfg ser2mq.Ser2MQConfig
+			if err := json.Unmarshal(t.Para, &cfg); err == nil {
+				cfg.Enable = t.IsEnabled()
+				configs[t.Name] = cfg
+			}
+		}
+	}
+	return configs
+}
+
+// buildSer2NetConfigs 从当前隧道列表构建 ser2net 配置 map
+func (c *Client) buildSer2NetConfigs() map[string]ser2net.TunnelConfig {
+	configs := make(map[string]ser2net.TunnelConfig)
+	for _, t := range c.tunnels {
+		if (t.Type == TunnelTypeSer2TCP || t.Type == TunnelTypeSer2UDP) && t.IsEnabled() && t.Para != nil {
+			var cfg ser2net.Ser2NetConfig
+			if err := json.Unmarshal(t.Para, &cfg); err == nil {
+				cfg.Enable = t.IsEnabled()
+				configs[t.Name] = ser2net.TunnelConfig{Type: string(t.Type), Config: cfg}
+			}
+		}
+	}
+	return configs
 }
 
 // close 关闭连接
