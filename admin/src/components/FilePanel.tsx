@@ -3,7 +3,7 @@ import { marked } from 'marked'
 import { markedHighlight } from 'marked-highlight'
 import hljs from 'highlight.js/lib/core'
 import DOMPurify from 'dompurify'
-import 'highlight.js/styles/github-dark.css'
+import 'highlight.js/styles/tokyo-night-dark.css'
 
 // 按需加载 highlight.js 语言（控制包体积）
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -493,31 +493,36 @@ export function FilePanel({ ws, onRegister, onClose }: FilePanelProps) {
           </div>
           {preview.mode === 'markdown' ? (
             <div
-              className="flex-1 overflow-auto p-4 prose prose-invert prose-sm max-w-none"
+              className="flex-1 overflow-auto p-5 prose prose-invert max-w-none file-preview-prose"
+              style={{ fontSize: '14px', lineHeight: '1.8', background: '#1a1b26' }}
               dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(preview.content) as string) }}
             />
           ) : preview.mode === 'code' ? (
-            <pre className="flex-1 overflow-auto p-3 text-xs font-mono leading-relaxed">
-              <code dangerouslySetInnerHTML={{
-                __html: (() => {
-                  const ext = preview.name.split('.').pop()?.toLowerCase()
-                  const langMap: Record<string, string> = {
-                    js: 'javascript', mjs: 'javascript', cjs: 'javascript',
-                    ts: 'typescript', tsx: 'typescript', jsx: 'javascript',
-                    py: 'python', rb: 'ruby', rs: 'rust', kt: 'kotlin',
-                    sh: 'bash', zsh: 'bash', fish: 'shell',
-                    yml: 'yaml', md: 'markdown', htm: 'html',
-                    h: 'c', hpp: 'cpp', cc: 'cpp', cxx: 'cpp',
-                  }
-                  const lang = ext && (langMap[ext] || (hljs.getLanguage(ext) ? ext : null))
-                  return lang
-                    ? hljs.highlight(preview.content, { language: lang }).value
-                    : hljs.highlightAuto(preview.content).value
-                })()
-              }} />
+            <pre className="flex-1 overflow-auto p-4" style={{ background: '#1a1b26', margin: 0 }}>
+              <code
+                className="hljs"
+                style={{ fontSize: '13px', lineHeight: '1.7', fontFamily: 'Menlo, Monaco, Consolas, "Courier New", monospace' }}
+                dangerouslySetInnerHTML={{
+                  __html: (() => {
+                    const ext = preview.name.split('.').pop()?.toLowerCase()
+                    const langMap: Record<string, string> = {
+                      js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+                      ts: 'typescript', tsx: 'typescript', jsx: 'javascript',
+                      py: 'python', rb: 'ruby', rs: 'rust', kt: 'kotlin',
+                      sh: 'bash', zsh: 'bash', fish: 'shell',
+                      yml: 'yaml', md: 'markdown', htm: 'html',
+                      h: 'c', hpp: 'cpp', cc: 'cpp', cxx: 'cpp',
+                    }
+                    const lang = ext && (langMap[ext] || (hljs.getLanguage(ext) ? ext : null))
+                    return lang
+                      ? hljs.highlight(preview.content, { language: lang }).value
+                      : hljs.highlightAuto(preview.content).value
+                  })()
+                }}
+              />
             </pre>
           ) : (
-            <pre className="flex-1 overflow-auto p-3 text-xs text-gray-200 whitespace-pre-wrap break-all font-mono leading-relaxed">
+            <pre className="flex-1 overflow-auto p-4 text-gray-200 font-mono" style={{ fontSize: '13px', lineHeight: '1.7', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
               {preview.content}
             </pre>
           )}

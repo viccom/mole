@@ -14,3 +14,84 @@ body {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* 文件预览 - Tokyo Night Dark 主题背景统一 */
+.hljs {
+  background: #1a1b26 !important;
+  color: #a9b1d6 !important;
+}
+
+/* 文件预览 - Markdown prose 样式优化 */
+.file-preview-prose h1, .file-preview-prose h2, .file-preview-prose h3,
+.file-preview-prose h4, .file-preview-prose h5, .file-preview-prose h6 {
+  color: #c0caf5;
+  border-bottom: 1px solid #292e42;
+  padding-bottom: 0.3em;
+}
+.file-preview-prose h1 { font-size: 1.5em; }
+.file-preview-prose h2 { font-size: 1.3em; }
+.file-preview-prose h3 { font-size: 1.15em; }
+
+.file-preview-prose a {
+  color: #7aa2f7;
+  text-decoration: none;
+}
+.file-preview-prose a:hover {
+  text-decoration: underline;
+}
+
+.file-preview-prose code {
+  background: #292e42;
+  color: #bb9af7;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.file-preview-prose pre {
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  border-radius: 6px;
+  padding: 1em;
+  overflow-x: auto;
+}
+.file-preview-prose pre code {
+  background: transparent;
+  padding: 0;
+  color: #a9b1d6;
+}
+
+.file-preview-prose blockquote {
+  border-left: 3px solid #7aa2f7;
+  color: #565f89;
+  padding-left: 1em;
+}
+
+.file-preview-prose table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.file-preview-prose th, .file-preview-prose td {
+  border: 1px solid #292e42;
+  padding: 0.5em 0.75em;
+}
+.file-preview-prose th {
+  background: #1a1b26;
+  color: #c0caf5;
+}
+
+.file-preview-prose hr {
+  border-color: #292e42;
+}
+
+.file-preview-prose img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.file-preview-prose ul, .file-preview-prose ol {
+  padding-left: 1.5em;
+}
+.file-preview-prose li::marker {
+  color: #565f89;
+}
