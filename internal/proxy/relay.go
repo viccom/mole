@@ -74,6 +74,9 @@ func RecordHTTPBytes(tunnelName string, bytesIn, bytesOut uint64) {
 func RecordTCPBytes(tunnelName string, bytesIn, bytesOut uint64) {
 	atomic.AddUint64(&tcpBytesIn, bytesIn)
 	atomic.AddUint64(&tcpBytesOut, bytesOut)
+	if tunnelName == "" {
+		return
+	}
 	tunnelMu.Lock()
 	defer tunnelMu.Unlock()
 	if _, ok := tunnelStats[tunnelName]; !ok {

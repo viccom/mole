@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"sync/atomic"
 	"time"
 )
 
@@ -38,18 +37,14 @@ func HandleRawStream(stream io.ReadWriteCloser, br *bufio.Reader, findTarget fun
 			n, _ = io.CopyBuffer(backendConn, stream, bufA)
 		}
 		tcpOut = uint64(n)
-		atomic.AddUint64(&tcpBytesOut, tcpOut)
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
 		n, _ := io.CopyBuffer(stream, backendConn, bufB)
 		tcpIn = uint64(n)
-		atomic.AddUint64(&tcpBytesIn, tcpIn)
 	}()
 	<-done
 	<-done
 
-	if tunnelName != "" {
-		RecordTCPBytes(tunnelName, tcpIn, tcpOut)
-	}
+	RecordTCPBytes(tunnelName, tcpIn, tcpOut)
 }
