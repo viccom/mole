@@ -955,8 +955,11 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 		case "stop":
 			err = c.vpnMgr.Stop(name)
 		case "restart":
-			c.vpnMgr.Stop(name)
-			err = c.vpnMgr.Start(name)
+			if err = c.vpnMgr.Stop(name); err == nil {
+				err = c.vpnMgr.Start(name)
+			}
+		default:
+			err = fmt.Errorf("unsupported action: %s", action)
 		}
 	case "ser2mq":
 		switch action {
@@ -983,6 +986,8 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 			configs := c.buildSer2MQConfigs()
 			c.mu.RUnlock()
 			c.ser2mqMgr.OnTunnelUpdate(configs)
+		default:
+			err = fmt.Errorf("unsupported action: %s", action)
 		}
 	case "ser2tcp", "ser2udp":
 		switch action {
@@ -1009,6 +1014,8 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 			configs := c.buildSer2NetConfigs()
 			c.mu.RUnlock()
 			c.ser2netMgr.OnTunnelUpdate(configs)
+		default:
+			err = fmt.Errorf("unsupported action: %s", action)
 		}
 	default:
 		err = fmt.Errorf("action not supported for type: %s", tunnelType)
