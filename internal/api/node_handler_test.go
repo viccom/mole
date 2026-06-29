@@ -131,7 +131,7 @@ func TestNodeHandlerUpdate_SuccessPersistsChanges(t *testing.T) {
 	nodeMgr := node.NewShardedNodeManager(4)
 	nodeRepo := newTestNodeRepo()
 	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}
-	handler := NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc)
+	handler := NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc, nil)
 
 	original := &core.Node{
 		ID:     "Node0001",
@@ -195,7 +195,7 @@ func TestNodeHandlerUpdate_SuccessPersistsChanges(t *testing.T) {
 func TestNodeHandlerUpdate_NodeNotFound(t *testing.T) {
 	nodeMgr := node.NewShardedNodeManager(4)
 	nodeRepo := newTestNodeRepo()
-	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	body := []byte(`{"name":"missing"}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/nodes/Node404", bytes.NewReader(body))
@@ -215,7 +215,7 @@ func TestNodeHandler_List_NonAdminFiltersByOwner(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	nodeRepo := newTestNodeRepo()
-	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	// Create 3 nodes: 2 owned by userA, 1 owned by userB
 	nodes := []*core.Node{
@@ -259,7 +259,7 @@ func TestNodeHandler_List_AdminSeesAll(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	nodeRepo := newTestNodeRepo()
-	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	nodes := []*core.Node{
 		{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "userA"},
@@ -302,7 +302,7 @@ func TestNodeHandler_Get_NonOwnerGets404(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	nodeRepo := newTestNodeRepo()
-	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	n := &core.Node{ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB"}
 	if err := nodeMgr.Add(ctx, n); err != nil {
@@ -325,7 +325,7 @@ func TestNodeHandler_Create_BindsOwnerUserID(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	nodeRepo := newTestNodeRepo()
-	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	// Step 2: Inject non-admin userA claims
 	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
@@ -365,7 +365,7 @@ func TestNodeHandler_Delete_NonOwnerGets404(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
 	nodeRepo := newTestNodeRepo()
-	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo})
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	n := &core.Node{ID: "NodeB1", Name: "b1", Status: core.NodeStatusOnline, OwnerUserID: "userB"}
 	if err := nodeMgr.Add(ctx, n); err != nil {

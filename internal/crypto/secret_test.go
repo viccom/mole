@@ -26,7 +26,10 @@ func TestEncryptDecrypt(t *testing.T) {
 		if !IsEncrypted(ciphertext) {
 			t.Errorf("Encrypt(%q) = %q, missing prefix", plain, ciphertext)
 		}
-		decrypted := enc.Decrypt(ciphertext)
+		decrypted, derr := enc.Decrypt(ciphertext)
+		if derr != nil {
+			t.Errorf("Decrypt(Encrypt(%q)) error: %v", plain, derr)
+		}
 		if decrypted != plain {
 			t.Errorf("Decrypt(Encrypt(%q)) = %q", plain, decrypted)
 		}
@@ -35,13 +38,20 @@ func TestEncryptDecrypt(t *testing.T) {
 
 func TestDecryptPassthrough(t *testing.T) {
 	enc, _ := NewSecretEncryptor("test-secret")
-	// Already plain text should pass through
-	if got := enc.Decrypt("plain-password"); got != "plain-password" {
-		t.Errorf("Decrypt(plain) = %q, want passthrough", got)
+	// Plain text (no enc: prefix) passes through with no error
+	got, err := enc.Decrypt("plain-password")
+	if err != nil || got != "plain-password" {
+		t.Errorf("Decrypt(plain) = (%q, %v), want (plain-password, nil)", got, err)
 	}
-	// Invalid base64 should pass through
-	if got := enc.Decrypt("enc:!!!invalid!!!"); got != "enc:!!!invalid!!!" {
-		t.Errorf("Decrypt(invalid) = %q, want passthrough", got)
+	// Invalid base64 under enc: prefix must now return an error (no silent passthrough)
+	if _, err := enc.Decrypt("enc:!!!invalid!!!"); err == nil {
+		t.Error("Decrypt(invalid base64) should return error, got nil")
+	}
+	// Wrong secret must surface an error, not return ciphertext
+	other, _ := NewSecretEncryptor("different-secret")
+	ct := enc.Encrypt("secret-data")
+	if _, err := other.Decrypt(ct); err == nil {
+		t.Error("Decrypt with wrong secret should return error, got nil")
 	}
 }
 

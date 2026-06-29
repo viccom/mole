@@ -30,6 +30,39 @@ type Node struct {
 	OwnerUserID   string     `json:"owner_user_id,omitempty"`   // 归属用户 ID
 	AccessTokenID string     `json:"access_token_id,omitempty"` // 接入 Token ID（审计用）
 	RateLimit      *NodeRateLimit `json:"rate_limit,omitempty"`        // per-node rate limit overrides
+
+	// 运行态字段（不持久化，客户端上报）
+	SysInfo        *SysInfo              `json:"sysinfo,omitempty"`
+	ClientStatuses []ClientTunnelStatus  `json:"client_statuses,omitempty"`
+	RTT            int64                 `json:"rtt,omitempty"` // 毫秒
+}
+
+// SysInfo 客户端上报的系统信息（不持久化）
+type SysInfo struct {
+	OS           string `json:"os,omitempty"`
+	Hostname     string `json:"hostname,omitempty"`
+	Uptime       int64  `json:"uptime_seconds,omitempty"`
+	GoVersion    string `json:"go_version,omitempty"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	NumCPU       int    `json:"num_cpu,omitempty"`
+	MemTotalMB   int64  `json:"mem_total_mb,omitempty"`
+	MemUsedMB    int64  `json:"mem_used_mb,omitempty"`
+}
+
+// ClientTunnelStatus 客户端上报的隧道状态（不持久化）
+type ClientTunnelStatus struct {
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Running       bool   `json:"running"`
+	Connected     bool   `json:"connected,omitempty"`
+	SerialOpen    bool   `json:"serial_open,omitempty"`
+	MQTTConnected bool   `json:"mqtt_connected,omitempty"`
+	Clients       int    `json:"clients,omitempty"`
+	PID           int    `json:"pid,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+	BytesIn       uint64 `json:"bytes_in,omitempty"`
+	BytesOut      uint64 `json:"bytes_out,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // TunnelType 隧道类型

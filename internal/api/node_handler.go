@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -12,13 +13,18 @@ import (
 )
 
 type NodeHandler struct {
-	nodeMgr   *node.ShardedNodeManager
-	nodeRepo  core.NodeRepo
-	tunnelSvc core.TunnelConfigManager
+	nodeMgr    *node.ShardedNodeManager
+	nodeRepo   core.NodeRepo
+	tunnelSvc  core.TunnelConfigManager
+	controlSrv NodeControlServer
 }
 
-func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager) *NodeHandler {
-	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo, tunnelSvc: tunnelSvc}
+type NodeControlServer interface {
+	RestartNode(ctx context.Context, nodeID string, delay int, reason string) error
+}
+
+func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager, controlSrv NodeControlServer) *NodeHandler {
+	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo, tunnelSvc: tunnelSvc, controlSrv: controlSrv}
 }
 
 func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -37,26 +43,32 @@ func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type nodeInfo struct {
-		ID            string          `json:"id"`
-		Name          string          `json:"name"`
-		Status        core.NodeStatus `json:"status"`
-		OwnerUserID   string          `json:"owner_user_id"`
-		ConnectedAt   *string         `json:"connected_at,omitempty"`
-		LastHeartbeat *string         `json:"last_heartbeat,omitempty"`
-		TunnelCount   int             `json:"tunnel_count"`
-		Tunnels       []core.Tunnel   `json:"tunnels"`
-		RemoteAddr    string          `json:"remote_addr,omitempty"`
+		ID             string                   `json:"id"`
+		Name           string                   `json:"name"`
+		Status         core.NodeStatus          `json:"status"`
+		OwnerUserID    string                   `json:"owner_user_id"`
+		ConnectedAt    *string                  `json:"connected_at,omitempty"`
+		LastHeartbeat  *string                  `json:"last_heartbeat,omitempty"`
+		TunnelCount    int                      `json:"tunnel_count"`
+		Tunnels        []core.Tunnel            `json:"tunnels"`
+		RemoteAddr     string                   `json:"remote_addr,omitempty"`
+		SysInfo        *core.SysInfo            `json:"sysinfo,omitempty"`
+		ClientStatuses []core.ClientTunnelStatus `json:"client_statuses,omitempty"`
+		RTT            int64                    `json:"rtt,omitempty"`
 	}
 	items := make([]nodeInfo, 0, len(nodes))
 	for _, n := range nodes {
 		ni := nodeInfo{
-			ID:            n.ID,
-			Name:          n.Name,
-			Status:        n.Status,
-			OwnerUserID:   n.OwnerUserID,
-			TunnelCount:   len(n.Tunnels),
-			Tunnels:       n.Tunnels,
-			RemoteAddr:    n.RemoteAddr,
+			ID:             n.ID,
+			Name:           n.Name,
+			Status:         n.Status,
+			OwnerUserID:    n.OwnerUserID,
+			TunnelCount:    len(n.Tunnels),
+			Tunnels:        n.Tunnels,
+			RemoteAddr:     n.RemoteAddr,
+			SysInfo:        n.SysInfo,
+			ClientStatuses: n.ClientStatuses,
+			RTT:            n.RTT,
 		}
 		if n.ConnectedAt != nil {
 			s := n.ConnectedAt.Format("2006-01-02T15:04:05Z")
@@ -311,6 +323,46 @@ func (h *NodeHandler) ListPersisted(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ResponseOK(w, map[string]any{"items": items, "total": len(items)})
+}
+
+// Restart handles POST /api/v1/nodes/{id}/restart — send restart command to a client node.
+func (h *NodeHandler) Restart(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	id = strings.TrimSuffix(id, "/restart")
+	id = strings.TrimRight(id, "/")
+	if id == "" {
+		ResponseError(w, http.StatusBadRequest, 400, "Node ID required")
+		return
+	}
+
+	// 归属检查
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if !checkNodeOwnership(w, r, node) {
+			return
+		}
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
+	var req struct {
+		Delay  int    `json:"delay_seconds"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+
+	if h.controlSrv == nil {
+		ResponseError(w, http.StatusInternalServerError, 500, "Control server not configured")
+		return
+	}
+
+	if err := h.controlSrv.RestartNode(r.Context(), id, req.Delay, req.Reason); err != nil {
+		slog.Error("RestartNode failed", "node", id, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Restart failed: "+err.Error())
+		return
+	}
+	ResponseOK(w, map[string]any{"status": "ok", "node_id": id, "delay_seconds": req.Delay})
 }
 
 // UpdateRateLimit handles PATCH /api/v1/nodes/{id}/rate-limit

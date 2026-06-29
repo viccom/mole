@@ -191,6 +191,16 @@ export const api = {
     request<{ updated: number }>('/tunnels/rate-limit', { method: 'PATCH', body: JSON.stringify({ items }) }),
   updateNodeRateLimit: (nodeId: string, maxConns: number) =>
     request<Node>(`/nodes/${encodeURIComponent(nodeId)}/rate-limit`, { method: 'PATCH', body: JSON.stringify({ max_conns: maxConns }) }),
+  restartNode: (nodeId: string, delaySeconds?: number, reason?: string) =>
+    request<{ status: string; node_id: string; delay_seconds: number }>(`/nodes/${encodeURIComponent(nodeId)}/restart`, {
+      method: 'POST', body: JSON.stringify({ delay_seconds: delaySeconds || 0, reason: reason || '' }),
+    }),
+
+  // Tunnel Actions
+  triggerTunnelAction: (nodeId: string, tunnelName: string, action: 'start' | 'stop' | 'restart') =>
+    request<{ status: string; action: string; tunnel: string }>(`/tunnels/${encodeURIComponent(tunnelName)}/action`, {
+      method: 'POST', body: JSON.stringify({ node_id: nodeId, action }),
+    }),
 
   // Access Tokens
   getAccessTokens: () => request<{ items: AccessToken[]; total: number }>('/me/access-tokens'),

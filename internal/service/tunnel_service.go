@@ -658,7 +658,13 @@ func (s *TunnelConfigService) pushToClient(ctx context.Context, nodeID string, t
 		for i, t := range tunnels {
 			decrypted[i] = t
 			if t.Type == "webssh" && len(t.Para) > 0 {
-				decrypted[i].Para = decryptWebSSHPara(t.Para, s.encryptor)
+				plain, err := decryptWebSSHPara(t.Para, s.encryptor)
+				if err != nil {
+					// 解密失败说明 secret 已变更或数据损坏：中止下发并明确报错，
+					// 而非静默把密文当作凭证推给客户端（会导致 SSH 登录失败且难排查）。
+					return fmt.Errorf("decrypt webssh para for tunnel %q on node %s: %w", t.Name, nodeID, err)
+				}
+				decrypted[i].Para = plain
 			}
 		}
 		return s.pusher.PushTunnelUpdate(ctx, nodeID, decrypted)
@@ -667,36 +673,30 @@ func (s *TunnelConfigService) pushToClient(ctx context.Context, nodeID string, t
 }
 
 // decryptWebSSHPara decrypts sensitive fields in webssh Para for client delivery.
-func decryptWebSSHPara(para json.RawMessage, enc *crypto.SecretEncryptor) json.RawMessage {
+// Returns an error if any encrypted field fails to decrypt (secret mismatch / tampered),
+// so the caller can fail loudly instead of silently shipping ciphertext as credentials.
+func decryptWebSSHPara(para json.RawMessage, enc *crypto.SecretEncryptor) (json.RawMessage, error) {
 	var m map[string]any
 	if err := json.Unmarshal(para, &m); err != nil {
-		slog.Warn("decryptWebSSHPara: failed to unmarshal para", "error", err)
-		return para
+		return nil, fmt.Errorf("unmarshal para: %w", err)
 	}
-	changed := false
 	if v, ok := m["password"].(string); ok && crypto.IsEncrypted(v) {
-		decrypted := enc.Decrypt(v)
-		if crypto.IsEncrypted(decrypted) {
-			slog.Error("decryptWebSSHPara: failed to decrypt password")
+		decrypted, err := enc.Decrypt(v)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt password: %w", err)
 		}
 		m["password"] = decrypted
-		changed = true
 	}
 	if v, ok := m["priv_key"].(string); ok && crypto.IsEncrypted(v) {
-		decrypted := enc.Decrypt(v)
-		if crypto.IsEncrypted(decrypted) {
-			slog.Error("decryptWebSSHPara: failed to decrypt priv_key")
+		decrypted, err := enc.Decrypt(v)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt priv_key: %w", err)
 		}
 		m["priv_key"] = decrypted
-		changed = true
-	}
-	if !changed {
-		return para
 	}
 	out, err := json.Marshal(m)
 	if err != nil {
-		slog.Warn("decryptWebSSHPara: failed to marshal para", "error", err)
-		return para
+		return nil, fmt.Errorf("marshal para: %w", err)
 	}
-	return out
+	return out, nil
 }

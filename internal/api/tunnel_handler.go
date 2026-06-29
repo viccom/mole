@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -19,15 +20,21 @@ type TunnelHandler struct {
 	stats     core.TunnelStatsReader   // 运行时统计读取
 	limiter   ratelimit.GatewayLimiter // 限速配置读取
 	encryptor *crypto.SecretEncryptor  // 隧道凭证加密（nil=不加密）
+	controlSrv ControlServer           // 控制端口（隧道操作）
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor) *TunnelHandler {
+type ControlServer interface {
+	TriggerTunnelAction(ctx context.Context, nodeID, name, action string) error
+}
+
+func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor, controlSrv ControlServer) *TunnelHandler {
 	return &TunnelHandler{
-		nodeMgr:   nodeMgr,
-		tunnelSvc: tunnelSvc,
-		stats:     stats,
-		limiter:   limiter,
-		encryptor: encryptor,
+		nodeMgr:    nodeMgr,
+		tunnelSvc:  tunnelSvc,
+		stats:      stats,
+		limiter:    limiter,
+		encryptor:  encryptor,
+		controlSrv: controlSrv,
 	}
 }
 
@@ -511,6 +518,60 @@ func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 		"updated": len(results),
 		"items":   results,
 	})
+}
+
+// Action handles POST /api/v1/tunnels/{name}/action — trigger start/stop/restart on a client tunnel.
+func (h *TunnelHandler) Action(w http.ResponseWriter, r *http.Request) {
+	// Extract tunnel name from path: /api/v1/tunnels/{name}/action
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/tunnels/")
+	path = strings.TrimSuffix(path, "/action")
+	name := strings.TrimRight(path, "/")
+	if name == "" {
+		ResponseError(w, http.StatusBadRequest, 400, "Tunnel name required")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
+	var req struct {
+		Action string `json:"action"`
+		NodeID string `json:"node_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+	if req.Action == "" || req.NodeID == "" {
+		ResponseError(w, http.StatusBadRequest, 400, "action and node_id are required")
+		return
+	}
+	switch req.Action {
+	case "start", "stop", "restart":
+	default:
+		ResponseError(w, http.StatusBadRequest, 400, "action must be one of: start, stop, restart")
+		return
+	}
+
+	// 归属检查
+	claims := auth.GetClaims(r.Context())
+	if claims != nil && !IsAdmin(claims) {
+		node, ok := h.nodeMgr.Get(r.Context(), req.NodeID)
+		if !ok || node.OwnerUserID != claims.UserID {
+			ResponseError(w, http.StatusNotFound, 404, "Node not found")
+			return
+		}
+	}
+
+	if h.controlSrv == nil {
+		ResponseError(w, http.StatusInternalServerError, 500, "Control server not configured")
+		return
+	}
+
+	if err := h.controlSrv.TriggerTunnelAction(r.Context(), req.NodeID, name, req.Action); err != nil {
+		slog.Error("TriggerTunnelAction failed", "node", req.NodeID, "tunnel", name, "action", req.Action, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Action failed: "+err.Error())
+		return
+	}
+	ResponseOK(w, map[string]any{"status": "ok", "action": req.Action, "tunnel": name})
 }
 
 // encryptWebSSHPara encrypts sensitive fields (password, priv_key) in webssh Para.

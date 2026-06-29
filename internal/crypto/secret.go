@@ -59,29 +59,34 @@ func (e *SecretEncryptor) Encrypt(plaintext string) string {
 	return encPrefix + base64.StdEncoding.EncodeToString(ciphertext)
 }
 
-// Decrypt decrypts an "enc:<base64>" string. If the input is not encrypted
-// (no enc: prefix), it is returned as-is for backward compatibility.
-func (e *SecretEncryptor) Decrypt(encoded string) string {
+// Decrypt decrypts an "enc:<base64>" string.
+//   - Empty input returns ("", nil).
+//   - Input without the "enc:" prefix is treated as plaintext for backward
+//     compatibility and returned as-is with a nil error.
+//   - Input carrying the "enc:" prefix that fails to decode/decrypt returns an
+//     error (typically a secret mismatch or tampered ciphertext). Callers MUST
+//     surface this error instead of silently using the ciphertext as plaintext.
+func (e *SecretEncryptor) Decrypt(encoded string) (string, error) {
 	if encoded == "" {
-		return ""
+		return "", nil
 	}
 	if !strings.HasPrefix(encoded, encPrefix) {
-		return encoded // not encrypted, return as-is
+		return encoded, nil // plaintext, return as-is (backward compat)
 	}
 	raw, err := base64.StdEncoding.DecodeString(encoded[len(encPrefix):])
 	if err != nil {
-		return encoded // invalid base64, return as-is
+		return "", fmt.Errorf("invalid base64: %w", err)
 	}
 	nonceSize := e.aead.NonceSize()
 	if len(raw) < nonceSize {
-		return encoded // too short, return as-is
+		return "", fmt.Errorf("ciphertext too short: need at least %d bytes", nonceSize)
 	}
 	nonce, ciphertext := raw[:nonceSize], raw[nonceSize:]
 	plaintext, err := e.aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return encoded // decryption failed, return as-is
+		return "", fmt.Errorf("aes-gcm open failed (secret mismatch or tampered): %w", err)
 	}
-	return string(plaintext)
+	return string(plaintext), nil
 }
 
 // IsEncrypted returns true if the string has the encryption prefix.
