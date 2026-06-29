@@ -32,6 +32,32 @@ export interface NodeRateLimit {
   max_conns: number
 }
 
+export interface SysInfo {
+  os?: string
+  hostname?: string
+  uptime_seconds?: number
+  go_version?: string
+  agent_version?: string
+  num_cpu?: number
+  mem_total_mb?: number
+  mem_used_mb?: number
+}
+
+export interface ClientTunnelStatus {
+  name: string
+  type: string
+  running: boolean
+  connected?: boolean
+  serial_open?: boolean
+  mqtt_connected?: boolean
+  clients?: number
+  pid?: number
+  uptime_seconds?: number
+  bytes_in?: number
+  bytes_out?: number
+  error?: string
+}
+
 export interface Node {
   id: string
   name: string
@@ -44,6 +70,9 @@ export interface Node {
   token?: string
   tunnels?: Tunnel[]
   rate_limit?: NodeRateLimit
+  sysinfo?: SysInfo
+  client_statuses?: ClientTunnelStatus[]
+  rtt?: number
 }
 
 export interface PersistedNode {

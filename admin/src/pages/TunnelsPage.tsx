@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter, Gauge, Terminal } from 'lucide-react'
+import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter, Gauge, Terminal, Play, Pause, RotateCcw } from 'lucide-react'
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -213,6 +213,23 @@ export function TunnelsPage() {
       toast((err as Error).message || '切换状态失败', 'error')
     }
   }
+
+  const handleTunnelAction = async (tunnel: Tunnel, action: 'start' | 'stop' | 'restart') => {
+    if (!tunnel.node_id) {
+      toast('缺少节点信息，无法操作', 'error')
+      return
+    }
+    try {
+      await api.triggerTunnelAction(tunnel.node_id, tunnel.name, action)
+      const labels = { start: '启动', stop: '停止', restart: '重启' }
+      toast(`隧道${labels[action]}指令已发送`, 'success')
+      fetchData()
+    } catch (err: unknown) {
+      toast((err as Error).message || '操作失败', 'error')
+    }
+  }
+
+  const supportsAction = (type: string) => ['vpn-manager', 'ser2mq', 'ser2tcp', 'ser2udp'].includes(type)
 
   const typeBadgeVariant = (type: string): 'info' | 'purple' | 'warning' | 'cyan' | 'pink' => {
     if (type === 'http' || type === 'https') return 'info'
@@ -524,6 +541,40 @@ export function TunnelsPage() {
                     )}
                     <td className="px-6 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        {tunnel.type === 'vpn-manager' && tunnel.enabled && (
+                          <>
+                            <button
+                              onClick={() => handleTunnelAction(tunnel, 'start')}
+                              title="启动 VPN"
+                              className="p-1.5 text-gray-400 hover:text-emerald-600 rounded-md hover:bg-emerald-50"
+                            >
+                              <Play className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleTunnelAction(tunnel, 'stop')}
+                              title="停止 VPN"
+                              className="p-1.5 text-gray-400 hover:text-red-600 rounded-md hover:bg-red-50"
+                            >
+                              <Pause className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleTunnelAction(tunnel, 'restart')}
+                              title="重启 VPN"
+                              className="p-1.5 text-gray-400 hover:text-amber-600 rounded-md hover:bg-amber-50"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                        {supportsAction(tunnel.type) && tunnel.type !== 'vpn-manager' && tunnel.enabled && (
+                          <button
+                            onClick={() => handleTunnelAction(tunnel, 'restart')}
+                            title="重启隧道"
+                            className="p-1.5 text-gray-400 hover:text-amber-600 rounded-md hover:bg-amber-50"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                          </button>
+                        )}
                         {tunnel.type === 'webssh' && tunnel.enabled && (
                           <button
                             onClick={() => window.open(`/admin/webssh/${encodeURIComponent(tunnel.name)}`, '_blank')}

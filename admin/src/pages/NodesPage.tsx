@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus, Database, ArrowRightLeft } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus, Database, ArrowRightLeft, RotateCcw, Cpu, HardDrive, Clock, Monitor, Activity } from 'lucide-react'
 import { api } from '../api/client'
-import type { Node, PersistedNode, Tunnel } from '../types/api'
+import type { Node, PersistedNode, Tunnel, SysInfo, ClientTunnelStatus } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
 import { Badge } from '../components/Badge'
 import { Loading } from '../components/Loading'
@@ -10,7 +10,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { TunnelFormModal } from '../components/TunnelFormModal'
 import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
-import { formatTimeAgo } from '../lib/utils'
+import { formatTimeAgo, formatBytes } from '../lib/utils'
 
 export function NodesPage() {
   const { toast } = useToast()
@@ -503,6 +503,32 @@ export function NodesPage() {
   )
 }
 
+function rttColor(rtt: number): string {
+  if (rtt < 50) return 'text-emerald-600'
+  if (rtt < 200) return 'text-amber-600'
+  return 'text-red-600'
+}
+
+function rttBg(rtt: number): string {
+  if (rtt < 50) return 'bg-emerald-50'
+  if (rtt < 200) return 'bg-amber-50'
+  return 'bg-red-50'
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds <= 0) return '<1m'
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`
+}
+
+function formatMemUsed(sys: SysInfo): string {
+  if (!sys.mem_total_mb || !sys.mem_used_mb) return '-'
+  const pct = Math.round((sys.mem_used_mb / sys.mem_total_mb) * 100)
+  return `${sys.mem_used_mb}/${sys.mem_total_mb} MB (${pct}%)`
+}
+
 function NodeRowGroup({
   node,
   expanded,
@@ -523,6 +549,8 @@ function NodeRowGroup({
   const { toast } = useToast()
   const [nodeMaxConns, setNodeMaxConns] = useState(node.rate_limit?.max_conns?.toString() || '')
   const [savingRL, setSavingRL] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+  const [confirmRestart, setConfirmRestart] = useState(false)
 
   const handleSaveNodeRL = async () => {
     const val = Number(nodeMaxConns)
@@ -545,6 +573,20 @@ function NodeRowGroup({
       setSavingRL(false)
     }
   }
+
+  const handleRestart = async () => {
+    setRestarting(true)
+    setConfirmRestart(false)
+    try {
+      await api.restartNode(node.id, 0, 'manual restart from admin')
+      toast('重启指令已发送', 'success')
+    } catch (err: unknown) {
+      toast((err as Error).message || '重启失败', 'error')
+    } finally {
+      setRestarting(false)
+    }
+  }
+
   return (
     <>
       <tr className="hover:bg-gray-50/50">
@@ -559,24 +601,43 @@ function NodeRowGroup({
           {node.owner_user_id === 'system' ? '系统' : node.owner_user_id}
         </td>
         <td className="px-4 py-3">
-          <Badge variant={node.status === 'online' ? 'success' : 'error'}>
-            {node.status === 'online' ? '在线' : '离线'}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant={node.status === 'online' ? 'success' : 'error'}>
+              {node.status === 'online' ? '在线' : '离线'}
+            </Badge>
+            {node.status === 'online' && node.rtt != null && node.rtt > 0 && (
+              <span className={`inline-flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded-full ${rttBg(node.rtt)} ${rttColor(node.rtt)}`}>
+                {node.rtt}ms
+              </span>
+            )}
+          </div>
         </td>
         <td className="px-4 py-3 text-sm">{node.tunnel_count}</td>
         <td className="px-4 py-3 text-sm font-mono text-gray-500">{node.remote_addr || '-'}</td>
         <td className="px-4 py-3 text-sm text-gray-500">{formatTimeAgo(node.connected_at)}</td>
         <td className="px-4 py-3 text-sm text-gray-500">{formatTimeAgo(node.last_heartbeat)}</td>
         <td className="px-4 py-3 text-right">
-          {node.status !== 'online' && (
-            <button
-              onClick={onDelete}
-              title="删除离线节点"
-              className="p-1.5 text-gray-400 hover:text-red-600 rounded-md hover:bg-red-50"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          )}
+          <div className="flex items-center justify-end gap-1">
+            {node.status === 'online' && (
+              <button
+                onClick={() => setConfirmRestart(true)}
+                disabled={restarting}
+                title="重启客户端"
+                className="p-1.5 text-gray-400 hover:text-amber-600 rounded-md hover:bg-amber-50 disabled:opacity-50"
+              >
+                <RotateCcw className={`w-4 h-4 ${restarting ? 'animate-spin' : ''}`} />
+              </button>
+            )}
+            {node.status !== 'online' && (
+              <button
+                onClick={onDelete}
+                title="删除离线节点"
+                className="p-1.5 text-gray-400 hover:text-red-600 rounded-md hover:bg-red-50"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </td>
       </tr>
 
@@ -589,7 +650,99 @@ function NodeRowGroup({
                 {node.remote_addr && <span>来源 IP: <code className="text-xs bg-white px-1.5 py-0.5 rounded border">{node.remote_addr}</code></span>}
                 <span>连接时间: {formatTimeAgo(node.connected_at)}</span>
                 <span>最近心跳: {formatTimeAgo(node.last_heartbeat)}</span>
+                {node.rtt != null && node.rtt > 0 && (
+                  <span>RTT: <span className={`font-mono font-medium ${rttColor(node.rtt)}`}>{node.rtt}ms</span></span>
+                )}
               </div>
+
+              {/* 系统信息 */}
+              {node.sysinfo && (
+                <div className="bg-white rounded-lg border border-gray-200 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Monitor className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm font-medium text-gray-700">系统信息</span>
+                    {node.sysinfo.agent_version && (
+                      <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">v{node.sysinfo.agent_version}</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    {node.sysinfo.hostname && (
+                      <div className="flex items-center gap-2">
+                        <HardDrive className="w-3.5 h-3.5 text-gray-400" />
+                        <div>
+                          <div className="text-xs text-gray-400">主机名</div>
+                          <div className="text-sm font-medium">{node.sysinfo.hostname}</div>
+                        </div>
+                      </div>
+                    )}
+                    {node.sysinfo.os && (
+                      <div className="flex items-center gap-2">
+                        <Monitor className="w-3.5 h-3.5 text-gray-400" />
+                        <div>
+                          <div className="text-xs text-gray-400">系统</div>
+                          <div className="text-sm font-medium">{node.sysinfo.os}{node.sysinfo.num_cpu ? ` / ${node.sysinfo.num_cpu} CPU` : ''}</div>
+                        </div>
+                      </div>
+                    )}
+                    {node.sysinfo.mem_total_mb != null && node.sysinfo.mem_total_mb > 0 && (
+                      <div className="flex items-center gap-2">
+                        <Cpu className="w-3.5 h-3.5 text-gray-400" />
+                        <div>
+                          <div className="text-xs text-gray-400">内存</div>
+                          <div className="text-sm font-medium">{formatMemUsed(node.sysinfo)}</div>
+                        </div>
+                      </div>
+                    )}
+                    {node.sysinfo.uptime_seconds != null && (
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-3.5 h-3.5 text-gray-400" />
+                        <div>
+                          <div className="text-xs text-gray-400">运行时间</div>
+                          <div className="text-sm font-medium">{formatUptime(node.sysinfo.uptime_seconds)}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 客户端隧道状态 */}
+              {node.client_statuses && node.client_statuses.length > 0 && (
+                <div className="bg-white rounded-lg border border-gray-200 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Activity className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm font-medium text-gray-700">客户端隧道状态</span>
+                    <span className="text-xs text-gray-400">{node.client_statuses.filter(s => s.running).length}/{node.client_statuses.length} 运行中</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {node.client_statuses.map((cs, i) => (
+                      <div
+                        key={`${cs.name}-${i}`}
+                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-sm ${
+                          cs.running ? 'border-emerald-200 bg-emerald-50/50' : 'border-gray-200 bg-gray-50/50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${cs.running ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                          <span className="font-medium truncate">{cs.name}</span>
+                          <span className="text-xs text-gray-400 shrink-0">{cs.type}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
+                          {cs.running && cs.bytes_in != null && cs.bytes_out != null && (
+                            <span className="text-xs text-gray-400">{formatBytes(cs.bytes_in)}/{formatBytes(cs.bytes_out)}</span>
+                          )}
+                          {cs.running && cs.clients != null && cs.clients > 0 && (
+                            <span className="text-xs text-blue-500">{cs.clients}c</span>
+                          )}
+                          {cs.error && (
+                            <span className="text-xs text-red-500 truncate max-w-[80px]" title={cs.error}>{cs.error}</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -664,6 +817,17 @@ function NodeRowGroup({
             </div>
           </td>
         </tr>
+      )}
+
+      {confirmRestart && (
+        <ConfirmDialog
+          title="重启客户端"
+          message={`确定要向节点 "${node.name}" (${node.id.slice(0, 8)}) 发送重启指令吗？客户端将在收到指令后断开并重启。`}
+          confirmText="重启"
+          onConfirm={handleRestart}
+          onCancel={() => setConfirmRestart(false)}
+          danger
+        />
       )}
     </>
   )
