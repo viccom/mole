@@ -24,6 +24,12 @@ func HandleRawStream(stream io.ReadWriteCloser, br *bufio.Reader, findTarget fun
 	}
 	defer backendConn.Close()
 
+	// Disable Nagle's algorithm for low-latency interactive traffic (SSH/RDP),
+	// matching the tunnel-side setting in transport/dialer.go.
+	if tcpConn, ok := backendConn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
+
 	bufA := make([]byte, 1024*1024) // 1MB
 	bufB := make([]byte, 1024*1024)
 	done := make(chan struct{}, 2)
