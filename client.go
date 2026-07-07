@@ -692,7 +692,8 @@ func (c *Client) collectTunnelStatuses() []protocol.TunnelStatus {
 		case TunnelTypeWebSSH:
 			if stats, err := c.websshMgr.Status(t.Name); err == nil {
 				st.Running = stats.Running
-				st.Connected = stats.Running
+				st.Connected = stats.Sessions > 0
+				st.Clients = stats.Sessions
 			}
 		}
 		statuses = append(statuses, st)
@@ -1031,22 +1032,47 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 	}
 }
 
-// handleRestart 处理服务端远程重启请求
+// maxRestartDelay 服务端远程重启的最大延迟秒数，防止误配/恶意的过大值
+const maxRestartDelay = 300
+
+// handleRestart 处理服务端远程重启请求。
+//
+// 仅标记请求并延时中断主循环；资源回收由 main 在 Run 退出后通过 Close() 统一执行，
+// 随后 os.Exit 退出进程，由外部进程管理器（systemd/docker --restart 等）拉起以完成重启。
+// 这里不提前关闭 managers，避免与 main 的 Close() 重复关闭冲突。
 func (c *Client) handleRestart(stream *smux.Stream, delay int, reason string) {
+	// CAS 防重复：同一连接多次 restart 只生效一次
+	if !c.restartRequested.CompareAndSwap(false, true) {
+		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": "restart already in progress"})
+		stream.Write(resp)
+		return
+	}
+
+	// 限制延迟范围：负值立即执行，上限 maxRestartDelay 秒
+	if delay < 0 {
+		delay = 0
+	}
+	if delay > maxRestartDelay {
+		delay = maxRestartDelay
+	}
+
 	resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": fmt.Sprintf("restarting in %ds", delay)})
 	stream.Write(resp)
 
 	log.Printf("Server requested restart (delay=%ds, reason=%s)", delay, reason)
-	c.restartRequested.Store(true)
 
 	go func() {
 		time.Sleep(time.Duration(delay) * time.Second)
-		c.ser2mqMgr.Close()
-		c.ser2netMgr.Close()
-		c.vpnMgr.Close()
-		c.websshMgr.Close()
-		c.transport.Close() // triggers acceptLoop return → Run() exits
+		// 中断主循环：transport 关闭 → acceptLoop 返回 → Run() 因 restartRequested 退出。
+		// main 检测到 Run 退出后执行 Close + os.Exit，由外部拉起。
+		c.transport.Close()
 	}()
+}
+
+// RestartRequested 返回服务端是否请求了重启。
+// 供调用方（如 main）在 Run 退出后判断是否需要 os.Exit 以便外部进程管理器拉起。
+func (c *Client) RestartRequested() bool {
+	return c.restartRequested.Load()
 }
 
 // buildSer2MQConfigs 从当前隧道列表构建 ser2mq 配置 map
@@ -1225,7 +1251,7 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 		}
 	case TunnelTypeWebSSH:
 		if stats, err := c.websshMgr.Status(t.Name); err == nil {
-			ts.Connected = stats.Running
+			ts.Connected = stats.Sessions > 0
 			ts.BytesIn = stats.BytesIn
 			ts.BytesOut = stats.BytesOut
 			ts.Status = stats

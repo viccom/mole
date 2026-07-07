@@ -130,7 +130,13 @@ Examples:
 	defer cancel()
 
 	// 启动客户端
-	go client.Run(ctx)
+	runDone := make(chan struct{})
+	go func() {
+		if err := client.Run(ctx); err != nil {
+			log.Printf("Client Run error: %v", err)
+		}
+		close(runDone)
+	}()
 
 	// 启动内置 HTTP 服务
 	if cfg.BuiltinHTTP != "off" {
@@ -141,11 +147,23 @@ Examples:
 		}()
 	}
 
-	// 等待退出信号
+	// 等待退出信号，或客户端自行退出（服务端远程 restart 触发）
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	log.Printf("Received %s, shutting down...", sig)
+	select {
+	case sig := <-sigCh:
+		log.Printf("Received %s, shutting down...", sig)
+	case <-runDone:
+	}
+
+	if client.RestartRequested() {
+		// 服务端请求重启：退出进程，由外部进程管理器（systemd/docker 等）拉起完成重启
+		log.Println("Restart requested by server, exiting for supervisor relaunch")
+		cancel()
+		client.Close()
+		os.Exit(0)
+	}
+
 	cancel()
 	client.Close()
 	log.Println("Stopped.")
