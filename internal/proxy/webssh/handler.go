@@ -363,6 +363,11 @@ func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.
 			if err != nil {
 				return
 			}
+			if uploadFile != nil {
+				// 前一次上传未正常结束（协议交错），关闭旧句柄避免远程 fd 泄漏
+				slog.Warn("webssh upload overlap, closing previous unfinished upload", "name", h.name)
+				uploadFile.Close()
+			}
 			uploadFile = h.handleFileUploadReq(payload, sw)
 			uploadErr = nil
 

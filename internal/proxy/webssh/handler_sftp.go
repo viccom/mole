@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/pkg/sftp"
 )
@@ -53,6 +54,8 @@ func (h *Handler) handleFileReadReq(payload []byte, sw *mutexWriter) {
 			if writeErr != nil {
 				return
 			}
+			h.bytesIn.Add(uint64(n))
+			h.lastRxMs.Store(time.Now().UnixMilli())
 		}
 		if err == io.EOF {
 			break
@@ -194,7 +197,12 @@ func (h *Handler) handleFileUploadData(payload []byte, f *sftp.File) (int, error
 	if f == nil || len(payload) == 0 {
 		return 0, nil
 	}
-	return f.Write(payload)
+	n, err := f.Write(payload)
+	if n > 0 {
+		h.bytesOut.Add(uint64(n))
+		h.lastTxMs.Store(time.Now().UnixMilli())
+	}
+	return n, err
 }
 
 // handleFileUploadEnd 处理上传结束
@@ -266,6 +274,8 @@ func (h *Handler) handleFileDownloadReq(payload []byte, sw *mutexWriter) {
 			if writeErr != nil {
 				return
 			}
+			h.bytesIn.Add(uint64(n))
+			h.lastRxMs.Store(time.Now().UnixMilli())
 		}
 		if err == io.EOF {
 			break
