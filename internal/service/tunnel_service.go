@@ -35,20 +35,28 @@ type TunnelConfigService struct {
 	pusher    tunnelPusher
 	limiter   ratelimit.GatewayLimiter
 	encryptor *crypto.SecretEncryptor // nil = 不加解密
+	// longLivedCtx 是进程级 context，用于 TCP/UDP 监听器生命周期。
+	// 不能用请求级 ctx（如 r.Context()），否则 HTTP 请求返回后监听器 ctx 级联取消，
+	// 新连接的 sem.Acquire/waitBurst 立即失败，隧道建完即失效。
+	longLivedCtx context.Context
 }
 
 // NewTunnelConfigService creates a tunnel config service.
-func NewTunnelConfigService(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway routeIndexer, pusher tunnelPusher, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor) *TunnelConfigService {
+func NewTunnelConfigService(longLivedCtx context.Context, nodeMgr core.NodeManager, nodeRepo core.NodeRepo, gateway routeIndexer, pusher tunnelPusher, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor) *TunnelConfigService {
 	if limiter == nil {
 		limiter = ratelimit.NopLimiter{}
 	}
+	if longLivedCtx == nil {
+		longLivedCtx = context.Background()
+	}
 	return &TunnelConfigService{
-		nodeMgr:   nodeMgr,
-		nodeRepo:  nodeRepo,
-		gateway:   gateway,
-		pusher:    pusher,
-		limiter:   limiter,
-		encryptor: encryptor,
+		longLivedCtx: longLivedCtx,
+		nodeMgr:      nodeMgr,
+		nodeRepo:     nodeRepo,
+		gateway:      gateway,
+		pusher:       pusher,
+		limiter:      limiter,
+		encryptor:    encryptor,
 	}
 }
 
@@ -381,11 +389,11 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 				}
 				switch t.Type {
 				case core.TunnelTypeTCP:
-					if err := s.gateway.StartTCP(ctx, t); err != nil {
+					if err := s.gateway.StartTCP(s.longLivedCtx, t); err != nil {
 						slog.Error("Failed to start TCP listener", "tunnel", t.Name, "error", err)
 					}
 				case core.TunnelTypeUDP:
-					if err := s.gateway.StartUDP(ctx, t); err != nil {
+					if err := s.gateway.StartUDP(s.longLivedCtx, t); err != nil {
 						slog.Error("Failed to start UDP listener", "tunnel", t.Name, "error", err)
 					}
 				}

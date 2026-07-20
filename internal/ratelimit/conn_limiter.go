@@ -159,6 +159,18 @@ func (g *gatewayLimiterImpl) GlobalDefaults() (int, int, int64) {
 
 func (g *gatewayLimiterImpl) RemoveTunnel(sKey string) {
 	g.connMu.Lock()
+	// 扣减该隧道占用的节点级连接计数：残留活跃连接的 ReleaseConn 会因 gen 自增被跳过，
+	// 若不在此回扣，nodeConns 只增不减 → MaxConnsPerNode 被逐渐吃光 → 节点假死。
+	if idx := strings.Index(sKey, "/"); idx > 0 {
+		nodeID := sKey[:idx]
+		if t := g.tunnelConns[sKey]; t > 0 {
+			if n := g.nodeConns[nodeID] - t; n <= 0 {
+				delete(g.nodeConns, nodeID)
+			} else {
+				g.nodeConns[nodeID] = n
+			}
+		}
+	}
 	delete(g.tunnelConns, sKey)
 	delete(g.tunnelOverrides, sKey)
 	g.tunnelGens[sKey]++

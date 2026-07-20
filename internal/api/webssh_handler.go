@@ -289,17 +289,14 @@ func writeWebSSHMsg(w io.Writer, msgType byte, payload []byte) error {
 	if len(payload) > 65535 {
 		return fmt.Errorf("payload too large: %d bytes (max 65535)", len(payload))
 	}
-	var buf [3]byte
+	// 合并 header+payload 一次 Write：lockWriter.Write 单次调用即持锁覆盖整条帧，
+	// 避免心跳 goroutine 在 header 与 payload 两次 Write 之间插入 keepalive 帧撕裂协议。
+	buf := make([]byte, 3+len(payload))
 	buf[0] = msgType
 	binary.BigEndian.PutUint16(buf[1:3], uint16(len(payload)))
-
-	if _, err := w.Write(buf[:]); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-	if len(payload) > 0 {
-		if _, err := w.Write(payload); err != nil {
-			return fmt.Errorf("write payload: %w", err)
-		}
+	copy(buf[3:], payload)
+	if _, err := w.Write(buf); err != nil {
+		return fmt.Errorf("write webssh msg: %w", err)
 	}
 	return nil
 }

@@ -220,7 +220,7 @@ func main() {
 	}()
 
 	// --- 隧道配置服务（单一变更入口）---
-	tunnelSvc := service.NewTunnelConfigService(nodeMgr, nodeRepo, gateway, controlSrv, gatewayLimiter, tunnelEncryptor)
+	tunnelSvc := service.NewTunnelConfigService(ctx, nodeMgr, nodeRepo, gateway, controlSrv, gatewayLimiter, tunnelEncryptor)
 	controlSrv.SetTunnelConfigManager(tunnelSvc)
 
 	// --- 节点断开回调：清理隧道运行时资源（监听器、路由索引、统计）---

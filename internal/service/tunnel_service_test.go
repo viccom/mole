@@ -95,7 +95,7 @@ func TestApplyTunnel_PushFailureDoesNotFlipRuntime(t *testing.T) {
 	repo := newMockNodeRepo()
 	gateway := &mockGateway{}
 	pusher := &mockPusher{err: core.ErrNodeOffline}
-	svc := NewTunnelConfigService(nodeMgr, repo, gateway, pusher, nil, nil)
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, gateway, pusher, nil, nil)
 
 	online := &core.Node{
 		ID:     "Node0001",
@@ -153,7 +153,7 @@ func TestApplyTunnel_SuccessUpdatesRuntimeAndPersistence(t *testing.T) {
 	repo := newMockNodeRepo()
 	gateway := &mockGateway{}
 	pusher := &mockPusher{}
-	svc := NewTunnelConfigService(nodeMgr, repo, gateway, pusher, nil, nil)
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, gateway, pusher, nil, nil)
 
 	n := &core.Node{ID: "Node0002", Name: "Node0002", Status: core.NodeStatusOnline}
 	if err := nodeMgr.Add(ctx, n); err != nil {
@@ -191,7 +191,7 @@ func TestLoadPersisted_PushFailureKeepsRuntimeState(t *testing.T) {
 	repo := newMockNodeRepo()
 	gateway := &mockGateway{}
 	pusher := &mockPusher{err: core.ErrNodeOffline}
-	svc := NewTunnelConfigService(nodeMgr, repo, gateway, pusher, nil, nil)
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, gateway, pusher, nil, nil)
 
 	if err := nodeMgr.Add(ctx, &core.Node{
 		ID:     "Node0003",
@@ -233,7 +233,7 @@ func TestLoadPersisted_SuccessRecoversRuntimeAfterReconnect(t *testing.T) {
 	repo := newMockNodeRepo()
 	gateway := &mockGateway{}
 	pusher := &mockPusher{}
-	svc := NewTunnelConfigService(nodeMgr, repo, gateway, pusher, nil, nil)
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, gateway, pusher, nil, nil)
 
 	if err := nodeMgr.Add(ctx, &core.Node{
 		ID:      "Node0004",
@@ -280,7 +280,7 @@ func TestReplaceTunnels_DisabledTCPStopsListenerAndClearsStats(t *testing.T) {
 	repo := newMockNodeRepo()
 	stats := &mockStatsReader{}
 	gateway := &mockGateway{stats: stats}
-	svc := NewTunnelConfigService(nodeMgr, repo, gateway, nil, nil, nil)
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, gateway, nil, nil, nil)
 
 	enabled := true
 	disabled := false
