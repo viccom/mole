@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	_ "net/http/pprof" // 注册 /debug/pprof；通过 -debug 端口暴露，主服务卡死时可抓 goroutine 堆栈
 	"os"
 	"os/signal"
 	"runtime"
@@ -45,6 +46,7 @@ func main() {
 	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)")
 	tunnelsFlag := flag.Bool("tunnels", false, "隧道管理子命令 (见: moleagent-client -tunnels -h)")
 	versionFlag := flag.Bool("version", false, "打印版本信息并退出")
+	debugFlag := flag.String("debug", "", "pprof 调试 HTTP 监听地址 (默认 off，如 127.0.0.1:59871)")
 	flag.CommandLine.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: moleagent-client [options]
 
@@ -143,6 +145,17 @@ Examples:
 		go func() {
 			if err := builtin.StartHTTPServer(cfg.BuiltinHTTP, client); err != nil {
 				log.Fatalf("Built-in HTTP server error: %v", err)
+			}
+		}()
+	}
+
+	// 启动 pprof 调试服务（独立端口 + DefaultServeMux，不污染内置 API）
+	// 主服务卡死时仍可经此端口抓 goroutine 堆栈定位 busy-loop
+	if *debugFlag != "" {
+		go func() {
+			log.Printf("Debug (pprof) server listening on %s", *debugFlag)
+			if err := http.ListenAndServe(*debugFlag, nil); err != nil {
+				log.Printf("Debug (pprof) server error: %v", err)
 			}
 		}()
 	}

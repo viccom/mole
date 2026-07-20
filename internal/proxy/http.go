@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -225,19 +226,30 @@ func handleWebSocket(stream io.ReadWriteCloser, req *http.Request, target, tunne
 	}
 
 	buf := make([]byte, 1024*1024)
-	done := make(chan struct{}, 2)
+	// 任一侧结束即解除双方阻塞，避免 WebSocket 半关时另一侧 io.Copy 永久挂起泄漏
+	done := make(chan struct{})
+	var once sync.Once
+	closeDone := func() { once.Do(func() { close(done) }) }
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer wg.Done()
+		defer closeDone()
 		n, _ := io.CopyBuffer(backendConn, stream, buf)
 		AddHTTPBytes(tunnelName, 0, uint64(n))
 	}()
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer wg.Done()
+		defer closeDone()
 		n, _ := io.CopyBuffer(stream, br, buf)
 		AddHTTPBytes(tunnelName, uint64(n), 0)
 	}()
 	<-done
-	<-done
+	backendConn.Close()
+	if sd, ok := stream.(interface{ SetReadDeadline(time.Time) error }); ok {
+		sd.SetReadDeadline(time.Now())
+	}
+	wg.Wait()
 }
 
 // matchHTTPTunnel 匹配 HTTP 隧道目标

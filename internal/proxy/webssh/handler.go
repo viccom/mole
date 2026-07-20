@@ -287,6 +287,27 @@ func (h *Handler) buildHostKeyCallback() ssh.HostKeyCallback {
 	}
 }
 
+// writeStdinWithTimeout 写 SSH stdin，带超时保护。
+// 远端进程不读 stdin（yes/find/tar 等）或网络反压时，stdin.Write 会因 SSH channel window
+// 耗尽而永久阻塞，导致 readLoop 卡死 → close(done) 不触发 → session.Wait 也卡 → HandleStream
+// select 永不退出 → defer session.Close() 永不执行（goroutine+session+stream 泄漏）。
+// 超时返回让 readLoop 退出，触发 close(done) → select 退出 → defer session.Close() 解互锁，
+// 同时唤醒仍在 stdin.Write 阻塞的内部 goroutine（stdin pipe 关闭后 Write 返回错误）。
+func writeStdinWithTimeout(stdin io.Writer, payload []byte) error {
+	const timeout = 30 * time.Second
+	done := make(chan error, 1)
+	go func() {
+		_, err := stdin.Write(payload)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("write stdin timeout after %s", timeout)
+	}
+}
+
 // readLoop 从 smux 流读取消息，解析类型后分发
 func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.Session, sw *mutexWriter) {
 	var uploadFile *sftp.File
@@ -315,7 +336,7 @@ func (h *Handler) readLoop(stream io.Reader, stdin io.WriteCloser, session *ssh.
 			if len(payload) == 0 {
 				continue
 			}
-			if _, err := stdin.Write(payload); err != nil {
+			if err := writeStdinWithTimeout(stdin, payload); err != nil {
 				slog.Debug("webssh write stdin error", "name", h.name, "error", err)
 				return
 			}
