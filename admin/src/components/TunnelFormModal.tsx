@@ -113,8 +113,12 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
   const [sshPort, setSshPort] = useState(tunnel?.para?.port?.toString() || '22')
   const [sshUser, setSshUser] = useState(tunnel?.para?.user || 'root')
   const [sshAuthType, setSshAuthType] = useState<'password' | 'key'>(tunnel?.para?.auth_type || 'password')
-  const [sshPassword, setSshPassword] = useState(tunnel?.para?.password || '')
-  const [sshPrivKey, setSshPrivKey] = useState(tunnel?.para?.priv_key || '')
+  // 编辑回显：enc: 开头是服务端加密的密文，不回填到输入框（避免密文乱码困扰）；
+  // 留空提交时从原 para 取回，由后端幂等保留（见 buildPara）。
+  const sshPwdSaved = tunnel?.para?.password?.startsWith('enc:') ?? false
+  const sshKeySaved = tunnel?.para?.priv_key?.startsWith('enc:') ?? false
+  const [sshPassword, setSshPassword] = useState(sshPwdSaved ? '' : (tunnel?.para?.password || ''))
+  const [sshPrivKey, setSshPrivKey] = useState(sshKeySaved ? '' : (tunnel?.para?.priv_key || ''))
 
   const [submitting, setSubmitting] = useState(false)
 
@@ -210,9 +214,9 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         user: sshUser,
         auth_type: sshAuthType,
         // 两字段都发：切换 auth_type 时保留各自凭证，避免反复重填。
-        // 空值（undefined）不下发；编辑回显的密文 enc: 由后端幂等处理。
-        password: sshPassword || undefined,
-        priv_key: sshPrivKey || undefined,
+        // 编辑时若用户未改（state 为空），从原 para 取回密文下发，由后端幂等保留。
+        password: sshPassword || tunnel?.para?.password || undefined,
+        priv_key: sshPrivKey || tunnel?.para?.priv_key || undefined,
       }
     }
     return undefined
@@ -874,7 +878,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
                   type="password"
                   value={sshPassword}
                   onChange={e => setSshPassword(e.target.value)}
-                  placeholder="SSH 密码"
+                  placeholder={sshPwdSaved ? '已保存，留空保持不变' : 'SSH 密码'}
                   className={inputClass}
                 />
               </FormField>
@@ -883,7 +887,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
                 <textarea
                   value={sshPrivKey}
                   onChange={e => setSshPrivKey(e.target.value)}
-                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                  placeholder={sshKeySaved ? '已保存，留空保持不变' : '-----BEGIN OPENSSH PRIVATE KEY-----'}
                   className={inputClass + ' h-32 font-mono text-xs'}
                 />
               </FormField>
