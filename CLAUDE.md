@@ -27,11 +27,19 @@ internal/
     serial.go                串口抽象层（copy-and-release）
     manager.go               多隧道生命周期管理
     stream.go                SSE 事件发布/订阅中心
+  proxy/ser2net/
+    handler.go               核心处理器：串口↔TCP/UDP（Server/Client 双模式，本地透传）
+    tcp.go / udp.go          TCP/UDP 收发
+    manager.go               多隧道生命周期管理
   proxy/vpn/
     config.go                配置结构 + BuildArgs() 动态参数构建
     manager.go               多隧道生命周期管理
     process.go               进程管理：启停、崩溃检测、日志采集
     vnt_client.go            vnt-cli REST API 客户端
+  proxy/webssh/
+    handler.go               SSH 连接/会话桥接 + TOFU 主机密钥
+    handler_sftp.go          SFTP 文件操作（列表/上传/下载/删除/读取）
+    manager.go               多隧道生命周期管理
   builtin/
     server.go                内置 HTTP 服务 + REST API
     static/                  前端（ES Module 模块化，go:embed 嵌入）
@@ -42,12 +50,14 @@ internal/
 | 类型 | 说明 |
 |------|------|
 | `http` | HTTP/WebSocket 代理 |
+| `https` | HTTPS 代理（转发到 HTTPS 后端） |
 | `tcp` | TCP 透明转发 |
 | `udp` | UDP 透明转发 |
 | `ser2mq` | 串口 ↔ MQTT（ChaCha20-Poly1305-X 加密） |
 | `ser2tcp` | 串口 ↔ TCP（Server/Client 双模式，本地透传，不参与路由） |
 | `ser2udp` | 串口 ↔ UDP（Server/Client 双模式，本地透传，不参与路由） |
 | `vpn-manager` | VPN 程序启停监视 |
+| `webssh` | WebSSH 远程终端 + SFTP（TOFU 主机密钥） |
 
 ## 统一 API
 
@@ -68,8 +78,29 @@ internal/
 | GET | `/api/tunnels/:name/stream` | SSE 实时数据流（ser2mq） |
 | GET | `/api/status` | 客户端全局状态 |
 | GET | `/api/version` | 版本与系统信息 |
+| GET | `/api/check-update` | 检测新版本 |
+| POST | `/api/self-update` | 自动升级并重启 |
 
 `TunnelStatus` 合并配置 + 运行时状态（connected、bytes_in/out、类型特定 status）。
+webssh 隧道无专属 REST 端点：运行时状态（sessions、bytes、last_rx/tx）合并进 `GET /api/tunnels`，终端与文件数据走 smux 流（dispatchStream 的 `0x01` 协议头）。
+服务端可通过 `tunnel_action` 命令远程对 vpn-manager/ser2mq/ser2tcp/ser2udp 执行 start/stop/restart（http/tcp/udp/webssh 不支持远程 action）。
+
+## 控制协议命令
+
+客户端 ↔ 服务端通过 smux 流交换 JSON 控制命令（`protocol.ControlCmd.Cmd`）：
+
+| 方向 | 命令 | 说明 |
+|------|------|------|
+| C→S | `register` | 注册节点（携带 tunnels + sysinfo） |
+| C→S | `ping` / S→C `pong` | 心跳，携带 ts 计算 RTT |
+| C→S | `sysinfo` | 周期上报系统信息（每 5 次心跳） |
+| C→S | `tunnel_status` | 周期上报各隧道运行时状态（每 2 次心跳） |
+| C→S | `tunnel_update` | 本地变更写服务端持久化 |
+| S→C | `tunnel_push` | 全量替换客户端 `tunnels[]` |
+| S→C | `tunnel_action` | 远程 start/stop/restart（vpn-manager/ser2mq/ser2tcp/ser2udp） |
+| S→C | `restart` | 远程重启（CAS 防重复，delay 上限 300s，仅标记由 supervisor 拉起） |
+
+响应统一经 `readResponse()` 读取（单次读，仅适用于简短 ack）。
 
 ## 隧道配置数据流（⚠️ 重要）
 
@@ -77,7 +108,7 @@ internal/
 
 ### 双向同步路径
 
-- **服务端→客户端**：管理后台修改 → 服务端 `tunnel_push` JSON → `handlePossiblePush()` 直接替换 `tunnels[]` → `notifyManagers()`
+- **服务端→客户端**：管理后台修改 → 服务端 `tunnel_push` JSON → `dispatchStream()` 首字节 `{` 路由到 `handleServerCmd()` → 直接替换 `tunnels[]` → `notifyManagers()`
 - **客户端→服务端**：本地 API 操作 → `AddTunnel()`/`RemoveTunnel()` → `tunReqs` channel → `processTunnelUpdates()` 序列化处理 → `sendTunnelUpdate()` 发服务端持久化 → 成功后更新内存 → `notifyManagers()`
 
 ### 变更处理流水线
@@ -87,7 +118,7 @@ applyTunnelMutation() 在快照上执行增/删/替换
   → sendTunnelUpdate() 写服务端
     → 失败：内存不更新，Manager 不通知，返回错误
     → 成功：更新内存 tunnels[]
-      → notifyManagers() 分发到 ser2mq/vpn Manager
+      → notifyManagers() 分发到 ser2mq/ser2net/vpn/webssh Manager
         → Manager.OnTunnelUpdate() 比对新旧 map，增量启停
 ```
 
@@ -97,7 +128,9 @@ applyTunnelMutation() 在快照上执行增/删/替换
 
 遍历 tunnels 列表，按类型提取配置：
 - ser2mq：`json.Unmarshal(Para)` → `Ser2MQConfig` → `ser2mqMgr.OnTunnelUpdate(configs map)`
-- vpn：`json.Unmarshal(Para)` → `vpn.Config` → `vpnMgr.OnTunnelUpdate(names, configs map)`
+- ser2tcp/ser2udp：`json.Unmarshal(Para)` → `ser2net.Ser2NetConfig` → `ser2netMgr.OnTunnelUpdate(configs map)`
+- vpn-manager：`json.Unmarshal(Para)` → `vpn.Config` → `vpnMgr.OnTunnelUpdate(names, configs map)`
+- webssh：`json.Unmarshal(Para)` → `WebSSHConfig` → `websshMgr.OnTunnelUpdate(configs map)`
 - disabled 的隧道不进入 configs map，Manager 检测到"消失"会停止对应处理器/进程
 
 ### ⚠️ 易出错点
@@ -106,7 +139,7 @@ applyTunnelMutation() 在快照上执行增/删/替换
 2. **Para 的 enable 字段可能缺失**：服务端存储的 Para 可能不含 `enable` 字段，Go `json.Unmarshal` 默认 bool 为 false。`notifyManagers()` 中必须用 `cfg.Enable = t.IsEnabled()` 同步，`IsEnabled()` 将 nil Para 视为 true
 3. **前端 buildPara 必须包含所有字段**：编辑 ser2mq/vpn 隧道时，即使某些字段未在表单中显示，也要原样传回（如 secret、qos、stopbits、lifecycle 等），否则服务端存储会丢失字段
 4. **VPN BuildArgs 优先级**：`vnt.enabled == true` 时 `BuildArgs()` 从结构化 VNT 配置动态构建命令行，忽略静态 `args` 数组；否则使用 `args`
-5. **dispatchStream 启发式路由**：首字节 `{` 且含 `cmd:"tunnel_push"` → 控制推送；`\x00` → TCP/UDP 代理头；可解析 HTTP → HTTP 代理；fallback → 原始转发
+5. **dispatchStream 启发式路由**：首字节 `{` → 控制命令（`handleServerCmd` 处理 tunnel_push/tunnel_action/restart）；`\x00` → TCP/UDP 代理头；`\x01` → WebSSH 协议头；可解析 HTTP → HTTP 代理；fallback → 原始转发
 
 ## 关键约定
 
@@ -122,6 +155,9 @@ applyTunnelMutation() 在快照上执行增/删/替换
 10. **静态文件服务**：`fs.Sub(staticFS, "static")` + `StripPrefix`，支持多文件 embed
 11. **VPN 程序查找**：`./vnet/` → `$PATH`
 12. **HTTP 路由匹配优先级**：路径前缀精确匹配 → 虚拟主机约定（`name-nodeId.domain`）→ 兜底
+13. **WebSSH 主机密钥**：优先加载可执行文件同目录 `config/known_hosts`；不存在时 TOFU（首次信任，缓存跨连接复用，进程重启首次仍信任）
+14. **WebSSH 消息协议**：`[type 1B][len 2B BE][payload]`，type 见 `handler.go` 常量（终端数据/resize/心跳/文件操作），payload 上限 65535 字节
+15. **WebSSH 凭据**：password/key 明文存于 Para 并发服务端（同 ser2mq secret 设计，私钥更敏感）
 
 ## 开发约束
 

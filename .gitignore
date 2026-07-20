@@ -14,3 +14,7 @@ moleAgent_client
 Thumbs.db
 .worktrees/
 .omc/
+
+# 工具产物（claude code / claude-flow）
+.claude/
+.claude-flow/
