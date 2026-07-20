@@ -3,9 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"golang.org/x/crypto/ssh"
 
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
@@ -249,9 +252,15 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Para:       req.Para,
 	}
 
-	// 加密 webssh 凭证
-	if tunnelType == "webssh" && h.encryptor != nil && len(req.Para) > 0 {
-		newTunnel.Para = encryptWebSSHPara(req.Para, h.encryptor)
+	// 校验 webssh 配置（auth_type / 私钥格式），再加密凭证
+	if tunnelType == "webssh" && len(req.Para) > 0 {
+		if err := validateWebSSHPara(req.Para); err != nil {
+			ResponseError(w, http.StatusBadRequest, 400, err.Error())
+			return
+		}
+		if h.encryptor != nil {
+			newTunnel.Para = encryptWebSSHPara(req.Para, h.encryptor)
+		}
 	}
 
 	if h.tunnelSvc == nil {
@@ -572,6 +581,39 @@ func (h *TunnelHandler) Action(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ResponseOK(w, map[string]any{"status": "ok", "action": req.Action, "tunnel": name})
+}
+
+// validateWebSSHPara 校验 webssh 隧道 Para 的合法性：
+//   - auth_type 必须是 password 或 key
+//   - key 认证时，明文 priv_key（非 enc: 密文）必须能被 ssh.ParsePrivateKey 解析，
+//     避免误填公钥/损坏 PEM 直到客户端 SSH 握手才报错
+//
+// 密文 priv_key（enc: 前缀，编辑回显原样回传）跳过格式校验——首次创建时已校验。
+// password 必填校验由客户端 Validate 兜底，这里不重复。
+func validateWebSSHPara(para json.RawMessage) error {
+	var m map[string]any
+	if err := json.Unmarshal(para, &m); err != nil {
+		return fmt.Errorf("invalid webssh para: %w", err)
+	}
+	authType, _ := m["auth_type"].(string)
+	switch authType {
+	case "password":
+		// password 必填由客户端 Validate 兜底
+	case "key":
+		pk, _ := m["priv_key"].(string)
+		if pk == "" {
+			return fmt.Errorf("webssh: priv_key is required for key auth")
+		}
+		if crypto.IsEncrypted(pk) {
+			return nil // 密文（编辑回显原样回传），首次创建已校验
+		}
+		if _, err := ssh.ParsePrivateKey([]byte(pk)); err != nil {
+			return fmt.Errorf("webssh priv_key 不是合法私钥（是否误填了公钥？）: %w", err)
+		}
+	default:
+		return fmt.Errorf("webssh: auth_type must be 'password' or 'key'")
+	}
+	return nil
 }
 
 // encryptWebSSHPara encrypts sensitive fields (password, priv_key) in webssh Para.

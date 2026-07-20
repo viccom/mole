@@ -209,8 +209,10 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         port: Number(sshPort) || 22,
         user: sshUser,
         auth_type: sshAuthType,
-        password: sshAuthType === 'password' ? sshPassword : undefined,
-        priv_key: sshAuthType === 'key' ? sshPrivKey : undefined,
+        // 两字段都发：切换 auth_type 时保留各自凭证，避免反复重填。
+        // 空值（undefined）不下发；编辑回显的密文 enc: 由后端幂等处理。
+        password: sshPassword || undefined,
+        priv_key: sshPrivKey || undefined,
       }
     }
     return undefined
