@@ -117,7 +117,7 @@ func validateTunnels(tunnels []core.Tunnel) error {
 
 const (
 	maxConnsUpperBound     = 100000
-	maxBandwidthUpperBound = 10737418240 // 10 GB/s
+	maxBandwidthUpperBound int64 = 10737418240 // 10 GB/s (显式 int64，避免 32-bit 平台 int 溢出)
 )
 
 // validateRateLimit 校验限速配置（拒绝零值/负值/极大值）
