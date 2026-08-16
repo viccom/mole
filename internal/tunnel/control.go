@@ -42,24 +42,24 @@ func isValidNodeID(id string) bool {
 
 // ControlProtocol 命令类型
 type ControlCmd struct {
-	Cmd      string          `json:"cmd"`               // register, ping, tunnel_update, tunnel_status, sysinfo, tunnel_action, restart
-	NodeID   string          `json:"node_id,omitempty"` // 注册时使用
-	Name     string          `json:"name,omitempty"`    // 节点名称 / 隧道名称
-	Token    string          `json:"token,omitempty"`   // 节点令牌
-	Tunnels  []core.Tunnel   `json:"tunnels,omitempty"` // 隧道配置
-	Ts       int64           `json:"ts,omitempty"`            // Unix 毫秒（ping RTT）
-	Action   string          `json:"action,omitempty"`        // tunnel_action: start/stop/restart
-	Delay    int             `json:"delay_seconds,omitempty"` // restart 延迟秒数
-	Reason   string          `json:"reason,omitempty"`        // restart 原因
-	Statuses []TunnelStatus  `json:"statuses,omitempty"`      // tunnel_status 上报
-	SysInfo  *SysInfo        `json:"sysinfo,omitempty"`       // 系统信息上报
+	Cmd      string         `json:"cmd"`                     // register, ping, tunnel_update, tunnel_status, sysinfo, tunnel_action, restart
+	NodeID   string         `json:"node_id,omitempty"`       // 注册时使用
+	Name     string         `json:"name,omitempty"`          // 节点名称 / 隧道名称
+	Token    string         `json:"token,omitempty"`         // 节点令牌
+	Tunnels  []core.Tunnel  `json:"tunnels,omitempty"`       // 隧道配置
+	Ts       int64          `json:"ts,omitempty"`            // Unix 毫秒（ping RTT）
+	Action   string         `json:"action,omitempty"`        // tunnel_action: start/stop/restart
+	Delay    int            `json:"delay_seconds,omitempty"` // restart 延迟秒数
+	Reason   string         `json:"reason,omitempty"`        // restart 原因
+	Statuses []TunnelStatus `json:"statuses,omitempty"`      // tunnel_status 上报
+	SysInfo  *SysInfo       `json:"sysinfo,omitempty"`       // 系统信息上报
 }
 
 type ControlResponse struct {
 	Cmd  string          `json:"cmd"` // ok, pong, err
 	Msg  string          `json:"msg,omitempty"`
-	Ts   int64           `json:"ts,omitempty"`    // 原样回传（ping RTT）
-	Data json.RawMessage `json:"data,omitempty"`  // 结构化数据
+	Ts   int64           `json:"ts,omitempty"`   // 原样回传（ping RTT）
+	Data json.RawMessage `json:"data,omitempty"` // 结构化数据
 }
 
 // TunnelStatus 客户端上报的隧道运行时状态
@@ -159,18 +159,18 @@ func (s *connState) get() *core.Node {
 
 // ControlServer 控制端口服务
 type ControlServer struct {
-	addr            string
-	transport       Transport                 // 传输层（TCP/TLS/KCP/WS 等）
-	extraTargets    []listenTarget             // 额外传输层监听
-	nodeMgr         *node.ShardedNodeManager
-	nodeToken       string                    // 全局节点认证令牌（兼容期保留）
-	authenticator   core.NodeAccessAuthenticator // 用户级 token 认证服务
-	listener        net.Listener
-	listeners       []net.Listener             // 所有活跃 listener（含 primary）
-	onNodeChange    func()        // 节点变更回调
+	addr             string
+	transport        Transport      // 传输层（TCP/TLS/KCP/WS 等）
+	extraTargets     []listenTarget // 额外传输层监听
+	nodeMgr          *node.ShardedNodeManager
+	nodeToken        string                       // 全局节点认证令牌（兼容期保留）
+	authenticator    core.NodeAccessAuthenticator // 用户级 token 认证服务
+	listener         net.Listener
+	listeners        []net.Listener                             // 所有活跃 listener（含 primary）
+	onNodeChange     func()                                     // 节点变更回调
 	onNodeDisconnect func(nodeID string, tunnels []core.Tunnel) // 节点断开回调
-	nodeRepo        core.NodeRepo // 隧道持久化仓库
-	tunnelSvc       core.TunnelConfigManager
+	nodeRepo         core.NodeRepo                              // 隧道持久化仓库
+	tunnelSvc        core.TunnelConfigManager
 }
 
 type listenTarget struct {
@@ -458,12 +458,39 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 	}()
 }
 
+// maxControlMsgSize 单条控制消息的大小上限，防止异常客户端耗尽服务端内存
+const maxControlMsgSize = 1 << 20 // 1MB
+
+// readControlMsg 从流中读取一条完整的 JSON 控制消息。
+// 每条流仅承载一条消息；新版写侧以 '\n' 结尾（writeJSONLine），
+// 同时兼容旧客户端无换行的裸 JSON：每读到一批数据就尝试解析，
+// 解析成功即视为消息完整。修复旧实现单次 Read 假设整条消息
+// 一次到达导致的分包失败 / 4KB 截断问题。
+func readControlMsg(r io.Reader, maxSize int) ([]byte, error) {
+	buf := make([]byte, 0, 4096)
+	chunk := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(chunk)
+		if n > 0 {
+			buf = append(buf, chunk[:n]...)
+			if len(buf) > maxSize {
+				return nil, fmt.Errorf("control message too large: %d bytes", len(buf))
+			}
+			if json.Valid(buf) {
+				return buf, nil
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
 func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, state *connState) {
 	defer stream.Close()
 
-	buf := make([]byte, 4096)
 	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
-	n, err := stream.Read(buf)
+	data, err := readControlMsg(stream, maxControlMsgSize)
 	if err != nil {
 		slog.Debug("Stream read error", "error", err)
 		return
@@ -471,7 +498,7 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 	stream.SetReadDeadline(time.Time{})
 
 	var cmd ControlCmd
-	if err := json.Unmarshal(buf[:n], &cmd); err != nil {
+	if err := json.Unmarshal(data, &cmd); err != nil {
 		writeControlResp(stream, "err", "invalid json")
 		return
 	}
@@ -656,14 +683,13 @@ func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tun
 
 	// 等待客户端响应
 	stream.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, 4096)
-	n, err := stream.Read(buf)
+	raw, err := readControlMsg(stream, maxControlMsgSize)
 	if err != nil {
 		return false
 	}
 
 	var resp ControlResponse
-	return json.Unmarshal(buf[:n], &resp) == nil && resp.Cmd == "ok"
+	return json.Unmarshal(raw, &resp) == nil && resp.Cmd == "ok"
 }
 
 // writeControlResp 向控制流写入 JSON 响应行
@@ -835,15 +861,14 @@ func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tu
 		return fmt.Errorf("send tunnel_push: %w", err)
 	}
 
-	buf := make([]byte, 4096)
 	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
-	nr, err := stream.Read(buf)
+	raw, err := readControlMsg(stream, maxControlMsgSize)
 	if err != nil {
 		return fmt.Errorf("read tunnel_push response: %w", err)
 	}
 
 	var resp ControlResponse
-	if err := json.Unmarshal(buf[:nr], &resp); err != nil {
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		return fmt.Errorf("parse tunnel_push response: %w", err)
 	}
 	if resp.Cmd != "ok" {
