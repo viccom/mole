@@ -46,8 +46,8 @@ type Client struct {
 	mu      sync.RWMutex
 	tunnels []Tunnel
 
-	ctrlMu  sync.Mutex        // 控制命令发送锁
-	tunReqs chan tunnelReq    // 隧道更新请求队列
+	ctrlMu  sync.Mutex     // 控制命令发送锁
+	tunReqs chan tunnelReq // 隧道更新请求队列
 	cancel  context.CancelFunc
 
 	restartRequested atomic.Bool // 服务端请求重启，Run() 不再重连
@@ -75,9 +75,9 @@ const (
 
 type tunnelMutation struct {
 	kind    tunnelMutationKind
-	tunnel   Tunnel
-	name     string
-	tunnels  []Tunnel
+	tunnel  Tunnel
+	name    string
+	tunnels []Tunnel
 }
 
 type tunnelReq struct {
@@ -904,8 +904,7 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 		log.Printf("Received tunnel_push from server: %d tunnel(s)", len(tunnels))
 		c.events.Emit(Event{Type: EventTunnelUpdated, Data: map[string]any{"tunnels": len(tunnels)}})
 
-		resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": "tunnels updated"})
-		stream.Write(resp)
+		writeResp(stream, "ok", "tunnels updated")
 
 		// 配置变更后上报最新隧道状态
 		go c.sendTunnelStatus()
@@ -941,8 +940,7 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 	c.mu.RUnlock()
 
 	if !found {
-		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": "tunnel not found: " + name})
-		stream.Write(resp)
+		writeResp(stream, "err", "tunnel not found: "+name)
 		return
 	}
 
@@ -1023,12 +1021,10 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 	}
 
 	if err != nil {
-		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": err.Error()})
-		stream.Write(resp)
+		writeResp(stream, "err", err.Error())
 	} else {
 		log.Printf("Tunnel action: %s %s (type=%s)", action, name, tunnelType)
-		resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": action + " done"})
-		stream.Write(resp)
+		writeResp(stream, "ok", action+" done")
 	}
 }
 
@@ -1043,8 +1039,7 @@ const maxRestartDelay = 300
 func (c *Client) handleRestart(stream *smux.Stream, delay int, reason string) {
 	// CAS 防重复：同一连接多次 restart 只生效一次
 	if !c.restartRequested.CompareAndSwap(false, true) {
-		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": "restart already in progress"})
-		stream.Write(resp)
+		writeResp(stream, "err", "restart already in progress")
 		return
 	}
 
@@ -1056,8 +1051,7 @@ func (c *Client) handleRestart(stream *smux.Stream, delay int, reason string) {
 		delay = maxRestartDelay
 	}
 
-	resp, _ := json.Marshal(map[string]string{"cmd": "ok", "msg": fmt.Sprintf("restarting in %ds", delay)})
-	stream.Write(resp)
+	writeResp(stream, "ok", fmt.Sprintf("restarting in %ds", delay))
 
 	log.Printf("Server requested restart (delay=%ds, reason=%s)", delay, reason)
 
@@ -1120,12 +1114,45 @@ func (c *Client) sleep(ctx context.Context, d time.Duration) {
 
 // ===== 协议工具函数 =====
 
+// maxControlMsgSize 单条控制消息的大小上限
+const maxControlMsgSize = 1 << 20 // 1MB
+
+// readControlMsg 从流中读取一条完整的 JSON 控制消息。
+// 每条流仅承载一条消息；服务端响应以 '\n' 结尾（writeJSONLine），
+// 同时兼容无换行的裸 JSON：每读到一批数据就尝试解析，解析成功即视为
+// 消息完整。修复旧实现单次 Read 假设整条消息一次到达导致的分包失败。
+func readControlMsg(r io.Reader, maxSize int) ([]byte, error) {
+	buf := make([]byte, 0, 4096)
+	chunk := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(chunk)
+		if n > 0 {
+			buf = append(buf, chunk[:n]...)
+			if len(buf) > maxSize {
+				return nil, fmt.Errorf("control message too large: %d bytes", len(buf))
+			}
+			if json.Valid(buf) {
+				return buf, nil
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// writeResp 向服务端流写 JSON 响应行（与服务端 writeJSONLine 一致，以 '\n' 结尾）
+func writeResp(w io.Writer, cmd, msg string) {
+	resp, _ := json.Marshal(map[string]string{"cmd": cmd, "msg": msg})
+	w.Write(append(resp, '\n'))
+}
+
 func writeCmd(w io.Writer, cmd protocol.ControlCmd) error {
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if _, err := w.Write(data); err != nil {
+	if _, err := w.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
 	return nil
@@ -1139,28 +1166,27 @@ func readResponse(r io.Reader, timeout time.Duration) (*protocol.ControlResponse
 		}
 	}
 
-	buf := make([]byte, 4096)
-	n, err := r.Read(buf)
+	raw, err := readControlMsg(r, maxControlMsgSize)
 	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
 	}
 
 	var resp protocol.ControlResponse
-	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	return &resp, nil
 }
 
 type Stats struct {
-	NodeID       string               `json:"node_id"`
-	Connected    bool                 `json:"connected"`
-	ServerAddr  string               `json:"server_addr"`
-	TCPBytesIn  uint64               `json:"tcp_bytes_in"`
-	TCPBytesOut uint64               `json:"tcp_bytes_out"`
-	HTTPBytesIn uint64               `json:"http_bytes_in"`
-	HTTPBytesOut uint64              `json:"http_bytes_out"`
-	Tunnels     []proxy.TunnelTraffic `json:"tunnels"`
+	NodeID       string                `json:"node_id"`
+	Connected    bool                  `json:"connected"`
+	ServerAddr   string                `json:"server_addr"`
+	TCPBytesIn   uint64                `json:"tcp_bytes_in"`
+	TCPBytesOut  uint64                `json:"tcp_bytes_out"`
+	HTTPBytesIn  uint64                `json:"http_bytes_in"`
+	HTTPBytesOut uint64                `json:"http_bytes_out"`
+	Tunnels      []proxy.TunnelTraffic `json:"tunnels"`
 }
 
 func (c *Client) Stats() Stats {
@@ -1177,12 +1203,12 @@ func (c *Client) Stats() Stats {
 	return Stats{
 		NodeID:       c.cfg.NodeID,
 		Connected:    c.Connected(),
-		ServerAddr:  c.cfg.ServerAddr,
-		TCPBytesIn:  proxy.GetTCPBytesIn(),
-		TCPBytesOut: proxy.GetTCPBytesOut(),
-		HTTPBytesIn: proxy.GetHTTPBytesIn(),
+		ServerAddr:   c.cfg.ServerAddr,
+		TCPBytesIn:   proxy.GetTCPBytesIn(),
+		TCPBytesOut:  proxy.GetTCPBytesOut(),
+		HTTPBytesIn:  proxy.GetHTTPBytesIn(),
 		HTTPBytesOut: proxy.GetHTTPBytesOut(),
-		Tunnels:     tunnels,
+		Tunnels:      tunnels,
 	}
 }
 
@@ -1191,16 +1217,16 @@ func (c *Client) Stats() Stats {
 // TunnelStatus 统一隧道状态（合并配置 + 运行时）
 type TunnelStatus struct {
 	Name       string          `json:"name"`
-	Type       TunnelType     `json:"type"`
+	Type       TunnelType      `json:"type"`
 	Target     string          `json:"target"`
 	Domain     string          `json:"domain,omitempty"`
-	ListenPort int            `json:"listen_port,omitempty"`
-	Enabled    bool           `json:"enabled"`
-	Connected  bool           `json:"connected"`
-	BytesIn    uint64         `json:"bytes_in"`
-	BytesOut   uint64         `json:"bytes_out"`
-	Status     any            `json:"status,omitempty"` // 类型特定状态（Ser2MQStats / vpn.Status）
-	Para       json.RawMessage `json:"para,omitempty"`  // 扩展配置（前端编辑表单需要）
+	ListenPort int             `json:"listen_port,omitempty"`
+	Enabled    bool            `json:"enabled"`
+	Connected  bool            `json:"connected"`
+	BytesIn    uint64          `json:"bytes_in"`
+	BytesOut   uint64          `json:"bytes_out"`
+	Status     any             `json:"status,omitempty"` // 类型特定状态（Ser2MQStats / vpn.Status）
+	Para       json.RawMessage `json:"para,omitempty"`   // 扩展配置（前端编辑表单需要）
 }
 
 // buildTunnelStatus 构建单个隧道的统一状态
