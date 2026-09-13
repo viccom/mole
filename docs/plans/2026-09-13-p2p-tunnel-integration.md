@@ -27,17 +27,17 @@
 2. **room 语义与中心分发定位（用户澄清）**：p2punch 中只有加入相同 room 的两端才可能建连；moleAgent 集成的核心价值是**中心生成唯一 room 并把配置对分发到两个节点**。建连机制本身与 p2punch 原生完全一致，中心不参与打洞。见「room 与中心分发」节。
 3. **服务端引用纠错**（v1 引用了不存在的符号）：
    - `moleAgent_Serv/internal/protocol/types.go` **不存在** → 删除该步骤；server 侧常量落 `internal/core/domain.go`。
-   - `isValidTunnelType` **不存在** → 类型校验在 `internal/service/tunnel_service.go:63-101` 的 `validateTunnel` switch。
+   - `isValidTunnelType` **不存在** → 类型校验在 `internal/service/tunnel_service.go:64-101` 的 `validateTunnel` switch。
    - `handleTunnelAction` **不存在** → 实际是 `TriggerTunnelAction`（`internal/tunnel/control.go:751-766`，S→C 出站、无类型概念）。
-   - `core.TunnelConfigService` → 实际接口 `TunnelConfigManager`（`internal/core/ports.go:27`）。
+   - `core.TunnelConfigService` → 实际接口 `TunnelConfigManager`（`internal/core/ports.go:26`）。
    - `internal/api/auth/middleware.go` → 实际 `internal/auth/middleware.go`；handler 命名惯例是 `*_handler.go`（非 `handler_*.go`）。
 4. **删除 v1 阶段 8（tunnel_action ack）**：与「不做」清单（远程 action 不做）矛盾，且方向理解反了——`tunnel_action` 是 server→client 出站命令，server 端不存在「收到并 ack」。p2p 与 http/tcp/udp 同类：不支持远程 action，`TriggerTunnelAction` 无需任何改动。
 5. **信令鉴权整合进正式阶段**：v1 的三次增订（方案 D → 变体 B+ → P2PSignalToken）散落文末、与阶段 0-9 两张皮。v2 收敛为单一方案并编入阶段 6；且 **client→server 的 REST 调用在现有代码中零先例**，拉取凭据改走**现有 smux 控制通道**（新 C→S 命令 `p2p_signal_token`），不新开 HTTP 通道。
 6. **fork 范围修正**：`internal/` 实际 **13 个包**，fork 11 个（剔除 `update`——带 go-selfupdater 依赖与硬编码升级 URL；`version`）。v1 的「10 个子包」及名单均不准确。
-7. **Handler 职责明确**：从「room+modes」到「打洞→secure upgrade→yamux→Session」的编排代码在 p2punch 的 `cmd/cli/connection.go`，**不在 fork 的 internal/ 里**。Handler 必须吸收这段 glue（engine 参数、按传输分叉的 secure 配置、role 消费、退避循环——退避可照抄 `cmd/cli/connection.go:66-70` 及其单测 `cmd/cli/events_test.go:69-84`）。
+7. **Handler 职责明确**：从「room+modes」到「打洞→secure upgrade→yamux→Session」的编排代码在 p2punch 的 `cmd/cli/connection.go`，**不在 fork 的 internal/ 里**。Handler 必须吸收这段 glue（engine 参数、按传输分叉的 secure 配置、role 消费、退避循环——退避可照抄 `cmd/cli/connection.go:66-70` 及其单测 `cmd/cli/events_test.go:69-87`）。注意 `Outcome` 的**组装**在 `internal/engine/mode_*.go`（随 engine 包整体 fork，v2.2 第 22 条），connection.go 仅消费——Handler 调 `engine.Registry[mode]` 即得 Outcome。
 8. **MQTT 凭据事实纠错**：p2punch **当前没有任何** SetUsername/SetPassword 配置点（全仓库 grep 零命中，`easyp2p/mqtt_signal.go:170-197` 仅匿名）。v1 前文「p2punch 本身支持 SetUsername/SetPassword」是错的；p2punch 上游 PR 为**硬前置**。
 9. **状态上报两处**：`collectTunnelStatuses()`（client.go:661，喂 `tunnel_status` 命令）**和** `AllTunnelStatus()/buildTunnelStatus()`（client.go:1303/1246，喂本地 REST `/api/tunnels`）都要加 P2P 分支，缺一则管理界面看不到状态。
-10. **常量归位**：client `TunnelTypeP2P` 落根包 `tunnel.go`（与 ser2mq 同款——`internal/protocol/types.go` 只有 http/tcp/udp，ser2mq/vpn-manager 从不在协议层）；server 落 `core/domain.go`。v1「两端 4 处常量」不成立，实际 **2 处**，protocol 层零改动（`Type` 是 string 类型，"p2p" 值自然透传）。
+10. **常量归位**：client `TunnelTypeP2P` 落根包 `tunnel.go`（与 ser2mq 同款——`internal/protocol/types.go` 只有 http/tcp/udp，ser2mq/vpn-manager 从不在协议层）；server 落 `core/domain.go`。v1「两端 4 处常量」不成立，实际 **2 处**，protocol 层零改动（`Type` 是命名类型 `protocol.TunnelType`（types.go:17，底层 string），"p2p" 值自然透传）。
 11. **server STUN 去 build tag**：改配置门控（`stun.enabled` 默认 false）。理由：tag 会让 main.go 无条件引用一个默认不编译的包而构建失败，需双侧接线；pion/stun 依赖很小，运行时门控等效且简单。
 12. **精度修正**：Manager 模板改为 ser2mq 风格（v1 引 vpn 为模板但自拟接口是单 map，互斥；vpn 实际是双参 `OnTunnelUpdate(names, configs)`，client.go:422）；体积表「顶层依赖 57」口径错误（直接依赖 9 个）；client `Validate()` 需为 p2p 增加**空 Target 豁免**（tunnel.go:56 目前只豁免 vpn-manager）；`notifyManagers` 中 p2p 分支必须同步 `Enable`（同 ser2mq/ser2net/webssh，client.go:370-409）。
 
@@ -46,11 +46,21 @@
 13. **tunnel 不对称语义修正**（v2 实质性错误）：核实 `p2punch/internal/tunnel/{tunnel.go,tcp.go}` 后确认——发起端监听 `LocalPort`，**target 由发起端在 `TUNNEL:OPEN` 里指定、由接受端 dial**（tunnel.go:24-29,187-268；tcp.go:15,99-103），接受端无 target 概念、无 allowlist。v2 的「两端配置对称、同 target」不成立，改为访问端/纯会话端模型（见「P2PConfig」节）。
 14. **room 配对不变量**：server 新增跨记录配对校验（room ≤2 条、异节点、排除自身计数）——第三端持同 room 会与陌生节点完成 ECDHE 建连（对陌生对端照样成功），属数据外泄面，必须挡在落库前。
 15. **Manager 构造注入 `serverHost`**：默认 `mqtt_brokers`/`stun_servers` 需从 server 地址派生（对齐 ser2mq `NewManager(ctx, nodeID)` 的注入模式）。
-16. **字节统计来源钉死**：`session.ListTunnels()` 的 `TunnelInfo` 自带 `BytesIn/BytesOut`（session.go:60-69，atomic 对齐已处理 32 位平台），无需自写 conn 计数包装。
+16. **字节统计来源钉死**：`session.ListTunnels()` 的 `TunnelInfo` 自带 `BytesIn/BytesOut`（session.go:60-69，普通 uint64 字段；atomic 计数器在 session_secure.go 内部、Load 后填入，导出结构无 32 位对齐问题），无需自写 conn 计数包装。
 17. **fork 文件既有 build tag 合并**：netx 两文件现有 `!windows` → 合并为 `p2p && !windows`，脚本不得覆盖。
 18. **信令鉴权细化**：authHook 前缀分支置于 `VerifyMQTTCredentials` 之前；aclHook 拒 MQTT 通配符 topic（防 `nat-exchange/#` 全域订阅）；`p2p_signal_token` 响应用 ad-hoc JSON（不扩 `ControlResponse`）；token 增加「删除隧道即吊销」与 node 归属校验；仅 server 默认 broker 时拉取 token。
 19. **配置变更重启**：Manager 增量逻辑补「同名 Para 变更 → 重启 handler」（对齐 vpn 的变更重启惯例）。
 20. `TunnelStatusByName()`（client.go:1320）纳入状态接线清单；运维速查改为访问端/纯会话端两条记录的示例，并补 :3478/UDP 防火放行提示。
+
+### v2.2 开工前复核（2026-09-13，三仓库逐项核查后修订）
+
+21. **vpn 重启惯例位置纠错**：`client.go:200-225` 实为 `Run()` 重连循环主体；「配置变更→Stop→NewProcessMgr→Start」的重启惯例实际在 `internal/proxy/vpn/manager.go:199-225`（阶段 5.4 已改引）。
+22. **Outcome 组装位置纠错**：`Outcome{Mux, IsClient, Local, Remote}` 的字面量组装在 `internal/engine/mode_*.go`（mode_lan.go:37、mode_v4_tcp.go:36、mode_v4_udp.go:42、mode_v6.go:104、mode_v6_tcp.go:98、mode_v4_relay.go:68 共 6 处），随 engine 包整体 fork 获得；`cmd/cli/connection.go` 仅消费（126 行 `modeFn(ctx, deps)` 返回 Outcome）。第 7 条与阶段 5.6 已改写。
+23. **protocol.Tunnel.Type 是命名类型**：types.go:17 `Type TunnelType`（底层 string），非裸 string；"p2p" 透传结论不变（第 10 条已修正表述）。
+24. **auth/middleware.go 行号对调**：W-Access-Key 直通在 authenticate() **75-79**；55-65 是 RequirePermission 的 RBAC 绕过检查（`claims.UserID != "access_key"`）。旁路事实不变，安全模型节引用已修正。
+25. **TunnelInfo 字节字段口径修正**：`BytesIn/BytesOut` 是普通 `uint64`（session.go:67-68）；atomic 计数器在 session_secure.go 内部、Load 后填入 TunnelInfo——导出结构无 32 位对齐问题，第 16 条结论（无需自写计数包装）不变。
+26. **离线测试分布修正**：`net.Pipe` 系离线测试在 engine/netx/secure/session；crypto 与 heartbeat 的测试为纯函数离线测试（无 net.Pipe）。阶段 4.1 已改写。
+27. **行号微漂收录**：collectTunnelStatuses 实为 client.go:661；`TestReconnectBackoff` 实为 events_test.go:69-87；`readResponse` 定义于 client.go:1174、sendTunnelUpdate 内调用点 533；`tunnel_test.go` 在 client 根包尚不存在（阶段 0.1 为新建）；server 侧 `TunnelConfigManager` 接口在 ports.go:26、`validateTunnel` 在 tunnel_service.go:64-101、`TriggerTunnelAction` 在 control.go:752-766。
 
 ---
 
@@ -173,12 +183,12 @@ type Handler struct {
     signal   SignalCredentials    // MQTT 凭据（阶段 6 注入；开发期为空=匿名）
 }
 func (h *Handler) Run(ctx context.Context) error   // 退避 5/10/20/40/60s（照抄 cmd/cli/connection.go:66-70）；session 建立后若 cfg.TargetHost != "" 则 CreateTunnel
-func (h *Handler) Status() P2PRuntime              // Connected = sess 已建立；Bytes 取 sess.ListTunnels() 聚合（TunnelInfo 自带 BytesIn/Out，session.go:60-69，fork 内 atomic 对齐已处理 32 位平台）——无需自写 conn 计数包装
+func (h *Handler) Status() P2PRuntime              // Connected = sess 已建立；Bytes 取 sess.ListTunnels() 聚合（TunnelInfo 自带 BytesIn/Out，session.go:60-69）——无需自写 conn 计数包装
 func (h *Handler) Close() error                    // 幂等：先 CloseTunnel 再 sess.Close()（secure 层级联关底层 socket，§3.2 第 6 条）
 ```
 
 **Handler 必须吸收的 cmd 层 glue**（fork 不含，参考 `p2punch/cmd/cli/connection.go`）：
-- engine 模式函数调用与 `Outcome{Mux, IsClient, Local, Remote}` 组装（session/consts.go:18）
+- engine 模式函数调用：`engine.Registry[modeName](ctx, deps)` 返回 `Outcome{Mux, IsClient, Local, Remote}`（定义在 session/consts.go:18，**组装在 engine/mode_*.go**、随 fork 获得；connection.go 仅消费，见 v2.2 第 22 条）
 - secure 配置按传输分叉：UDP → `dtls + KcpWithUDP=true + KcpEncryption=false`；TCP → `tls13 + KeepAlive=30`；`KeyType="PSK"`、`Key=hex(sharedKey)`、`InsecureSkipVerify=true`（p2punch CLAUDE.md §3.2 第 2 条）
 - yamux Client/Server 与 `info.IsClient` 配对（§3.2 第 3 条；role 来自 `easyp2p.SelectRole`，v6 双向 probe 用地址字典序）
 - 打洞失败退避循环 + 连上后 3s 快速重连
@@ -231,7 +241,7 @@ func validateP2PPara(para json.RawMessage) error
 - P2P token = 单一用途凭据，仅能读写 `nat-exchange/*`；即使泄露也不能登 admin（REST JWT 流程查 claims.UserID，`internal/auth/middleware.go:73-108`，与 broker 的 `cl.Properties` 载体互不相通）、不能触达其他用户的节点。
 - E2E 加密（ECDHE P-256 + HKDF 派生 PSK → 派生 ECDSA 证书做 DTLS/TLS1.3 pinning）不依赖 broker 信任，broker 仅协议层中转。
 - **配对信任模型**：接受端 `AcceptRemote` 无 allowlist，发起端可指定对端任意目标（含 127.0.0.1）——完成配对即互相授权访问对方 loopback/内网。信任边界 = room 保密性 + server 配对校验；对外只暴露「访问端:LocalPort」一个口。
-- **既有旁路提示**（本次核查发现，设计需绕开而非依赖）：REST 的 `W-Access-Key` 全局密钥直通且绕过 RBAC（middleware.go:55-65）；aclHook `rbac==nil` 全放行（broker.go:222-224，P2P 哨兵检查已置于其前）。
+- **既有旁路提示**（本次核查发现，设计需绕开而非依赖）：REST 的 `W-Access-Key` 全局密钥直通（authenticate() middleware.go:75-79）且绕过 RBAC（RequirePermission 的 `claims.UserID != "access_key"` 检查，middleware.go:55-65）；aclHook `rbac==nil` 全放行（broker.go:222-224，P2P 哨兵检查已置于其前）。
 
 ---
 
@@ -275,7 +285,7 @@ func validateP2PPara(para json.RawMessage) error
 
 ### 阶段 4: fork 测试
 
-**4.1** 复制可离线测试：secure / netx / session / crypto / heartbeat / engine（`net.Pipe` 系）+ easyp2p 离线子集（mqtt_signal mock、loopback STUN/组播）。同样处理 import path + tag。
+**4.1** 复制可离线测试：secure / netx / session / engine（`net.Pipe` 系）+ crypto / heartbeat（纯函数离线测试，无 net.Pipe）+ easyp2p 离线子集（mqtt_signal mock、loopback STUN/组播）。同样处理 import path + tag。
 **4.2** easyp2p 网络依赖测试（`TestExchangeRelayKey` 等，现状靠 `-short` skip）加 `//go:build p2p_integration` 排除；同步记录到交付说明（对齐 p2punch CLAUDE.md §4.1「公共 MQTT 测试失败已知非阻断」约定）。
 **4.3** 跑 `go test -tags p2p ./internal/p2p/...` 验证离线子集通过。
 
@@ -284,7 +294,7 @@ func validateP2PPara(para json.RawMessage) error
 **5.1** 失败测试 `config_test.go`：FromPara 合法/非法 room/缺 target；ToPara 往返。
 **5.2** 实现 `config.go`（含 room 校验——**自实现**，p2punch 的 validateRoom 在 cmd 层 fork 不带）。
 **5.3** 失败测试 `manager_test.go`：Notify 增量启停（新加启/删除停/Enable=false 停/同名 Para 变更重启）；Status 不存在返 ErrNotFound；Start/Stop 幂等；Close 关全部。真实 p2p session 用接口 mock 注入。
-**5.4** 实现 `manager.go`（`NewManager(serverHost string)`；变更检测用 Para JSON 比较，参照 vpn Manager 的重启惯例 client.go:200-225）。
+**5.4** 实现 `manager.go`（`NewManager(serverHost string)`；变更检测用 Para JSON 比较，参照 vpn Manager 的重启惯例 `internal/proxy/vpn/manager.go:199-225`——v2.2 第 21 条纠错，勿引 client.go:200-225，那是 Run() 重连循环）。
 **5.5** 失败测试 `handler_test.go`：Run 起 session；带 target 配置 CreateTunnel（mock engine/session）；纯会话端不 CreateTunnel；断开后按 5/10/20/40/60s 退避重连；Status 聚合 ListTunnels 字节；Close 取消。
 **5.6** 实现 `handler.go`：吸收「关键设计·Handler 必须吸收的 cmd 层 glue」全部四项；MQTT 凭据经 `SignalCredentials` 注入点预留（阶段 6 激活，此前为空=匿名）。
 
@@ -296,7 +306,7 @@ func validateP2PPara(para json.RawMessage) error
 **6.2 server**：`p2p_signal_tokens` 存储（redka hash + sha256 索引，照 `internal/storage/access_token_repo.go` 模式）+ 派生/校验函数（TTL 24h，未过期幂等复用；**删除对应 p2p tunnel 时吊销**）+ `TunnelConfigManager` 实现（tunnel_service.go）创建 p2p tunnel 时自动派生。测试覆盖派生幂等、过期、吊销、格式。
 **6.3 server**：`internal/tunnel/control.go` `handleStream` 加 `p2p_signal_token` 命令。请求 `{"cmd":"p2p_signal_token","name":"<tunnel name>"}`，响应 `{"cmd":"p2p_signal_token","ok":true,"username":"p2p-signal:<tokenID>","password":"<secret>","expires_at":<unix>}`——两端 **ad-hoc JSON 各自解码**（与 pong 携带 ts 同款做法；协议层无共享 types 文件，**不要**为此扩 `ControlResponse` 结构）。校验：连接已认证；`name` 在该节点持久化配置中存在且 type==p2p（纵深防御，token 本身只授 nat-exchange/*）。**不写 Para**。测试加 `control_test.go`（已存在 444 行，追加）。
 **6.4 server**：authHook（broker.go:173-194）**在 `VerifyMQTTCredentials` 之前**加 `p2p-signal:` 前缀分支——先查前缀，命中走 sha256 比对 `p2p_signal_tokens` 表、`cl.Properties.Username` 置哨兵字符串本身；未命中走原用户路径不变。aclHook（210-236）加哨兵分支：**置于 `rbac == nil` 兜底（222-224）之前**；topic 含 `+`/`#` 通配符一律拒绝（防 `nat-exchange/#` 全域订阅）；其余仅放行 `nat-exchange/` 前缀。测试覆盖：P2P token 可订阅 nat-exchange/* 精确 topic、拒通配、拒其他 topic、拒匿名、拒伪造前缀用户名、不影响普通用户路径、GetClients 显示正常。
-**6.5 client**：`client.go` 加 `requestP2PSignalToken(name string)`（复用 `sendTunnelUpdate` 的 OpenStream→写→读一响应模式，client.go:509-518）。**拉取策略**：仅当使用默认 server broker（`mqtt_brokers` 为空或等于派生默认值）时拉取——自定义/公共 broker 直接匿名，不依赖控制面；控制面未连接时 Handler 按既有退避等待重试。凭据只存内存，进程重启/过期重拉（broker 在连接时鉴权，长连接跨过期不受影响）。经 `SignalCredentials` 注入 paho Options（`-tags p2p`）。
+**6.5 client**：`client.go` 加 `requestP2PSignalToken(name string)`（复用 `sendTunnelUpdate` 的 OpenStream→写→读一响应模式——sendTunnelUpdate 定义于 client.go:509、readResponse 调用于 533、定义于 1174）。**拉取策略**：仅当使用默认 server broker（`mqtt_brokers` 为空或等于派生默认值）时拉取——自定义/公共 broker 直接匿名，不依赖控制面；控制面未连接时 Handler 按既有退避等待重试。凭据只存内存，进程重启/过期重拉（broker 在连接时鉴权，长连接跨过期不受影响）。经 `SignalCredentials` 注入 paho Options（`-tags p2p`）。
 **6.6** 两端全量测试。
 
 ### 阶段 7: client 接线（hook 模式）
@@ -307,7 +317,7 @@ func validateP2PPara(para json.RawMessage) error
 - `New()`（client.go:89）调 `newP2PController()`
 - `Close()`（client.go:235）nil-safe 调 `c.p2p.Close()`
 - `notifyManagers()`（client.go:365-427）加 `c.p2p.Notify(tunnels)`（p2p 的 Enable 过滤在 Notify 内部做，同 ser2mq 的 `cfg.Enable = t.IsEnabled()` 惯例）
-- `collectTunnelStatuses()`（client.go:660）**和** `buildTunnelStatus()`（client.go:1246）都加 P2P 分支（后者漏改则本地 REST `/api/tunnels` 看不到 P2P）；单隧道端点走的 `TunnelStatusByName()`（client.go:1320）一并覆盖
+- `collectTunnelStatuses()`（client.go:661）**和** `buildTunnelStatus()`（client.go:1246）都加 P2P 分支（后者漏改则本地 REST `/api/tunnels` 看不到 P2P）；单隧道端点走的 `TunnelStatusByName()`（client.go:1320）一并覆盖
 - `dispatchStream()` **零改动**（P2P 不走 smux 数据面）
 **7.4** 构建矩阵 + 全量测试：`go test ./...`、`go test -tags p2p ./...`。
 
@@ -363,7 +373,7 @@ func validateP2PPara(para json.RawMessage) error
 - `internal/storage/p2p_signal_token_repo.go` + `internal/auth/p2p_signal_token.go`（存储与校验，命名对齐现有 access_token 模式）
 
 **参考（不改）**：
-- `p2punch/internal/session/session.go` — Session 接口；`cmd/cli/connection.go` — Handler 编排与退避参考实现
+- `p2punch/internal/session/session.go` — Session 接口；`cmd/cli/connection.go` — Handler 编排与退避参考实现；`internal/engine/mode_*.go` — Outcome 组装（随 fork 获得）
 - `p2punch/CLAUDE.md` §3.2 8 条硬约束（迁移时全部保留）
 - `moleAgent_client/internal/proxy/ser2mq/manager.go` — Manager 签名模板
 - `moleAgent_Serv/internal/storage/access_token_repo.go` — P2P token 存储模板
