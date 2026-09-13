@@ -35,6 +35,7 @@ type TunnelConfigService struct {
 	pusher    tunnelPusher
 	limiter   ratelimit.GatewayLimiter
 	encryptor *crypto.SecretEncryptor // nil = 不加解密
+	p2pTokens *P2PSignalTokenService  // nil = 不签发/吊销 P2P 信令凭据
 	// longLivedCtx 是进程级 context，用于 TCP/UDP 监听器生命周期。
 	// 不能用请求级 ctx（如 r.Context()），否则 HTTP 请求返回后监听器 ctx 级联取消，
 	// 新连接的 sem.Acquire/waitBurst 立即失败，隧道建完即失效。
@@ -58,6 +59,11 @@ func NewTunnelConfigService(longLivedCtx context.Context, nodeMgr core.NodeManag
 		limiter:      limiter,
 		encryptor:    encryptor,
 	}
+}
+
+// SetP2PSignalTokenService 注入 P2P 信令凭据签发服务（main.go 装配；nil = 不签发）
+func (s *TunnelConfigService) SetP2PSignalTokenService(svc *P2PSignalTokenService) {
+	s.p2pTokens = svc
 }
 
 // validateTunnel 校验单条隧道配置的合法性
@@ -261,6 +267,14 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 	}
 	result.Persisted = true
 
+	// p2p 隧道创建即预签发信令凭据（客户端 p2p_signal_token 请求时按 owner 幂等命中）
+	if tunnelCfg.Type == core.TunnelTypeP2P && s.p2pTokens != nil {
+		if _, _, _, err := s.p2pTokens.IssueP2PSignalToken(nodeID, tunnelCfg.Name); err != nil {
+			// 预签发失败不阻断配置变更：客户端请求路径会再次签发
+			slog.Warn("Failed to pre-issue p2p signal token", "node", nodeID, "tunnel", tunnelCfg.Name, "error", err)
+		}
+	}
+
 	// 在线节点只有在客户端成功接收配置后，才更新服务端运行态索引，避免路由先切流导致业务异常。
 	if node.Status == core.NodeStatusOnline && s.pusher != nil {
 		if err := s.pushToClient(ctx, nodeID, updated); err != nil {
@@ -440,6 +454,27 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		s.limiter.RemoveTunnel(nodeID + "/" + name)
 	}
 		}
+
+	// p2p 隧道从配置中消失（删除/禁用后替换）即吊销其信令凭据。
+	// oldTunnels 为空视为服务重启后首次加载（内存尚空），不误吊销既有凭据。
+	if s.p2pTokens != nil && len(oldTunnels) > 0 {
+		currentP2P := make(map[string]bool)
+		for _, t := range tunnels {
+			if t.Type == core.TunnelTypeP2P {
+				currentP2P[t.Name] = true
+			}
+		}
+		revoked := make(map[string]bool)
+		for _, t := range oldTunnels {
+			if t.Type != core.TunnelTypeP2P || currentP2P[t.Name] || revoked[t.Name] {
+				continue
+			}
+			revoked[t.Name] = true
+			if err := s.p2pTokens.RevokeP2PSignalToken(nodeID, t.Name); err != nil {
+				slog.Warn("Failed to revoke p2p signal token", "node", nodeID, "tunnel", t.Name, "error", err)
+			}
+		}
+	}
 
 	if s.gateway != nil {
 		s.gateway.RebuildIndex(ctx)

@@ -237,3 +237,15 @@ type DingTalkBinding struct {
 	AvatarURL  string    `json:"avatar_url,omitempty"`
 	BoundAt    time.Time `json:"bound_at"`
 }
+
+// P2PSignalToken P2P 信令凭据（broker nat-exchange/* 专用，与用户体系彻底隔离）。
+// 仅存 sha256 hash；明文 secret 仅在签发响应中出现一次，不可二次拉取——
+// 因此「幂等复用」落地为 tokenID 稳定 + secret 轮换（客户端每次连接前重拉）。
+type P2PSignalToken struct {
+	TokenID    string    `json:"token_id"`
+	SecretHash string    `json:"secret_hash"` // sha256 hex(secret)
+	NodeID     string    `json:"node_id"`
+	TunnelName string    `json:"tunnel_name"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	CreatedAt  time.Time `json:"created_at"`
+}

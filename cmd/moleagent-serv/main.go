@@ -220,8 +220,13 @@ func main() {
 		}
 	}()
 
+	// --- P2P 信令凭据签发（nat-exchange/* 专用，与用户体系隔离）---
+	p2pTokenSvc := service.NewP2PSignalTokenService(storage.NewP2PSignalTokenRepo(db))
+	controlSrv.SetP2PSignalTokenIssuer(p2pTokenSvc)
+
 	// --- 隧道配置服务（单一变更入口）---
 	tunnelSvc := service.NewTunnelConfigService(ctx, nodeMgr, nodeRepo, gateway, controlSrv, gatewayLimiter, tunnelEncryptor)
+	tunnelSvc.SetP2PSignalTokenService(p2pTokenSvc)
 	controlSrv.SetTunnelConfigManager(tunnelSvc)
 
 	// --- 节点断开回调：清理隧道运行时资源（监听器、路由索引、统计）---
@@ -242,6 +247,7 @@ func main() {
 	var mqttBroker *mqtt.EmbeddedBroker
 	if cfg.MQTT.Enabled {
 		mqttBroker = mqtt.NewEmbeddedBroker(cfg.MQTT.TCPPort, cfg.MQTT.WSPort, authSvc, rbacEngine)
+		mqttBroker.SetP2PSignalTokenVerifier(p2pTokenSvc)
 		go func() {
 			slog.Info("MQTT broker starting...")
 			if err := mqttBroker.Start(ctx); err != nil {

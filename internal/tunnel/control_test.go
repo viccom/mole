@@ -2,12 +2,18 @@ package tunnel
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/xtaci/smux"
 
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/node"
 )
 
 // ---------------------------------------------------------------------------
@@ -441,4 +447,145 @@ func TestControlResponse_OmitsEmptyMsg(t *testing.T) {
 	if _, exists := parsed["msg"]; exists {
 		t.Errorf("expected msg to be omitted, but found in JSON: %s", data)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// p2p_signal_token 命令
+// ---------------------------------------------------------------------------
+
+// fakeP2PIssuer 记录签发调用的桩实现
+type fakeP2PIssuer struct {
+	calls  int
+	nodeID string
+	name   string
+}
+
+func (f *fakeP2PIssuer) IssueP2PSignalToken(nodeID, name string) (string, string, int64, error) {
+	f.calls++
+	f.nodeID, f.name = nodeID, name
+	return "p2p-signal:p2ptfake01", "test-secret", 1234567890, nil
+}
+
+// newP2PTokenTestStream 经 net.Pipe 建立 smux 流对：返回服务端流与客户端读端
+func newP2PTokenTestStream(t *testing.T) (*smux.Stream, *smux.Stream) {
+	t.Helper()
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { c1.Close(); c2.Close() })
+	cliSess, err := smux.Client(c1, nil)
+	if err != nil {
+		t.Fatalf("smux client: %v", err)
+	}
+	t.Cleanup(func() { cliSess.Close() })
+	srvSess, err := smux.Server(c2, nil)
+	if err != nil {
+		t.Fatalf("smux server: %v", err)
+	}
+	t.Cleanup(func() { srvSess.Close() })
+	accepted := make(chan *smux.Stream, 1)
+	go func() {
+		if s, err := srvSess.AcceptStream(); err == nil {
+			accepted <- s
+		}
+	}()
+	cliStream, err := cliSess.OpenStream()
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	select {
+	case s := <-accepted:
+		return s, cliStream
+	case <-time.After(2 * time.Second):
+		t.Fatal("accept stream timeout")
+		return nil, nil
+	}
+}
+
+// readP2PTokenResp 从客户端流读一条 ad-hoc JSON 响应
+func readP2PTokenResp(t *testing.T, cliStream *smux.Stream) p2pSignalTokenResp {
+	t.Helper()
+	dec := json.NewDecoder(cliStream)
+	var resp p2pSignalTokenResp
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp
+}
+
+// p2p_signal_token 命令契约：认证 + 归属 + 类型三道校验，通过后签发并返回平铺 JSON
+func TestHandleP2PSignalToken(t *testing.T) {
+	newServer := func(t *testing.T) (*ControlServer, *fakeP2PIssuer) {
+		nodeMgr := node.NewShardedNodeManager(4)
+		_ = nodeMgr.Add(context.Background(), &core.Node{
+			ID:     "Node0001",
+			Name:   "n1",
+			Status: core.NodeStatusOnline,
+			Tunnels: []core.Tunnel{
+				{Name: "p2p-a", Type: core.TunnelTypeP2P},
+				{Name: "web", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:80"},
+			},
+		})
+		issuer := &fakeP2PIssuer{}
+		cs := &ControlServer{nodeMgr: nodeMgr, p2pIssuer: issuer}
+		return cs, issuer
+	}
+
+	t.Run("未认证连接拒绝", func(t *testing.T) {
+		cs, _ := newServer(t)
+		srv, cli := newP2PTokenTestStream(t)
+		state := &connState{} // 未 set 节点
+		go cs.handleP2PSignalToken(context.Background(), ControlCmd{Cmd: "p2p_signal_token", Name: "p2p-a"}, state, srv)
+		resp := readP2PTokenResp(t, cli)
+		if resp.OK || resp.Error == "" {
+			t.Fatalf("unauthenticated must fail, got %+v", resp)
+		}
+	})
+
+	t.Run("未配置 issuer 拒绝", func(t *testing.T) {
+		nodeMgr := node.NewShardedNodeManager(4)
+		_ = nodeMgr.Add(context.Background(), &core.Node{ID: "Node0001", Status: core.NodeStatusOnline})
+		cs := &ControlServer{nodeMgr: nodeMgr}
+		srv, cli := newP2PTokenTestStream(t)
+		state := &connState{}
+		state.set(&core.Node{ID: "Node0001"})
+		go cs.handleP2PSignalToken(context.Background(), ControlCmd{Cmd: "p2p_signal_token", Name: "p2p-a"}, state, srv)
+		resp := readP2PTokenResp(t, cli)
+		if resp.OK || !strings.Contains(resp.Error, "not configured") {
+			t.Fatalf("nil issuer must fail, got %+v", resp)
+		}
+	})
+
+	t.Run("隧道不存在或类型不符拒绝", func(t *testing.T) {
+		cs, issuer := newServer(t)
+		for _, name := range []string{"nope", "web"} {
+			srv, cli := newP2PTokenTestStream(t)
+			state := &connState{}
+			state.set(&core.Node{ID: "Node0001"})
+			go cs.handleP2PSignalToken(context.Background(), ControlCmd{Cmd: "p2p_signal_token", Name: name}, state, srv)
+			resp := readP2PTokenResp(t, cli)
+			if resp.OK || resp.Error == "" {
+				t.Fatalf("tunnel %q must be rejected, got %+v", name, resp)
+			}
+		}
+		if issuer.calls != 0 {
+			t.Fatalf("issuer must not be called on rejection, calls=%d", issuer.calls)
+		}
+	})
+
+	t.Run("合法请求签发并返回凭据", func(t *testing.T) {
+		cs, issuer := newServer(t)
+		srv, cli := newP2PTokenTestStream(t)
+		state := &connState{}
+		state.set(&core.Node{ID: "Node0001"})
+		go cs.handleP2PSignalToken(context.Background(), ControlCmd{Cmd: "p2p_signal_token", Name: "p2p-a"}, state, srv)
+		resp := readP2PTokenResp(t, cli)
+		if !resp.OK || resp.Error != "" {
+			t.Fatalf("happy path must succeed, got %+v", resp)
+		}
+		if resp.Username != "p2p-signal:p2ptfake01" || resp.Password != "test-secret" || resp.ExpiresAt != 1234567890 {
+			t.Fatalf("credentials mismatch: %+v", resp)
+		}
+		if issuer.nodeID != "Node0001" || issuer.name != "p2p-a" {
+			t.Fatalf("issuer called with (%q, %q)", issuer.nodeID, issuer.name)
+		}
+	})
 }

@@ -174,6 +174,17 @@ type ControlServer struct {
 	onNodeDisconnect func(nodeID string, tunnels []core.Tunnel) // 节点断开回调
 	nodeRepo         core.NodeRepo                              // 隧道持久化仓库
 	tunnelSvc        core.TunnelConfigManager
+	p2pIssuer        P2PSignalTokenIssuer // P2P 信令凭据签发（nil = 命令返回未配置）
+}
+
+// P2PSignalTokenIssuer 签发 P2P 信令凭据（service 包实现；tunnel 包不依赖 service）
+type P2PSignalTokenIssuer interface {
+	IssueP2PSignalToken(nodeID, tunnelName string) (username, password string, expiresAt int64, err error)
+}
+
+// SetP2PSignalTokenIssuer 注入 P2P 信令凭据签发服务
+func (cs *ControlServer) SetP2PSignalTokenIssuer(issuer P2PSignalTokenIssuer) {
+	cs.p2pIssuer = issuer
 }
 
 type listenTarget struct {
@@ -548,8 +559,68 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 			}
 		}
 		writeControlResp(stream, "ok", "status received")
+	case "p2p_signal_token":
+		cs.handleP2PSignalToken(ctx, cmd, state, stream)
 	default:
 		writeControlResp(stream, "err", "unknown command")
+	}
+}
+
+// p2pSignalTokenResp 是 p2p_signal_token 命令的 ad-hoc 响应（与 pong 携带 ts 同款做法：
+// 协议层无共享 types，两端各自解码，不扩 ControlResponse）
+type p2pSignalTokenResp struct {
+	Cmd       string `json:"cmd"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+	Username  string `json:"username,omitempty"`
+	Password  string `json:"password,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+}
+
+// handleP2PSignalToken 处理 C→S p2p_signal_token：校验连接已认证 + name 归属该校验连接
+// 的节点且类型为 p2p（纵深防御，token 本身只授 nat-exchange/*），签发并平铺 JSON 返回。
+// 不写 Para（凭据不能进配置，admin/持久化面不接触明文 secret）。
+func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCmd, state *connState, stream *smux.Stream) {
+	fail := func(msg string) {
+		_ = writeJSONLine(stream, p2pSignalTokenResp{Cmd: "p2p_signal_token", Error: msg})
+	}
+	node := state.get()
+	if node == nil {
+		fail("not authenticated")
+		return
+	}
+	if cs.p2pIssuer == nil {
+		fail("p2p signal token issuer not configured")
+		return
+	}
+	if cmd.Name == "" {
+		fail("name is required")
+		return
+	}
+	found := false
+	if cur, ok := cs.nodeMgr.Get(ctx, node.ID); ok {
+		for _, t := range cur.Tunnels {
+			if t.Name == cmd.Name && t.Type == core.TunnelTypeP2P {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		fail("p2p tunnel not found on node")
+		return
+	}
+	username, password, expiresAt, err := cs.p2pIssuer.IssueP2PSignalToken(node.ID, cmd.Name)
+	if err != nil {
+		slog.Error("issue p2p signal token failed", "node", node.ID, "tunnel", cmd.Name, "error", err)
+		fail("issue failed")
+		return
+	}
+	if err := writeJSONLine(stream, p2pSignalTokenResp{
+		Cmd: "p2p_signal_token", OK: true,
+		Username: username, Password: password, ExpiresAt: expiresAt,
+	}); err != nil {
+		slog.Debug("write p2p_signal_token response failed", "error", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
@@ -16,12 +17,13 @@ import (
 
 // EmbeddedBroker embedded MQTT Broker
 type EmbeddedBroker struct {
-	server   *mqtt.Server
-	tcpAddr  string
-	wsAddr   string
-	authSvc  *auth.AuthService
-	rbac     *auth.RBACEngine
-	stopOnce sync.Once
+	server    *mqtt.Server
+	tcpAddr   string
+	wsAddr    string
+	authSvc   *auth.AuthService
+	rbac      *auth.RBACEngine
+	p2pTokens auth.P2PSignalTokenVerifier
+	stopOnce  sync.Once
 }
 
 // NewEmbeddedBroker creates an embedded MQTT Broker
@@ -43,8 +45,8 @@ func NewEmbeddedBroker(tcpAddr, wsAddr string, authSvc *auth.AuthService, rbac *
 // mochi-mqtt Serve() is non-blocking, so Start must arrange shutdown explicitly.
 func (b *EmbeddedBroker) Start(ctx context.Context) error {
 	// Add Auth Hook
-	b.server.AddHook(&authHook{authSvc: b.authSvc}, nil)
-	b.server.AddHook(&aclHook{rbac: b.rbac}, nil)
+	b.server.AddHook(&authHook{authSvc: b.authSvc, p2pTokens: b.p2pTokens}, nil)
+	b.server.AddHook(&aclHook{rbac: b.rbac, p2pTokens: b.p2pTokens}, nil)
 
 	// TCP listener
 	if b.tcpAddr != "" {
@@ -156,10 +158,16 @@ func (b *EmbeddedBroker) GetServer() *mqtt.Server {
 	return b.server
 }
 
+// SetP2PSignalTokenVerifier 注入 P2P 信令凭据校验器（Start 前调用；nil = 拒绝 p2p 哨兵）
+func (b *EmbeddedBroker) SetP2PSignalTokenVerifier(v auth.P2PSignalTokenVerifier) {
+	b.p2pTokens = v
+}
+
 // authHook mochi-mqtt authentication Hook
 type authHook struct {
 	mqtt.HookBase
-	authSvc *auth.AuthService
+	authSvc   *auth.AuthService
+	p2pTokens auth.P2PSignalTokenVerifier
 }
 
 func (h *authHook) ID() string {
@@ -175,6 +183,20 @@ func (h *authHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 	password := string(pk.Connect.Password)
 
 	if username == "" {
+		return false
+	}
+
+	// P2P 信令哨兵分支：置于 VerifyMQTTCredentials 之前，与普通用户路径隔离。
+	// 校验通过后 Username 置为哨兵字符串本身（保持「Username 即身份载体」契约，
+	// aclHook 据前缀限定 nat-exchange/*；不注入 userID，不与用户体系相通）。
+	if auth.IsP2PSignalUsername(username) {
+		tokenID := strings.TrimPrefix(username, auth.P2PSignalUsernamePrefix)
+		if h.p2pTokens != nil && h.p2pTokens.VerifyP2PSignalToken(tokenID, password) {
+			cl.Properties.Username = []byte(username)
+			slog.Info("MQTT p2p signal client authenticated", "clientId", cl.ID, "username", username)
+			return true
+		}
+		slog.Warn("MQTT p2p signal auth failed", "clientId", cl.ID)
 		return false
 	}
 
@@ -196,7 +218,8 @@ func (h *authHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 // aclHook ACL Hook with RBAC integration
 type aclHook struct {
 	mqtt.HookBase
-	rbac *auth.RBACEngine
+	rbac      *auth.RBACEngine
+	p2pTokens auth.P2PSignalTokenVerifier
 }
 
 func (h *aclHook) ID() string {
@@ -208,9 +231,24 @@ func (h *aclHook) Provides(b byte) bool {
 }
 
 func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
-	userID := string(cl.Properties.Username) // 已被 authHook 替换为 userID
+	userID := string(cl.Properties.Username) // 已被 authHook 替换为 userID 或 p2p 哨兵
 	if userID == "" {
 		return false
+	}
+
+	// P2P 信令哨兵分支：必须置于 rbac == nil 兜底放行之前，否则 RBAC 未配置时
+	// P2P 客户端可订阅任意 topic。仅放行 nat-exchange/ 精确前缀（read/write），
+	// 通配符（+/#）一律拒绝——防 nat-exchange/# 全域订阅窃取其他配对信令。
+	if auth.IsP2PSignalUsername(userID) {
+		if strings.ContainsAny(topic, "+#") {
+			slog.Warn("MQTT p2p ACL denied (wildcard)", "clientId", cl.ID, "topic", topic)
+			return false
+		}
+		allowed := strings.HasPrefix(topic, "nat-exchange/")
+		if !allowed {
+			slog.Warn("MQTT p2p ACL denied", "clientId", cl.ID, "topic", topic)
+		}
+		return allowed
 	}
 
 	// Map MQTT operation to RBAC permission

@@ -149,3 +149,12 @@ type DingTalkBindingRepo interface {
 	DeleteByUnionID(unionID string) error
 	DeleteByUserID(userID string) error
 }
+
+// P2PSignalTokenRepo P2P 信令 Token 仓库接口（与用户 access_token 存储模式对齐）
+type P2PSignalTokenRepo interface {
+	Upsert(token *P2PSignalToken) error // 按 TokenID 建或替换（维护 secret/owner 双索引）
+	GetByID(id string) (*P2PSignalToken, error)
+	FindByOwner(nodeID, tunnelName string) (*P2PSignalToken, error)
+	ListAll() ([]*P2PSignalToken, error)
+	Delete(id string) error
+}
