@@ -20,6 +20,7 @@ const (
 	TunnelTypeSer2UDP TunnelType = "ser2udp"     // 串口转 UDP
 	TunnelTypeVPNMgr  TunnelType = "vpn-manager"  // VPN 程序管理
 	TunnelTypeWebSSH  TunnelType = "webssh"       // WebSSH 远程终端
+	TunnelTypeP2P     TunnelType = "p2p"          // P2P 直连隧道（需 -tags p2p 构建才运行）
 )
 
 // Tunnel 隧道配置（统一类型，替代原 tunnelConfig 和 protocol.Tunnel 两套定义）
@@ -49,11 +50,12 @@ func (t Tunnel) Validate() error {
 		return fmt.Errorf("tunnel name is required")
 	}
 	switch t.Type {
-	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeSer2TCP, TunnelTypeSer2UDP, TunnelTypeVPNMgr, TunnelTypeWebSSH:
+	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeSer2TCP, TunnelTypeSer2UDP, TunnelTypeVPNMgr, TunnelTypeWebSSH, TunnelTypeP2P:
 	default:
 		return fmt.Errorf("invalid tunnel type: %s", t.Type)
 	}
-	if t.Target == "" && t.Type != TunnelTypeVPNMgr {
+	// p2p 与 vpn-manager 同享空 Target 豁免：p2p 纯会话端无 Target（访问目标由发起端在 Para/OPEN 消息中指定）
+	if t.Target == "" && t.Type != TunnelTypeVPNMgr && t.Type != TunnelTypeP2P {
 		return fmt.Errorf("tunnel target is required")
 	}
 	return nil
