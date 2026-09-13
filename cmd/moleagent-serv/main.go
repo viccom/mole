@@ -27,6 +27,7 @@ import (
 	"moleAgent_Serv/internal/ratelimit"
 	"moleAgent_Serv/internal/service"
 	"moleAgent_Serv/internal/storage"
+	"moleAgent_Serv/internal/stun"
 	"moleAgent_Serv/internal/tunnel"
 	"moleAgent_Serv/internal/version"
 )
@@ -248,6 +249,23 @@ func main() {
 				cancel()
 			}
 		}()
+	}
+
+	// --- STUN Server（P2P 隧道 NAT 探测兜底，默认关闭）---
+	if cfg.Stun.Enabled {
+		stunSrv, err := stun.NewServer(cfg.Stun.BindAddr)
+		if err != nil {
+			slog.Error("STUN server start failed", "error", err)
+			cancel()
+		} else {
+			go func() {
+				slog.Info("STUN server starting...", "addr", stunSrv.LocalAddr())
+				if err := stunSrv.ListenAndServe(); err != nil {
+					slog.Error("STUN server error", "error", err)
+					cancel()
+				}
+			}()
+		}
 	}
 
 	// --- 飞书集成 ---
