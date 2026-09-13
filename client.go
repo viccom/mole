@@ -87,9 +87,22 @@ type tunnelReq struct {
 
 // New 创建客户端实例
 func New(cfg *Config) (*Client, error) {
+	// -id 参数或配置文件显式指定的 node_id 优先级最高：
+	// 短路自动生成逻辑，不读也不写 node.id 文件。
+	explicitNodeID := cfg.NodeID != ""
+
+	// 自定义 node.id 路径需在 ApplyDefaults（内部会读文件解析 nodeID）之前生效
+	SetNodeIDFile(cfg.NodeIDFile)
+
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+
+	// 未显式指定时，以 node.id 文件为真相源解析并落盘（首次生成 / 锁定复用）。
+	if !explicitNodeID {
+		cfg.NodeID = EnsureNodeIDPersisted()
+		log.Printf("node.id file: %s (node ID %s)", nodeIDFile, cfg.NodeID)
 	}
 
 	var dial transport.DialFunc
@@ -118,7 +131,7 @@ func New(cfg *Config) (*Client, error) {
 	}
 
 	// 创建管理器（使用背景 context，生命周期由 Client 统一管理）
-	// nodeID 在 ApplyDefaults 中已生成
+	// nodeID 已解析完毕：显式指定则沿用，否则由 EnsureNodeIDPersisted 从 node.id 文件解析
 	ser2mqMgr := ser2mq.NewManager(context.Background(), cfg.NodeID)
 	ser2netMgr := ser2net.NewManager(context.Background())
 	vpnMgr := vpn.NewManager(context.Background())
