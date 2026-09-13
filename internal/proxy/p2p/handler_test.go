@@ -4,6 +4,7 @@ package p2p
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -175,7 +176,7 @@ func initiatorCfg() P2PConfig {
 // 发起端：session 建立后必须 CreateTunnel（本地监听 + 由对端 dial target）
 func TestHandlerRunWithTargetCreatesTunnel(t *testing.T) {
 	sessions := withFailingConnect(t, 0, nil)
-	h := NewHandler(initiatorCfg(), "127.0.0.1", SignalCredentials{})
+	h := NewHandler(initiatorCfg(), "127.0.0.1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -194,7 +195,7 @@ func TestHandlerRunWithTargetCreatesTunnel(t *testing.T) {
 func TestHandlerPureSessionNoTunnel(t *testing.T) {
 	sessions := withFailingConnect(t, 0, nil)
 	cfg := P2PConfig{Room: "roomOK123456", Protocol: "tcp"} // 无 target
-	h := NewHandler(cfg, "127.0.0.1", SignalCredentials{})
+	h := NewHandler(cfg, "127.0.0.1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = h.Run(ctx) }()
@@ -222,7 +223,7 @@ func TestHandlerBackoffRetry(t *testing.T) {
 	spy := &intSlice{}
 	sessions := withFailingConnect(t, 2, spy)
 	cfg := initiatorCfg()
-	h := NewHandler(cfg, "127.0.0.1", SignalCredentials{})
+	h := NewHandler(cfg, "127.0.0.1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = h.Run(ctx) }()
@@ -241,7 +242,7 @@ func TestHandlerBackoffRetry(t *testing.T) {
 // Status 聚合 ListTunnels 的字节统计（TunnelInfo 自带 BytesIn/Out）
 func TestHandlerStatusAggregatesBytes(t *testing.T) {
 	sessions := withFailingConnect(t, 0, nil)
-	h := NewHandler(initiatorCfg(), "127.0.0.1", SignalCredentials{})
+	h := NewHandler(initiatorCfg(), "127.0.0.1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = h.Run(ctx) }()
@@ -265,7 +266,7 @@ func TestHandlerStatusAggregatesBytes(t *testing.T) {
 // Close 幂等取消：Run 返回、session 关闭
 func TestHandlerClose(t *testing.T) {
 	sessions := withFailingConnect(t, 0, nil)
-	h := NewHandler(initiatorCfg(), "127.0.0.1", SignalCredentials{})
+	h := NewHandler(initiatorCfg(), "127.0.0.1", nil)
 	h.Start(context.Background())
 
 	waitFor(t, func() bool { return sessions.len() > 0 }, 2*time.Second, "session not created")
@@ -289,4 +290,62 @@ func waitFor(t *testing.T, cond func() bool, timeout time.Duration, msg string) 
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal(msg)
+}
+
+// 凭据注入：credsFn 产物传给 connectFn；拉取失败时以匿名继续（不中断连接循环），
+// 下一轮重试重拉
+func TestHandlerCredsInjection(t *testing.T) {
+	origConnect, origBackoff := connectFn, backoffFn
+	t.Cleanup(func() { connectFn, backoffFn = origConnect, origBackoff })
+	backoffFn = func(int) time.Duration { return time.Millisecond }
+
+	var mu sync.Mutex
+	var gotCreds []SignalCredentials
+	credCalls := 0
+	var sess *mockSession
+
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+		mu.Lock()
+		gotCreds = append(gotCreds, creds)
+		n := len(gotCreds)
+		mu.Unlock()
+		if n == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		s := newMockSession()
+		mu.Lock()
+		sess = s
+		mu.Unlock()
+		return s, nil
+	}
+	// 确定性时序：第 1 次拉取失败（匿名回落），之后成功
+	credsFn := func() (SignalCredentials, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		credCalls++
+		if credCalls == 1 {
+			return SignalCredentials{}, errors.New("control plane down")
+		}
+		return SignalCredentials{Username: "p2p-signal:x", Password: "pw"}, nil
+	}
+
+	h := NewHandler(initiatorCfg(), "127.0.0.1", credsFn)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = h.Run(ctx) }()
+	t.Cleanup(cancel)
+
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return sess != nil },
+		2*time.Second, "never connected after creds recovery")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotCreds) < 2 {
+		t.Fatalf("expected at least 2 connect attempts, got %d", len(gotCreds))
+	}
+	if gotCreds[0] != (SignalCredentials{}) {
+		t.Fatalf("first attempt (credsFn error) must fall back to anonymous, got %+v", gotCreds[0])
+	}
+	if gotCreds[1] != (SignalCredentials{Username: "p2p-signal:x", Password: "pw"}) {
+		t.Fatalf("creds from credsFn must reach connectFn, got %+v", gotCreds[1])
+	}
 }

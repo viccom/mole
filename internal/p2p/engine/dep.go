@@ -128,3 +128,9 @@ func ParseModes(s string) ([]string, error) {
 	}
 	return modes, nil
 }
+
+// SetSignalCredentials 设置 MQTT 信令凭据（透传 easyp2p 包级注入点，见其说明）。
+// 空串 = 匿名。
+func SetSignalCredentials(username, password string) {
+	easyp2p.SetMQTTSignalCredentials(username, password)
+}

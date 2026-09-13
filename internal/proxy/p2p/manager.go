@@ -21,6 +21,10 @@ var ErrNotFound = errors.New("p2p tunnel not found")
 type Manager struct {
 	serverHost string // 派生默认 mqtt_brokers/stun_servers（对齐 ser2mq.NewManager(ctx, nodeID) 的注入模式）
 
+	// credsFn 按 tunnel name 经控制通道拉取信令凭据（根包适配层注入；
+	// 仅当使用默认 server broker 时非 nil——自定义/公共 broker 直接匿名）
+	credsFn func(name string) (username, password string, expiresAt int64, err error)
+
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
@@ -42,6 +46,14 @@ func NewManager(serverHost string) *Manager {
 		handlers:   make(map[string]*Handler),
 		cancels:    make(map[string]context.CancelFunc),
 	}
+}
+
+// SetCredsProvider 注入信令凭据拉取函数（阶段 6.5：经 smux 控制通道请求
+// p2p_signal_token；nil = 匿名）。Handler 每次连接尝试前调用。
+func (m *Manager) SetCredsProvider(fn func(name string) (username, password string, expiresAt int64, err error)) {
+	m.mu.Lock()
+	m.credsFn = fn
+	m.mu.Unlock()
 }
 
 // OnTunnelUpdate 全量配置分发入口（对齐 ser2mq/ser2net/webssh 的 OnTunnelUpdate 惯例，
@@ -125,7 +137,19 @@ func (m *Manager) startLocked(name string, cfg P2PConfig) {
 		mergeServers(cfg.STUNServers, defaultSTUNServers(m.serverHost)),
 		mergeServers(cfg.MQTTBrokers, defaultMQTTBrokers(m.serverHost)),
 	)
-	h := NewHandler(cfg, m.serverHost, SignalCredentials{})
+	var credsFn func() (SignalCredentials, error)
+	if m.credsFn != nil {
+		fn := m.credsFn
+		tunnelName := name
+		credsFn = func() (SignalCredentials, error) {
+			u, p, _, err := fn(tunnelName)
+			if err != nil {
+				return SignalCredentials{}, err
+			}
+			return SignalCredentials{Username: u, Password: p}, nil
+		}
+	}
+	h := NewHandler(cfg, m.serverHost, credsFn)
 	hctx, cancel := context.WithCancel(m.ctx)
 	m.handlers[name] = h
 	m.cancels[name] = cancel

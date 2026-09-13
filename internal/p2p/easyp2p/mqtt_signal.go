@@ -83,6 +83,29 @@ type MQTTSignalSession struct {
 	closed        bool
 }
 
+// signalCreds 是 MQTT 信令凭据的包级注入点（fork 内最小改动，上游 PR 正道是给
+// NewMQTTSignalSession 加可选 username/password 参数；合并后此处应同步移除）。
+// 同节点多条隧道的 token 均属同一节点身份，broker 鉴权/ACL（nat-exchange/*）
+// 等价，跨用无害——与 STUNServers/MQTTBrokerServers 同款包级全局模式。
+var (
+	signalCredsMu       sync.Mutex
+	signalCredsUsername string
+	signalCredsPassword string
+)
+
+// SetMQTTSignalCredentials 设置 MQTT 信令凭据（username 为空 = 匿名）
+func SetMQTTSignalCredentials(username, password string) {
+	signalCredsMu.Lock()
+	defer signalCredsMu.Unlock()
+	signalCredsUsername, signalCredsPassword = username, password
+}
+
+func currentSignalCreds() (string, string) {
+	signalCredsMu.Lock()
+	defer signalCredsMu.Unlock()
+	return signalCredsUsername, signalCredsPassword
+}
+
 func NewMQTTSignalSession(ctx context.Context, clientID, localIP string, logWriter io.Writer) (*MQTTSignalSession, error) {
 	return newMQTTSignalSession(ctx, MQTTBrokerServers, clientID, localIP, logWriter)
 }
@@ -177,6 +200,9 @@ func (s *MQTTSignalSession) connectBroker(brokerAddr string, qvals url.Values, i
 		SetConnectRetry(true).
 		SetConnectRetryInterval(3 * time.Second).
 		SetDialer(dialer)
+	if u, p := currentSignalCreds(); u != "" {
+		opts = opts.SetUsername(u).SetPassword(p)
+	}
 
 	var tlsConfig *tls.Config
 	insecure := false

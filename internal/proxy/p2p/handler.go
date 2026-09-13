@@ -33,9 +33,9 @@ type Runtime struct {
 // engine.Registry 逐 mode 尝试 → session.NewSession → Run → 发起端 CreateTunnel，
 // 外加重连退避循环。secure 配置与 yamux 配对在 fork 的 engine 包内部完成，此处不感知。
 type Handler struct {
-	cfg   P2PConfig
-	host  string // serverHost：派生默认 mqtt/stun 服务器地址
-	creds SignalCredentials
+	cfg     P2PConfig
+	host    string // serverHost：派生默认 mqtt/stun 服务器地址
+	credsFn func() (SignalCredentials, error) // 信令凭据拉取（nil = 匿名，公共/自定义 broker 场景）
 
 	mu        sync.Mutex
 	sess      session.Session
@@ -46,8 +46,8 @@ type Handler struct {
 }
 
 // NewHandler 构造 Handler（Start 前不产生任何 goroutine）
-func NewHandler(cfg P2PConfig, serverHost string, creds SignalCredentials) *Handler {
-	return &Handler{cfg: cfg, host: serverHost, creds: creds, stopped: make(chan struct{})}
+func NewHandler(cfg P2PConfig, serverHost string, credsFn func() (SignalCredentials, error)) *Handler {
+	return &Handler{cfg: cfg, host: serverHost, credsFn: credsFn, stopped: make(chan struct{})}
 }
 
 // connectFn / backoffFn 是测试注入点（同包测试替换，生产用默认实现）
@@ -141,7 +141,20 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		sess, err := connectFn(ctx, modeName, h.cfg, h.host, h.creds)
+		// 每次连接尝试前拉取信令凭据：始终持有当前有效 secret（服务端签发即轮换），
+		// 控制面不可达时按匿名继续（server broker 会拒，下一轮退避后重拉）
+		creds := SignalCredentials{}
+		if h.credsFn != nil {
+			c, err := h.credsFn()
+			if err != nil {
+				h.setFailure("signal creds: " + err.Error())
+			} else {
+				creds = c
+				// 写入 easyp2p 包级注入点（同节点多 token 对 broker 等价，见 fork 说明）
+				engine.SetSignalCredentials(creds.Username, creds.Password)
+			}
+		}
+		sess, err := connectFn(ctx, modeName, h.cfg, h.host, creds)
 		if err != nil {
 			h.setFailure(modeName + " failed: " + err.Error())
 			continue
