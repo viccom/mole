@@ -89,6 +89,12 @@ func validateTunnel(t core.Tunnel) error {
 		// 这些类型的配置在 Para 字段中，客户端自己处理
 		// 服务端只需要确保 Name 不为空即可
 
+	case core.TunnelTypeP2P:
+		// p2p 与上述本地类型同类（仅客户端处理），但 room 是密钥材料，Para 必须严格校验
+		if err := core.ValidateP2PPara(t.Para); err != nil {
+			return err
+		}
+
 	default:
 		return fmt.Errorf("%w: unknown tunnel type %q", core.ErrTunnelInvalid, t.Type)
 	}
@@ -119,6 +125,75 @@ const (
 	maxConnsUpperBound     = 100000
 	maxBandwidthUpperBound int64 = 10737418240 // 10 GB/s (显式 int64，避免 32-bit 平台 int 溢出)
 )
+
+// validateP2PRoomPairing 校验 p2p 隧道 room 的跨记录配对不变量：
+// 同一 room 全局最多 2 条记录且分属 2 个不同节点。
+// 依据：p2punch 假设 room 内恰两端（MQTT 首个响应者即配对），第三端持同 room
+// 入场会与陌生节点完成 ECDHE 建连——等于把流量隧穿给陌生节点，必须挡在落库前。
+// nodeID 是本次变更的节点：其旧记录整体被 updated 取代，扫描时排除（更新自身不误判）。
+// ApplyTunnel / ReplaceTunnels / SyncFromClient 三个落库入口均须调用。
+func (s *TunnelConfigService) validateP2PRoomPairing(nodeID string, updated []core.Tunnel) error {
+	if s.nodeRepo == nil {
+		return nil
+	}
+	// 1. 本节点候选集内 room 不得重复（同节点两条同 room 拒绝）
+	rooms := make(map[string]bool)
+	for i := range updated {
+		t := updated[i]
+		if t.Type != core.TunnelTypeP2P {
+			continue
+		}
+		room, err := core.P2PRoom(t.Para)
+		if err != nil {
+			continue // Para 非法由 validateTunnel 拦截，此处不重复报错
+		}
+		if rooms[room] {
+			return fmt.Errorf("%w: p2p room %s already used by another tunnel on node %s", core.ErrTunnelInvalid, maskRoom(room), nodeID)
+		}
+		rooms[room] = true
+	}
+	if len(rooms) == 0 {
+		return nil
+	}
+	// 2. 跨节点：同 room 在其他节点的既有记录须 ≤1（=0 开对，=1 成对，≥2 拒绝）
+	others, err := s.nodeRepo.GetAll()
+	if err != nil {
+		return fmt.Errorf("scan nodes for p2p room pairing: %w", err)
+	}
+	counts := make(map[string]int, len(rooms))
+	holder := make(map[string]string, len(rooms))
+	for _, n := range others {
+		if n.ID == nodeID {
+			continue
+		}
+		for i := range n.Tunnels {
+			t := n.Tunnels[i]
+			if t.Type != core.TunnelTypeP2P {
+				continue
+			}
+			room, err := core.P2PRoom(t.Para)
+			if err != nil || !rooms[room] {
+				continue
+			}
+			counts[room]++
+			holder[room] = n.ID
+		}
+	}
+	for room, c := range counts {
+		if c > 1 {
+			return fmt.Errorf("%w: p2p room %s already has %d records on other nodes (e.g. node %s)", core.ErrTunnelInvalid, maskRoom(room), c, holder[room])
+		}
+	}
+	return nil
+}
+
+// maskRoom 日志/错误信息不回显完整 room（room 是共享密钥材料）
+func maskRoom(room string) string {
+	if len(room) <= 4 {
+		return "***"
+	}
+	return room[:3] + "***" + room[len(room)-2:]
+}
 
 // validateRateLimit 校验限速配置（拒绝零值/负值/极大值）
 func validateRateLimit(rl *core.TunnelRateLimit) error {
@@ -175,6 +250,10 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 	}
 	if !replaced {
 		updated = append(updated, tunnelCfg)
+	}
+
+	if err := s.validateP2PRoomPairing(nodeID, updated); err != nil {
+		return result, err
 	}
 
 	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
@@ -248,6 +327,9 @@ func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string,
 	}
 
 	updated := append([]core.Tunnel(nil), tunnels...)
+	if err := s.validateP2PRoomPairing(nodeID, updated); err != nil {
+		return core.TunnelChangeResult{}, err
+	}
 	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
 		return result, err
 	}
@@ -272,6 +354,9 @@ func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string,
 // SyncFromClient 客户端 tunnel_update 的统一处理入口
 func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
 	if err := validateTunnels(tunnels); err != nil {
+		return err
+	}
+	if err := s.validateP2PRoomPairing(nodeID, tunnels); err != nil {
 		return err
 	}
 	if err := s.persistUpdatedNode(ctx, nodeID, tunnels); err != nil {

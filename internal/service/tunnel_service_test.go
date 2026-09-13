@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"moleAgent_Serv/internal/core"
@@ -317,4 +318,112 @@ func TestReplaceTunnels_DisabledTCPStopsListenerAndClearsStats(t *testing.T) {
 	if len(runtimeNode.Tunnels) != 1 || runtimeNode.Tunnels[0].IsEnabled() {
 		t.Fatalf("runtime tunnel should remain but be disabled: %+v", runtimeNode.Tunnels)
 	}
+}
+
+// ===== p2p room 配对校验 =====
+
+// p2pTunnel 构造带 room 的 p2p 隧道（para JSON 与客户端 P2PConfig 的 json tag 对齐）
+func p2pTunnel(name, room string) core.Tunnel {
+	para, _ := json.Marshal(map[string]any{"room": room, "protocol": "tcp"})
+	return core.Tunnel{Name: name, Type: core.TunnelTypeP2P, Para: para}
+}
+
+// 配对不变量：同一 room 全局最多 2 条记录且分属 2 个不同节点。
+// 依据：p2punch 假设 room 内恰两端（MQTT 首个响应者即配对），第三端持同 room
+// 会与陌生节点完成 ECDHE 建连——等于把流量隧穿给陌生节点，必须挡在落库前。
+func TestP2PRoomPairing(t *testing.T) {
+	setup := func(t *testing.T) (*TunnelConfigService, *mockNodeRepo) {
+		t.Helper()
+		ctx := context.Background()
+		nodeMgr := node.NewShardedNodeManager(4)
+		repo := newMockNodeRepo()
+		svc := NewTunnelConfigService(nil, nodeMgr, repo, &mockGateway{}, &mockPusher{}, nil, nil)
+		for _, id := range []string{"Node0001", "Node0002", "Node0003"} {
+			if err := nodeMgr.Add(ctx, &core.Node{ID: id, Name: id, Status: core.NodeStatusOffline}); err != nil {
+				t.Fatalf("Add %s: %v", id, err)
+			}
+		}
+		return svc, repo
+	}
+
+	t.Run("合法成对：两节点各一条同 room", func(t *testing.T) {
+		svc, _ := setup(t)
+		ctx := context.Background()
+		if _, err := svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-link", "roompair001")); err != nil {
+			t.Fatalf("first side rejected: %v", err)
+		}
+		if _, err := svc.ApplyTunnel(ctx, "Node0002", p2pTunnel("p2p-link", "roompair001")); err != nil {
+			t.Fatalf("second side rejected: %v", err)
+		}
+	})
+
+	t.Run("第三条同 room 拒绝", func(t *testing.T) {
+		svc, _ := setup(t)
+		ctx := context.Background()
+		_, _ = svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-link", "roomfull001"))
+		_, _ = svc.ApplyTunnel(ctx, "Node0002", p2pTunnel("p2p-link", "roomfull001"))
+		if _, err := svc.ApplyTunnel(ctx, "Node0003", p2pTunnel("p2p-link", "roomfull001")); err == nil {
+			t.Fatal("third same-room record must be rejected")
+		}
+	})
+
+	t.Run("同节点两条同 room 拒绝", func(t *testing.T) {
+		svc, _ := setup(t)
+		ctx := context.Background()
+		if _, err := svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-a", "selfnode001")); err != nil {
+			t.Fatalf("first tunnel rejected: %v", err)
+		}
+		if _, err := svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-b", "selfnode001")); err == nil {
+			t.Fatal("same-node duplicate room must be rejected")
+		}
+	})
+
+	t.Run("更新自身不误判（排除自身计数）", func(t *testing.T) {
+		svc, _ := setup(t)
+		ctx := context.Background()
+		if _, err := svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-link", "selfupdat01")); err != nil {
+			t.Fatalf("initial apply rejected: %v", err)
+		}
+		// 同名替换：room 不变，local_port 变更——不应被自己的旧记录误判为第三条
+		if _, err := svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-link", "selfupdat01")); err != nil {
+			t.Fatalf("self-update rejected: %v", err)
+		}
+		// 旁边已有合法对端时，替换自身也必须放行
+		if _, err := svc.ApplyTunnel(ctx, "Node0002", p2pTunnel("p2p-link", "selfupdat01")); err != nil {
+			t.Fatalf("peer apply rejected: %v", err)
+		}
+		if _, err := svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-link", "selfupdat01")); err != nil {
+			t.Fatalf("self-update with peer rejected: %v", err)
+		}
+	})
+
+	t.Run("SyncFromClient 与 ReplaceTunnels 同样受配对校验约束", func(t *testing.T) {
+		svc, _ := setup(t)
+		ctx := context.Background()
+		if _, err := svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-link", "syncpath001")); err != nil {
+			t.Fatalf("seed apply rejected: %v", err)
+		}
+		if _, err := svc.ApplyTunnel(ctx, "Node0002", p2pTunnel("p2p-link", "syncpath001")); err != nil {
+			t.Fatalf("peer apply rejected: %v", err)
+		}
+		if err := svc.SyncFromClient(ctx, "Node0003", []core.Tunnel{p2pTunnel("p2p-link", "syncpath001")}); err == nil {
+			t.Fatal("SyncFromClient third same-room record must be rejected")
+		}
+		if _, err := svc.ReplaceTunnels(ctx, "Node0003", []core.Tunnel{p2pTunnel("p2p-link", "syncpath001")}); err == nil {
+			t.Fatal("ReplaceTunnels third same-room record must be rejected")
+		}
+	})
+
+	t.Run("删除一端后 room 可复用", func(t *testing.T) {
+		svc, _ := setup(t)
+		ctx := context.Background()
+		_, _ = svc.ApplyTunnel(ctx, "Node0001", p2pTunnel("p2p-link", "reuseroom1"))
+		_, _ = svc.ApplyTunnel(ctx, "Node0002", p2pTunnel("p2p-link", "reuseroom1"))
+		if _, err := svc.RemoveTunnel(ctx, "Node0001", "p2p-link"); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if _, err := svc.ApplyTunnel(ctx, "Node0003", p2pTunnel("p2p-link", "reuseroom1")); err != nil {
+			t.Fatalf("room reuse after peer removal rejected: %v", err)
+		}
+	})
 }
