@@ -134,8 +134,8 @@ func (m *Manager) Close() {
 // 竞争——MVP 接受：默认部署下各 tunnel 派生值相同（p2punch 上游本身也是单连接假设）。
 func (m *Manager) startLocked(name string, cfg P2PConfig) {
 	engine.SetServers(
-		mergeServers(cfg.STUNServers, defaultSTUNServers(m.serverHost)),
-		mergeServers(cfg.MQTTBrokers, defaultMQTTBrokers(m.serverHost)),
+		mergeServers(cfg.STUNServers, DefaultSTUNServers(m.serverHost)),
+		mergeServers(cfg.MQTTBrokers, DefaultMQTTBrokers(m.serverHost)),
 	)
 	var credsFn func() (SignalCredentials, error)
 	if m.credsFn != nil {
@@ -191,11 +191,11 @@ func cloneConfigs(src map[string]P2PConfig) map[string]P2PConfig {
 }
 
 // defaultSTUNServers 公共列表（国内优先）在前 + server :3478 内嵌兜底追加
-func defaultSTUNServers(serverHost string) []string {
+func DefaultSTUNServers(serverHost string) []string {
 	return append(engine.DefaultSTUNServers(), net.JoinHostPort(serverHost, "3478"))
 }
 
 // defaultMQTTBrokers 默认指向 server 内嵌 broker
-func defaultMQTTBrokers(serverHost string) []string {
+func DefaultMQTTBrokers(serverHost string) []string {
 	return []string{"tcp://" + net.JoinHostPort(serverHost, "1883")}
 }

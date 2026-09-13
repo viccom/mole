@@ -63,6 +63,9 @@ type Client struct {
 
 	// webssh 远程终端管理器
 	websshMgr *webssh.Manager
+
+	// p2p 隧道控制器（无 tag hook：默认构建为 nil、调用点 nil-safe，-tags p2p 时为真实现）
+	p2p p2pController
 }
 
 type tunnelMutationKind int
@@ -149,7 +152,7 @@ func New(cfg *Config) (*Client, error) {
 			MaxStreamBuffer:   4 * 1024 * 1024,
 		})
 	}
-	return &Client{
+	client := &Client{
 		cfg:        cfg,
 		transport:  sm,
 		events:     newEventBus(),
@@ -159,7 +162,10 @@ func New(cfg *Config) (*Client, error) {
 		ser2netMgr: ser2netMgr,
 		vpnMgr:     vpnMgr,
 		websshMgr:  websshMgr,
-	}, nil
+	}
+	// p2p hook：默认构建为 nil；-tags p2p 构建真实例（依赖 cfg.ServerAddr 派生默认服务器）
+	client.p2p = newP2PController(client)
+	return client, nil
 }
 
 // Run 连接服务端并运行主循环（阻塞，直到 ctx 取消）
@@ -250,6 +256,9 @@ func (c *Client) Close() {
 	}
 	if c.websshMgr != nil {
 		c.websshMgr.Close()
+	}
+	if c.p2p != nil {
+		c.p2p.Close()
 	}
 }
 
@@ -423,6 +432,11 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 	}
 	if c.websshMgr != nil {
 		c.websshMgr.OnTunnelUpdate(websshConfigs)
+	}
+	// p2p：Enable 过滤与 Para 解析在控制器内部做（全量列表传入，
+	// 禁用的隧道以「从 map 消失」表达停机信号）
+	if c.p2p != nil {
+		c.p2p.Notify(tunnels)
 	}
 }
 
@@ -707,6 +721,16 @@ func (c *Client) collectTunnelStatuses() []protocol.TunnelStatus {
 				st.Running = stats.Running
 				st.Connected = stats.Sessions > 0
 				st.Clients = stats.Sessions
+			}
+		case TunnelTypeP2P:
+			if c.p2p != nil {
+				if rt, err := c.p2p.StatusByName(t.Name); err == nil {
+					st.Running = rt.Running
+					st.Connected = rt.Connected
+					st.BytesIn = rt.BytesIn
+					st.BytesOut = rt.BytesOut
+					st.Error = rt.Error
+				}
 			}
 		}
 		statuses = append(statuses, st)
@@ -1294,6 +1318,15 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 			ts.BytesIn = stats.BytesIn
 			ts.BytesOut = stats.BytesOut
 			ts.Status = stats
+		}
+	case TunnelTypeP2P:
+		if c.p2p != nil {
+			if rt, err := c.p2p.StatusByName(t.Name); err == nil {
+				ts.Connected = rt.Connected
+				ts.BytesIn = rt.BytesIn
+				ts.BytesOut = rt.BytesOut
+				ts.Status = rt
+			}
 		}
 	}
 	return ts
