@@ -215,6 +215,27 @@ func TestIsValidNodeID_FirstCharMustBeLetter(t *testing.T) {
 	}
 }
 
+// 非 ASCII 多字节字符不得因「字节长度恰好为 8」而混过校验。
+// 注意：必须逐字节判定 ASCII，用 unicode.IsLetter 会放行这些值。
+func TestIsValidNodeID_RejectsNonASCIIBytes(t *testing.T) {
+	tests := []struct {
+		id     string
+		reason string
+	}{
+		{"ébcdefg", "é(2B) + 6 ASCII = 8 bytes, first char non-ASCII"},
+		{"abééfg", "2 + é(2B) + é(2B) + 2 = 8 bytes, non-ASCII in middle"},
+		{"ａbcdef", "fullwidth ａ(3B) + 5 ASCII = 8 bytes"},
+	}
+	for _, tt := range tests {
+		if len(tt.id) != 8 {
+			t.Fatalf("test case %q is %d bytes, need exactly 8 to exercise the hole", tt.id, len(tt.id))
+		}
+		if isValidNodeID(tt.id) {
+			t.Errorf("expected %q to be invalid (%s)", tt.id, tt.reason)
+		}
+	}
+}
+
 func TestIsValidNodeID_SubsequentChars(t *testing.T) {
 	// All digits after first letter
 	if !isValidNodeID("A1234567") {
