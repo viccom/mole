@@ -59,8 +59,10 @@ func TestTracker_IsDead(t *testing.T) {
 }
 
 func TestTracker_LastActivity(t *testing.T) {
-	ht := NewTracker()
+	// fork 修正（上游同款 flaky）：必须先取 before 再构造 Tracker——
+	// 原顺序下两次 time.Now() 的先后不受保证，构造时间可能早于 before
 	before := time.Now()
+	ht := NewTracker()
 	la := ht.LastActivity()
 	if la.Before(before) || la.After(time.Now()) {
 		t.Fatalf("last activity out of range: %v", la)

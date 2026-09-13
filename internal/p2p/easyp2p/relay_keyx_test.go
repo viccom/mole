@@ -1,4 +1,4 @@
-//go:build p2p
+//go:build p2p && p2p_integration
 
 package easyp2p
 
