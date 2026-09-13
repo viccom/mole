@@ -141,3 +141,11 @@ func TestNodeAccessGrant_Defaults(t *testing.T) {
 		t.Errorf("NodeAccessGrant{}.LegacyGlobal = %v, want false", grant.LegacyGlobal)
 	}
 }
+
+// TunnelTypeP2P 必须注册为 "p2p"（与客户端根包 TunnelTypeP2P 约定一致，
+// 常量值漂移会导致 tunnel_push 分发后客户端类型不识别）
+func TestTunnelTypeP2P(t *testing.T) {
+	if TunnelTypeP2P != "p2p" {
+		t.Fatalf("TunnelTypeP2P = %q, want %q", TunnelTypeP2P, "p2p")
+	}
+}

@@ -74,6 +74,7 @@ const (
 	TunnelTypeTCP   TunnelType = "tcp"
 	TunnelTypeUDP   TunnelType = "udp"
 	TunnelTypeWebSSH TunnelType = "webssh"
+	TunnelTypeP2P   TunnelType = "p2p"
 )
 
 // Tunnel 隧道配置
