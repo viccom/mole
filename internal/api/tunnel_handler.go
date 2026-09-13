@@ -202,7 +202,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
-	clientLocalTypes := map[string]bool{"ser2mq": true, "vpn-manager": true, "ser2tcp": true, "ser2udp": true, "webssh": true}
+	clientLocalTypes := map[string]bool{"ser2mq": true, "vpn-manager": true, "ser2tcp": true, "ser2udp": true, "webssh": true, "p2p": true}
 	if req.Name == "" || req.Type == "" || req.NodeID == "" {
 		ResponseError(w, http.StatusBadRequest, 400, "name, type, node_id are required")
 		return
@@ -236,6 +236,9 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		// 标准隧道类型
 	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp", "webssh":
 		// 客户端本地类型，配置在 Para 字段中
+	case core.TunnelTypeP2P:
+		// p2p：客户端本地类型，target 不用（访问目标在 Para 由发起端指定）；
+		// Para 校验（含 room 配对）由 TunnelConfigService.validateTunnel 统一把关
 	default:
 		ResponseError(w, http.StatusBadRequest, 400, "unsupported tunnel type: "+req.Type)
 		return
