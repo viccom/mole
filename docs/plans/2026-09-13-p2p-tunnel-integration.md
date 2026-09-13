@@ -389,12 +389,16 @@ func validateP2PPara(para json.RawMessage) error
 - **体积**：默认不编译后体积问题消解；`-tags p2p` 构建增量仍按 +3-5MB 预期（yamux/dtls/stun + pion 间接依赖），不进发布矩阵。
 - **上游同步**：跟踪文档 `docs/plans/2026-09-13-p2p-upstream-sync.md`（新建）：记录 upstream commit hash ↔ fork commit、sed 与 tag 行噪声、累计落后数。因 import path 与 tag 行改动，无法纯文本 diff 校验，不做 pre-commit 强制。
 
-## 运维速查（阶段 8.1 产物占位）
+## 运维速查（阶段 8.1 产物，已经本机三进程集成验证实测）
 
 ```bash
+# 0. server 需开启 mqtt + stun（stun.enabled: true），防火墙放行 :3478/UDP；
+#    client 必须 -tags p2p 构建，默认构建只透传配置不运行 P2P
+go build -tags p2p -o moleagent-client ./cmd/moleagent-client
+
 # 1. 生成 room（创建侧，勿入日志）
 ROOM=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
-# 2a. 访问端（node A）：带 local_port + target_*（target 是 B 侧要访问的地址，可为 B 的 127.0.0.1；body 为示意）
+# 2a. 访问端（node A）：带 local_port + target_*（target 是 B 侧要访问的地址，可为 B 的 127.0.0.1）
 curl -X POST https://<serv>/api/v1/tunnels -H 'Authorization: Bearer <jwt>' -d '{
   "node_id":"<nodeA>", "name":"p2p-a-b", "type":"p2p", "enabled":true,
   "para":{"room":"'$ROOM'","modes":["lan","tcp-v6","udp-v6","udp-v4"],
@@ -404,8 +408,14 @@ curl -X POST https://<serv>/api/v1/tunnels -H 'Authorization: Bearer <jwt>' -d '
 curl -X POST https://<serv>/api/v1/tunnels -H 'Authorization: Bearer <jwt>' -d '{
   "node_id":"<nodeB>", "name":"p2p-a-b", "type":"p2p", "enabled":true,
   "para":{"room":"'$ROOM'","modes":["lan","tcp-v6","udp-v6","udp-v4"],"protocol":"tcp"}}'
-# 3. client 需 -tags p2p 构建；访问侧用户连 nodeA:18080 → B 的 127.0.0.1:8080
-go build -tags p2p -o moleagent-client ./cmd/moleagent-client
+# 3. tunnel_push 自动分发；访问侧用户连 nodeA:18080 → B 的 127.0.0.1:8080
+# 4. 验证：client 本地 GET /api/tunnels（connected/bytes）；server 节点详情
+#    client_statuses 可见 running+connected；server 日志出现
+#    "MQTT p2p signal client authenticated"（信令走 :1883 且已过 P2PSignalToken 校验）
 ```
 
-运维注意：server 的 `:3478/UDP` 需防火墙放行（STUN 兜底才可达）；`mqtt_brokers`/`stun_servers` 留空即默认指向 server（serverHost 从 client 配置的 ServerAddr 派生）。
+运维注意：
+- server 的 `:3478/UDP` 需防火墙放行（STUN 兜底才可达）；`mqtt_brokers`/`stun_servers` 留空即默认指向 server（serverHost 从 client 配置的 ServerAddr 派生）。
+- 生产启用 server broker 信令无需手工配置凭据：client 每次连接尝试前经控制通道拉取 P2PSignalToken（默认 broker 场景自动启用）；指向公共/自定义 broker 时自动匿名。
+- 同 room 第三条记录会被 server 拒绝（错误信息中 room 打码），这是防串扰的预期行为。
+- 已知环境限制：本机集成验证走 lan 模式命中（同子网），udp-v4 打洞 + STUN 兜底链路未在真实 NAT 环境实测（STUN 服务本身有回环单测覆盖）。
