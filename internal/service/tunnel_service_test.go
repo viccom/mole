@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
+	"moleAgent_Serv/internal/storage"
 	"moleAgent_Serv/internal/tunnel"
 )
 
@@ -426,4 +428,113 @@ func TestP2PRoomPairing(t *testing.T) {
 			t.Fatalf("room reuse after peer removal rejected: %v", err)
 		}
 	})
+}
+
+// ===== 审查 #6/#8：吊销跟随持久化真相源 + 禁用即吊销 =====
+
+// p2pRevocationHarness 组装真实凭据服务的 svc（节点在线、推送必失败，
+// 用于复现「提前返回跳过吊销」的路径）
+type p2pRevocationHarness struct {
+	svc    *TunnelConfigService
+	tokens *P2PSignalTokenService
+}
+
+func setupRevocationHarness(t *testing.T) *p2pRevocationHarness {
+	t.Helper()
+	nodeMgr := node.NewShardedNodeManager(4)
+	repo := newMockNodeRepo()
+	db := setupP2PTokenDB(t)
+	tokens := NewP2PSignalTokenService(storage.NewP2PSignalTokenRepo(db))
+	pusher := &mockPusher{err: errors.New("push down")}
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, &mockGateway{}, pusher, nil, nil)
+	svc.SetP2PSignalTokenService(tokens)
+	for _, id := range []string{"Node0001", "Node0002"} {
+		if err := nodeMgr.Add(context.Background(), &core.Node{ID: id, Name: id, Status: core.NodeStatusOnline}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	return &p2pRevocationHarness{svc: svc, tokens: tokens}
+}
+
+// mustIssue 在线节点签发并返回 tokenID（推送失败不影响签发与持久化）
+func (h *p2pRevocationHarness) mustIssue(t *testing.T, nodeID, name, room string) string {
+	t.Helper()
+	if _, err := h.svc.ApplyTunnel(context.Background(), nodeID, p2pTunnel(name, room)); err != nil {
+		t.Fatalf("apply %s on %s: %v", name, nodeID, err)
+	}
+	tok, err := h.tokens.repo.FindByOwner(nodeID, name)
+	if err != nil {
+		t.Fatalf("token should exist after apply: %v", err)
+	}
+	return tok.TokenID
+}
+
+// 删除隧道时推送失败（提前返回 synced_server_only）也不得跳过吊销——
+// 吊销必须跟随持久化真相源，而不是运行时同步路径（审查 #6）
+func TestRevocationSurvivesPushFailure(t *testing.T) {
+	h := setupRevocationHarness(t)
+
+	tokenID := h.mustIssue(t, "Node0001", "p2p-a-b", "revpusher01")
+	if _, err := h.svc.ApplyTunnel(context.Background(), "Node0002", p2pTunnel("p2p-a-b", "revpusher01")); err != nil {
+		t.Fatalf("seed B: %v", err)
+	}
+
+	if _, err := h.svc.RemoveTunnel(context.Background(), "Node0001", "p2p-a-b"); err != nil {
+		t.Fatalf("RemoveTunnel: %v", err)
+	}
+	if _, err := h.tokens.repo.FindByOwner("Node0001", "p2p-a-b"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("token must be revoked even when client push failed, find err = %v", err)
+	}
+	_ = tokenID
+}
+
+// ReplaceTunnels 把 p2p 隧道从列表移除（同一提前返回路径）也必须吊销
+func TestReplaceTunnelsRemovalRevokes(t *testing.T) {
+	h := setupRevocationHarness(t)
+
+	h.mustIssue(t, "Node0001", "p2p-x", "reprevoked1")
+
+	if _, err := h.svc.ReplaceTunnels(context.Background(), "Node0001", []core.Tunnel{}); err != nil {
+		t.Fatalf("ReplaceTunnels: %v", err)
+	}
+	if _, err := h.tokens.repo.FindByOwner("Node0001", "p2p-x"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("token must be revoked when ReplaceTunnels removes the tunnel, find err = %v", err)
+	}
+}
+
+// 禁用的 p2p 隧道视同消失：不预签发，禁用替换即吊销（审查 #8）
+func TestDisabledP2PTunnelRevokedAndNotIssued(t *testing.T) {
+	h := setupRevocationHarness(t)
+
+	// 1) 直接创建禁用隧道：不得预签发
+	disabled := false
+	tun := p2pTunnel("p2p-off", "revdisabl1")
+	tun.Enabled = &disabled
+	if _, err := h.svc.ApplyTunnel(context.Background(), "Node0001", tun); err != nil {
+		t.Fatalf("apply disabled: %v", err)
+	}
+	if _, err := h.tokens.repo.FindByOwner("Node0001", "p2p-off"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("disabled tunnel must not be pre-issued, find err = %v", err)
+	}
+
+	// 2) 先启用签发，再替换为禁用版本：凭据必须被吊销
+	enabled := true
+	tun2 := p2pTunnel("p2p-tog", "revtoggle1")
+	tun2.Enabled = &enabled
+	if _, err := h.svc.ApplyTunnel(context.Background(), "Node0001", tun2); err != nil {
+		t.Fatalf("apply enabled: %v", err)
+	}
+	tok, ferr := h.tokens.repo.FindByOwner("Node0001", "p2p-tog")
+	if ferr != nil {
+		t.Fatalf("token should exist: %v", ferr)
+	}
+
+	tun2.Enabled = &disabled
+	if _, err := h.svc.ReplaceTunnels(context.Background(), "Node0001", []core.Tunnel{tun2}); err != nil {
+		t.Fatalf("replace with disabled: %v", err)
+	}
+	if _, err := h.tokens.repo.FindByOwner("Node0001", "p2p-tog"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("disabling must revoke the credential, find err = %v", err)
+	}
+	_ = tok
 }

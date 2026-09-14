@@ -201,6 +201,50 @@ func maskRoom(room string) string {
 	return room[:3] + "***" + room[len(room)-2:]
 }
 
+// persistedTunnels 读持久化真相源的隧道列表（节点不存在或无 repo 视为空）。
+// 吊销对照必须用它而非内存态：推送失败的既有路径会让内存缺隧道，
+// 内存对照会拿到空列表而漏吊销（审查 #6/#7 的层分叉）。
+func (s *TunnelConfigService) persistedTunnels(ctx context.Context, nodeID string) []core.Tunnel {
+	if s.nodeRepo == nil {
+		return nil
+	}
+	n, err := s.nodeRepo.GetByID(nodeID)
+	if err != nil || n == nil {
+		return nil
+	}
+	return n.Tunnels
+}
+
+// revokeRemovedP2PTokens 对比新旧隧道列表，吊销从节点配置中「消失」的
+// p2p 隧道信令凭据。消失 = 删除、禁用（Enabled=false 视同切断信令，与
+// TCP/UDP 停监听语义一致）或被同名替换掉（审查 #8）。
+//
+// 调用时机契约：必须在 persistUpdatedNode 成功后、pushToClient 之前调用——
+// 吊销跟随持久化真相源；若放在运行时同步路径，推送失败的提前返回会跳过它，
+// 留下可继续签发的活凭据（审查 #6）。oldTunnels 为空视为服务重启后首次
+// 加载（内存尚空），不误吊销既有凭据。
+func (s *TunnelConfigService) revokeRemovedP2PTokens(nodeID string, oldTunnels, newTunnels []core.Tunnel) {
+	if s.p2pTokens == nil || len(oldTunnels) == 0 {
+		return
+	}
+	current := make(map[string]bool)
+	for _, t := range newTunnels {
+		if t.Type == core.TunnelTypeP2P && t.IsEnabled() {
+			current[t.Name] = true
+		}
+	}
+	revoked := make(map[string]bool)
+	for _, t := range oldTunnels {
+		if t.Type != core.TunnelTypeP2P || current[t.Name] || revoked[t.Name] {
+			continue
+		}
+		revoked[t.Name] = true
+		if err := s.p2pTokens.RevokeP2PSignalToken(nodeID, t.Name); err != nil {
+			slog.Warn("Failed to revoke p2p signal token", "node", nodeID, "tunnel", t.Name, "error", err)
+		}
+	}
+}
+
 // validateRateLimit 校验限速配置（拒绝零值/负值/极大值）
 func validateRateLimit(rl *core.TunnelRateLimit) error {
 	if rl == nil {
@@ -262,13 +306,21 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 		return result, err
 	}
 
+	// 吊销对照的旧列表取持久化真相源（推送失败的既有路径会让内存态缺隧道，
+	// 内存对照会在 Remove 时拿到空列表而漏吊销——审查 #6/#7 的层分叉）
+	oldTunnels := s.persistedTunnels(ctx, nodeID)
+
 	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
 		return result, err
 	}
 	result.Persisted = true
 
-	// p2p 隧道创建即预签发信令凭据（客户端 p2p_signal_token 请求时按 owner 幂等命中）
-	if tunnelCfg.Type == core.TunnelTypeP2P && s.p2pTokens != nil {
+	// 吊销跟随持久化真相源，且必须在推送提前返回之前执行（审查 #6）
+	s.revokeRemovedP2PTokens(nodeID, oldTunnels, updated)
+
+	// p2p 隧道创建即预签发信令凭据（客户端 p2p_signal_token 请求时按 owner 幂等命中）；
+	// 禁用的隧道不签发——「禁用即切断信令」与 TCP/UDP 停监听语义一致（审查 #8）
+	if tunnelCfg.Type == core.TunnelTypeP2P && tunnelCfg.IsEnabled() && s.p2pTokens != nil {
 		if _, _, _, err := s.p2pTokens.IssueP2PSignalToken(nodeID, tunnelCfg.Name); err != nil {
 			// 预签发失败不阻断配置变更：客户端请求路径会再次签发
 			slog.Warn("Failed to pre-issue p2p signal token", "node", nodeID, "tunnel", tunnelCfg.Name, "error", err)
@@ -308,10 +360,15 @@ func (s *TunnelConfigService) RemoveTunnel(ctx context.Context, nodeID string, t
 		}
 	}
 
+	oldTunnels := s.persistedTunnels(ctx, nodeID)
+
 	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
 		return result, err
 	}
 	result.Persisted = true
+
+	// 吊销必须在推送提前返回之前执行（审查 #6）
+	s.revokeRemovedP2PTokens(nodeID, oldTunnels, updated)
 
 	if node.Status == core.NodeStatusOnline && s.pusher != nil {
 		if err := s.pushToClient(ctx, nodeID, updated); err != nil {
@@ -344,9 +401,11 @@ func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string,
 	if err := s.validateP2PRoomPairing(nodeID, updated); err != nil {
 		return core.TunnelChangeResult{}, err
 	}
+	oldTunnels := s.persistedTunnels(ctx, nodeID)
 	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
 		return result, err
 	}
+	s.revokeRemovedP2PTokens(nodeID, oldTunnels, updated)
 	result.Persisted = true
 
 	if node.Status == core.NodeStatusOnline && s.pusher != nil {
@@ -373,9 +432,11 @@ func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string,
 	if err := s.validateP2PRoomPairing(nodeID, tunnels); err != nil {
 		return err
 	}
+	oldTunnels := s.persistedTunnels(ctx, nodeID)
 	if err := s.persistUpdatedNode(ctx, nodeID, tunnels); err != nil {
 		return err
 	}
+	s.revokeRemovedP2PTokens(nodeID, oldTunnels, tunnels)
 
 	if err := s.applyRuntimeTunnels(ctx, nodeID, tunnels); err != nil {
 		return err
@@ -454,27 +515,6 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		s.limiter.RemoveTunnel(nodeID + "/" + name)
 	}
 		}
-
-	// p2p 隧道从配置中消失（删除/禁用后替换）即吊销其信令凭据。
-	// oldTunnels 为空视为服务重启后首次加载（内存尚空），不误吊销既有凭据。
-	if s.p2pTokens != nil && len(oldTunnels) > 0 {
-		currentP2P := make(map[string]bool)
-		for _, t := range tunnels {
-			if t.Type == core.TunnelTypeP2P {
-				currentP2P[t.Name] = true
-			}
-		}
-		revoked := make(map[string]bool)
-		for _, t := range oldTunnels {
-			if t.Type != core.TunnelTypeP2P || currentP2P[t.Name] || revoked[t.Name] {
-				continue
-			}
-			revoked[t.Name] = true
-			if err := s.p2pTokens.RevokeP2PSignalToken(nodeID, t.Name); err != nil {
-				slog.Warn("Failed to revoke p2p signal token", "node", nodeID, "tunnel", t.Name, "error", err)
-			}
-		}
-	}
 
 	if s.gateway != nil {
 		s.gateway.RebuildIndex(ctx)
