@@ -6,14 +6,17 @@ package stun
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"time"
 
 	"github.com/pion/stun/v3"
 )
 
 // Server STUN Binding 应答器
 type Server struct {
-	conn *net.UDPConn
+	// conn 抽象为 PacketConn：生产为 *net.UDPConn，测试可注入故障 mock
+	conn net.PacketConn
 }
 
 // NewServer 绑定 bindAddr（如 ":3478"）
@@ -36,22 +39,32 @@ func (s *Server) LocalAddr() net.Addr { return s.conn.LocalAddr() }
 func (s *Server) Close() error { return s.conn.Close() }
 
 // ListenAndServe 阻塞应答 Binding Request，直到 Close。非 STUN / 非 Binding 报文忽略。
+//
+// 瞬时读/写错误（接口抖动、ENOBUFS、ICMP 偶发反馈）只记日志并继续——STUN 是
+// 可选兜底组件，绝不允许它终止服务（main.go 对本函数返回错误的处理是 cancel
+// 根 ctx，等于整个进程陪葬）。读侧 100ms 退避防持久性错误热烧 CPU。
 func (s *Server) ListenAndServe() error {
 	buf := make([]byte, 1500)
 	for {
-		n, from, err := s.conn.ReadFromUDP(buf)
+		n, from, err := s.conn.ReadFrom(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return fmt.Errorf("read udp: %w", err)
+			slog.Warn("STUN read failed, retrying", "error", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 		m := &stun.Message{Raw: buf[:n]}
 		if err := m.Decode(); err != nil || m.Type != stun.BindingRequest {
 			continue
 		}
+		udpFrom, ok := from.(*net.UDPAddr)
+		if !ok {
+			continue
+		}
 		// 归一化 IPv4（4 字节），IPv6 保持 16 字节；XORMappedAddress.AddTo 按长度选择 family
-		ip := from.IP
+		ip := udpFrom.IP
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
 		}
@@ -59,13 +72,17 @@ func (s *Server) ListenAndServe() error {
 		resp, err := stun.Build(
 			stun.BindingSuccess,
 			stun.NewTransactionIDSetter(m.TransactionID),
-			stun.XORMappedAddress{IP: ip, Port: from.Port},
+			stun.XORMappedAddress{IP: ip, Port: udpFrom.Port},
 		)
 		if err != nil {
 			continue
 		}
-		if _, err := s.conn.WriteToUDP(resp.Raw, from); err != nil {
-			return fmt.Errorf("write udp: %w", err)
+		if _, err := s.conn.WriteTo(resp.Raw, from); err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			slog.Warn("STUN write failed, dropping response", "error", err)
+			continue
 		}
 	}
 }

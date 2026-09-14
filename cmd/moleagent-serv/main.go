@@ -258,20 +258,22 @@ func main() {
 	}
 
 	// --- STUN Server（P2P 隧道 NAT 探测兜底，默认关闭）---
+	var stunSrv *stun.Server
 	if cfg.Stun.Enabled {
-		stunSrv, err := stun.NewServer(cfg.Stun.BindAddr)
+		var err error
+		stunSrv, err = stun.NewServer(cfg.Stun.BindAddr)
 		if err != nil {
 			slog.Error("STUN server start failed", "error", err)
 			cancel()
-		} else {
-			go func() {
-				slog.Info("STUN server starting...", "addr", stunSrv.LocalAddr())
-				if err := stunSrv.ListenAndServe(); err != nil {
-					slog.Error("STUN server error", "error", err)
-					cancel()
-				}
-			}()
+			return // 显式启用但绑定失败：快速失败，避免以已取消的 ctx 半启动
 		}
+		go func() {
+			slog.Info("STUN server starting...", "addr", stunSrv.LocalAddr())
+			if err := stunSrv.ListenAndServe(); err != nil {
+				slog.Error("STUN server error", "error", err)
+				cancel()
+			}
+		}()
 	}
 
 	// --- 飞书集成 ---
@@ -362,6 +364,9 @@ func main() {
 	defer shutdownCancel()
 	apiSrv.Shutdown(shutdownCtx)
 	gatewaySrv.Shutdown(shutdownCtx)
+	if stunSrv != nil {
+		_ = stunSrv.Close()
+	}
 	if mqttBroker != nil {
 		_ = mqttBroker.Stop(shutdownCtx)
 	}

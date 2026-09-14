@@ -1,7 +1,9 @@
 package stun
 
 import (
+	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,5 +93,92 @@ func TestNonStunPacketIgnored(t *testing.T) {
 	}
 	if res.Type != stun.BindingSuccess {
 		t.Fatalf("response type = %v, want BindingSuccess", res.Type)
+	}
+}
+
+// flakyPacketConn 模拟瞬时 UDP 错误：前 N 次 ReadFrom/WriteTo 立即报错，其余委托真实 conn
+type flakyPacketConn struct {
+	net.PacketConn
+	failReads  atomic.Int32
+	failWrites atomic.Int32
+}
+
+func (c *flakyPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	if c.failReads.Add(-1) >= 0 {
+		return 0, nil, errors.New("simulated transient read error")
+	}
+	return c.PacketConn.ReadFrom(p)
+}
+
+func (c *flakyPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if c.failWrites.Add(-1) >= 0 {
+		return 0, errors.New("simulated transient write error")
+	}
+	return c.PacketConn.WriteTo(p, addr)
+}
+
+// STUN 是可选兜底组件：瞬时读/写错误（接口抖动、ENOBUFS、ICMP 偶发反馈）
+// 绝不允许终止服务循环——main.go 对 ListenAndServe 返回错误的响应是 cancel
+// 根 ctx，等于让整个 server 进程陪葬。本测试证明错误后循环存活并继续应答。
+func TestListenAndServeSurvivesTransientErrors(t *testing.T) {
+	s, err := NewServer("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	flaky := &flakyPacketConn{PacketConn: s.conn}
+	flaky.failReads.Store(2)
+	flaky.failWrites.Store(1)
+	s.conn = flaky
+
+	servedErr := make(chan error, 1)
+	go func() { servedErr <- s.ListenAndServe() }()
+
+	conn, err := net.Dial("udp", s.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// 穿过 2 次读错误 + 1 次写错误后，必须仍能完成至少 2 次完整应答
+	deadline := time.Now().Add(5 * time.Second)
+	successes := 0
+	for successes < 2 && time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		req := stun.MustBuild(stun.NewTransactionIDSetter(stun.NewTransactionID()), stun.BindingRequest)
+		if _, err := conn.Write(req.Raw); err != nil {
+			t.Fatalf("write request: %v", err)
+		}
+		raw := make([]byte, 1500)
+		n, err := conn.Read(raw)
+		if err != nil {
+			continue // 写失败丢掉的那次响应：超时重发
+		}
+		res := &stun.Message{Raw: raw[:n]}
+		if err := res.Decode(); err == nil && res.Type == stun.BindingSuccess {
+			successes++
+		}
+	}
+	if successes < 2 {
+		t.Fatalf("only %d successful roundtrips after transient errors — service loop died?", successes)
+	}
+
+	// 服务循环必须仍在运行（未因瞬时错误退出）
+	select {
+	case err := <-servedErr:
+		t.Fatalf("ListenAndServe exited early: %v", err)
+	default:
+	}
+
+	// Close 后循环必须正常返回（nil）
+	_ = s.Close()
+	select {
+	case err := <-servedErr:
+		if err != nil {
+			t.Fatalf("ListenAndServe after Close = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe did not return after Close")
 	}
 }
