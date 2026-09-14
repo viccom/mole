@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -222,7 +223,17 @@ func (s *TunnelConfigService) validatePairingAndPersist(ctx context.Context, nod
 		s.pairingMu.Lock()
 		defer s.pairingMu.Unlock()
 	}
-	oldTunnels := s.persistedTunnels(ctx, nodeID)
+	return s.validatePairingAndPersistLocked(ctx, nodeID, candidate)
+}
+
+// validatePairingAndPersistLocked 为 validatePairingAndPersist 的不加锁内核
+// （调用方已持 pairingMu，如 MoveTunnel 的全序列临界区，复审 R7）
+func (s *TunnelConfigService) validatePairingAndPersistLocked(ctx context.Context, nodeID string, candidate []core.Tunnel) ([]core.Tunnel, error) {
+	oldTunnels, err := s.persistedTunnels(ctx, nodeID)
+	if err != nil {
+		// 真 DB 错误必须中止变更：静默跳过吊销对照 = 凭据带病存活到 TTL（复审 R2）
+		return nil, err
+	}
 	if err := s.validateP2PRoomPairing(nodeID, candidate); err != nil {
 		return nil, err
 	}
@@ -232,18 +243,33 @@ func (s *TunnelConfigService) validatePairingAndPersist(ctx context.Context, nod
 	return oldTunnels, nil
 }
 
-// persistedTunnels 读持久化真相源的隧道列表（节点不存在或无 repo 视为空）。
+// preIssueP2PToken 预签发信令凭据：仅 p2p 且启用且已注入凭据服务时执行；
+// 失败不阻断配置变更（客户端请求路径会再次签发）（审查 #8；复审合并两处重复块）
+func (s *TunnelConfigService) preIssueP2PToken(nodeID string, t core.Tunnel) {
+	if t.Type != core.TunnelTypeP2P || !t.IsEnabled() || s.p2pTokens == nil {
+		return
+	}
+	if _, _, _, err := s.p2pTokens.IssueP2PSignalToken(nodeID, t.Name); err != nil {
+		slog.Warn("Failed to pre-issue p2p signal token", "node", nodeID, "tunnel", t.Name, "error", err)
+	}
+}
+
+// persistedTunnels 读持久化真相源的隧道列表。
 // 吊销对照必须用它而非内存态：推送失败的既有路径会让内存缺隧道，
 // 内存对照会拿到空列表而漏吊销（审查 #6/#7 的层分叉）。
-func (s *TunnelConfigService) persistedTunnels(ctx context.Context, nodeID string) []core.Tunnel {
+// 真 DB 错误必须透传（复审 R2）；节点无持久记录（ErrNodeNotFound）才是合法「空」。
+func (s *TunnelConfigService) persistedTunnels(ctx context.Context, nodeID string) ([]core.Tunnel, error) {
 	if s.nodeRepo == nil {
-		return nil
+		return nil, nil
 	}
 	n, err := s.nodeRepo.GetByID(nodeID)
-	if err != nil || n == nil {
-		return nil
+	if err != nil {
+		if errors.Is(err, core.ErrNodeNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read persisted tunnels of node %s: %w", nodeID, err)
 	}
-	return n.Tunnels
+	return n.Tunnels, nil
 }
 
 // revokeRemovedP2PTokens 对比新旧隧道列表，吊销从节点配置中「消失」的
@@ -345,12 +371,7 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 
 	// p2p 隧道创建即预签发信令凭据（客户端 p2p_signal_token 请求时按 owner 幂等命中）；
 	// 禁用的隧道不签发——「禁用即切断信令」与 TCP/UDP 停监听语义一致（审查 #8）
-	if tunnelCfg.Type == core.TunnelTypeP2P && tunnelCfg.IsEnabled() && s.p2pTokens != nil {
-		if _, _, _, err := s.p2pTokens.IssueP2PSignalToken(nodeID, tunnelCfg.Name); err != nil {
-			// 预签发失败不阻断配置变更：客户端请求路径会再次签发
-			slog.Warn("Failed to pre-issue p2p signal token", "node", nodeID, "tunnel", tunnelCfg.Name, "error", err)
-		}
-	}
+	s.preIssueP2PToken(nodeID, tunnelCfg)
 
 	// 在线节点只有在客户端成功接收配置后，才更新服务端运行态索引，避免路由先切流导致业务异常。
 	if node.Status == core.NodeStatusOnline && s.pusher != nil {
@@ -385,7 +406,11 @@ func (s *TunnelConfigService) RemoveTunnel(ctx context.Context, nodeID string, t
 		}
 	}
 
-	oldTunnels := s.persistedTunnels(ctx, nodeID)
+	// 吊销对照读取失败必须中止（持久层尚未变更，天然一致）（复审 R2）
+	oldTunnels, err := s.persistedTunnels(ctx, nodeID)
+	if err != nil {
+		return result, err
+	}
 
 	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
 		return result, err
@@ -618,8 +643,18 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 	}
 	result := core.TunnelChangeResult{Status: "ok"}
 
+	// p2p 移动整段进 pairingMu：旧节点移除、目标节点配对、拒绝回滚必须同临界区，
+	// 否则「移除→并发 Apply 挤入→移动拒绝→回滚」可残留 3 条同 room 记录（复审 R7）
+	if tunnelCfg.Type == core.TunnelTypeP2P {
+		s.pairingMu.Lock()
+		defer s.pairingMu.Unlock()
+	}
+
 	// 1. 从旧节点移除隧道
-	fromOldTunnels := s.persistedTunnels(ctx, fromNodeID) // 吊销对照（持久层真相源）
+	fromOldTunnels, pdErr := s.persistedTunnels(ctx, fromNodeID) // 吊销对照（持久层真相源）
+	if pdErr != nil {
+		return result, pdErr // 变更未开始，中止即一致（复审 R2）
+	}
 	oldNode, oldOk := s.nodeMgr.Get(ctx, fromNodeID)
 	var oldTunnels []core.Tunnel
 
@@ -696,8 +731,8 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 		updatedNew = append(updatedNew, tunnelCfg)
 	}
 
-	// p2p 候选在场时「读旧列表→配对→落库」同锁完成（审查 #2/#3）
-	if _, err := s.validatePairingAndPersist(ctx, toNodeID, updatedNew); err != nil {
+	// 外层已持 pairingMu（p2p 时），用不加锁内核避免重入（审查 #2/#3 + 复审 R7）
+	if _, err := s.validatePairingAndPersistLocked(ctx, toNodeID, updatedNew); err != nil {
 		s.rollbackOldNode(ctx, fromNodeID, oldOk, oldTunnels, tunnelCfg)
 		return result, err
 	}
@@ -708,11 +743,7 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 	if removedFromOld {
 		s.revokeRemovedP2PTokens(fromNodeID, fromOldTunnels, removedOldList)
 	}
-	if tunnelCfg.Type == core.TunnelTypeP2P && tunnelCfg.IsEnabled() && s.p2pTokens != nil {
-		if _, _, _, err := s.p2pTokens.IssueP2PSignalToken(toNodeID, tunnelCfg.Name); err != nil {
-			slog.Warn("MoveTunnel: pre-issue p2p signal token failed", "node", toNodeID, "tunnel", tunnelCfg.Name, "error", err)
-		}
-	}
+	s.preIssueP2PToken(toNodeID, tunnelCfg)
 
 	// 在线新节点：推送 + 创建运行时
 	if newNode.Status == core.NodeStatusOnline && s.pusher != nil {
@@ -735,6 +766,27 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 // rollbackOldNode 回滚旧节点：将隧道加回持久化 + 更新内存状态
 func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID string, oldOk bool, oldTunnels []core.Tunnel, tunnelCfg core.Tunnel) {
 	if !oldOk {
+		// 离线节点（仅持久层持有）：从持久层回滚。此前直接 return 会让
+		// 「移除成功→目标节点失败」的移动把隧道从持久层永久删除（复审 R9）。
+		if s.nodeRepo == nil {
+			return
+		}
+		persisted, err := s.nodeRepo.GetByID(fromNodeID)
+		if err != nil || persisted == nil {
+			slog.Error("MoveTunnel: rollback read persisted node failed", "nodeId", fromNodeID, "error", err)
+			return
+		}
+		rollback := make([]core.Tunnel, 0, len(persisted.Tunnels)+1)
+		for _, t := range persisted.Tunnels {
+			if t.Name != tunnelCfg.Name {
+				rollback = append(rollback, t)
+			}
+		}
+		rollback = append(rollback, tunnelCfg)
+		persisted.Tunnels = rollback
+		if err := s.nodeRepo.Update(persisted); err != nil {
+			slog.Error("MoveTunnel: rollback persist (offline) failed", "nodeId", fromNodeID, "error", err)
+		}
 		return
 	}
 	rollback := make([]core.Tunnel, 0, len(oldTunnels)+1)
