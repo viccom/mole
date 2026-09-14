@@ -3,11 +3,15 @@
 package p2p
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
+	"net/url"
+	"reflect"
+	"slices"
+	"sort"
+	"strings"
 	"sync"
 
 	"moleAgent_client/internal/p2p/engine"
@@ -32,6 +36,14 @@ type Manager struct {
 	configs  map[string]P2PConfig
 	handlers map[string]*Handler
 	cancels  map[string]context.CancelFunc
+	// lastSTUN/lastMQTT 记录最近写入 easyp2p 全局的服务器列表：未变化则跳过
+	// 写入，消除包级全局的并发写与跨隧道覆盖（复审 F2 主场景）
+	lastSTUN []string
+	lastMQTT []string
+	// brokerSig 本节点已启动 p2p 隧道的 MQTT broker 签名：混合 broker 配置
+	// 不受支持（fork 包级全局为单值，混用会导致跨隧道信令污染与凭据泄漏），
+	// 签名不一致的新隧道拒绝启动（复审 F2）
+	brokerSig string
 }
 
 // NewManager 构造 Manager。serverHost 用于派生默认服务器列表：
@@ -77,13 +89,40 @@ func (m *Manager) OnTunnelUpdate(configs map[string]P2PConfig) {
 			stopped = append(stopped, h)
 		}
 	}
-	for name, cfg := range configs {
+	// 起：新增的 + 变更重启的。按名排序保证确定性；发起端 local_port
+	// 全节点唯一——重复端口的败者会以 Connected 状态空转并不断重试绑定
+	//（复审 F11），配置期直接跳过并告警
+	names := make([]string, 0, len(configs))
+	for name := range configs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	usedPorts := make(map[int]string)
+	for hname, h := range m.handlers {
+		if oc, ok := m.configs[hname]; ok && oc.TargetHost != "" && oc.LocalPort > 0 {
+			usedPorts[oc.LocalPort] = hname
+		}
+		_ = h
+	}
+	for _, name := range names {
 		if _, running := m.handlers[name]; running {
 			continue
+		}
+		cfg := configs[name]
+		if cfg.TargetHost != "" && cfg.LocalPort > 0 {
+			if owner, dup := usedPorts[cfg.LocalPort]; dup {
+				slog.Error("p2p tunnel skipped: local_port already used on this node",
+					"tunnel", name, "port", cfg.LocalPort, "owner", owner)
+				continue
+			}
+			usedPorts[cfg.LocalPort] = name
 		}
 		m.startLocked(name, cfg)
 	}
 	m.configs = cloneConfigs(configs)
+	if len(m.handlers) == 0 {
+		m.brokerSig = "" // 全部下线后解除同质约束（复审 F2）
+	}
 	m.mu.Unlock()
 
 	// 阻塞的会话拆除在锁外执行（复审 F1：m.mu 不得跨越 h.Close）
@@ -141,7 +180,6 @@ func (m *Manager) Stop(name string) error {
 	return nil
 }
 
-// Close 关闭全部 handler 并等待 Run goroutine 退出（幂等）
 // Close 关闭全部 handler 并等待其 goroutine 退出（幂等）。
 // m.mu 只保护路由表，绝不跨 h.Close 持有——会话拆除可能阻塞数十秒，
 // 持锁等待会与 Status/tunnel_push/凭据请求构成死锁环（复审 F1/F6）。
@@ -176,10 +214,28 @@ func (m *Manager) Close() {
 // 持 m.mu 串行执行）。注：easyp2p 全局读取无锁，多 tunnel 并发打洞时理论上有
 // 竞争——MVP 接受：默认部署下各 tunnel 派生值相同（p2punch 上游本身也是单连接假设）。
 func (m *Manager) startLocked(name string, cfg P2PConfig) {
-	engine.SetServers(
-		mergeServers(cfg.STUNServers, DefaultSTUNServers(m.serverHost)),
-		mergeServers(cfg.MQTTBrokers, DefaultMQTTBrokers(m.serverHost)),
-	)
+	stunEff := mergeServers(cfg.STUNServers, DefaultSTUNServers(m.serverHost))
+	mqttEff := mergeServers(cfg.MQTTBrokers, DefaultMQTTBrokers(m.serverHost))
+
+	// broker 同质校验：本节点所有 p2p 隧道必须使用同一 broker 集——fork 的
+	// 信令凭据与服务器列表均为包级单值，混用会造成跨隧道信令污染，甚至把
+	// 节点 token 发给另一隧道配置的第三方 broker（复审 F2，安全）
+	sig := MQTTBrokerSignature(mqttEff)
+	if m.brokerSig == "" {
+		m.brokerSig = sig
+	} else if sig != m.brokerSig {
+		slog.Error("p2p tunnel rejected: mqtt_brokers differ from tunnels already running on this node",
+			"tunnel", name, "want", m.brokerSig)
+		return
+	}
+
+	// 幂等写：服务器列表未变化时不重写包级全局，消除并发打洞的读写竞争面
+	if !slices.Equal(stunEff, m.lastSTUN) || !slices.Equal(mqttEff, m.lastMQTT) {
+		engine.SetServers(stunEff, mqttEff)
+		m.lastSTUN = append([]string(nil), stunEff...)
+		m.lastMQTT = append([]string(nil), mqttEff...)
+	}
+
 	var credsFn func(context.Context) (SignalCredentials, error)
 	if m.credsFn != nil {
 		fn := m.credsFn
@@ -201,17 +257,9 @@ func (m *Manager) startLocked(name string, cfg P2PConfig) {
 	h.Start(hctx)
 }
 
-// configEqual Para 级变更检测：JSON 字节比较（对齐 vpn Manager 的变更重启惯例）
+// configEqual Para 级变更检测：深比较（对齐 vpn Manager 的变更重启惯例）
 func configEqual(a, b P2PConfig) bool {
-	ab, err := json.Marshal(a)
-	if err != nil {
-		return false
-	}
-	bb, err := json.Marshal(b)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(ab, bb)
+	return reflect.DeepEqual(a, b)
 }
 
 func cloneConfigs(src map[string]P2PConfig) map[string]P2PConfig {
@@ -230,4 +278,33 @@ func DefaultSTUNServers(serverHost string) []string {
 // defaultMQTTBrokers 默认指向 server 内嵌 broker
 func DefaultMQTTBrokers(serverHost string) []string {
 	return []string{"tcp://" + net.JoinHostPort(serverHost, "1883")}
+}
+
+// MQTTBrokerSignature 归一化 broker 列表的比较签名：小写 scheme/host、
+// 去尾斜杠、tcp 系缺端口补 :1883、排序后拼接。用于判断两组写法不同但
+// 指向相同 broker 集的配置是否等价（复审 F14）。
+func MQTTBrokerSignature(brokers []string) string {
+	if len(brokers) == 0 {
+		return ""
+	}
+	norm := make([]string, 0, len(brokers))
+	for _, b := range brokers {
+		norm = append(norm, normalizeBroker(b))
+	}
+	slices.Sort(norm)
+	return strings.Join(norm, "|")
+}
+
+func normalizeBroker(b string) string {
+	b = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(b), "/"))
+	u, err := url.Parse(b)
+	if err != nil {
+		return strings.ToLower(b)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Host)
+	if u.Port() == "" && (scheme == "tcp" || scheme == "ssl" || scheme == "tls") {
+		host += ":1883"
+	}
+	return scheme + "://" + host
 }

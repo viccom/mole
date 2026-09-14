@@ -5,6 +5,7 @@ package p2p
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -349,5 +350,132 @@ func TestHandlerCredsInjection(t *testing.T) {
 	}
 	if gotCreds[1] != (SignalCredentials{Username: "p2p-signal:x", Password: "pw"}) {
 		t.Fatalf("creds from credsFn must reach connectFn, got %+v", gotCreds[1])
+	}
+}
+
+// ===== 复审 F4/F5/F15 =====
+
+// 单次尝试超时（复审 F4）：connectFn 被信令/broker 永久阻塞时，
+// 看门狗必须打断并进入退避，而不是把 Handler 永久楔死
+func TestModeAttemptTimeout(t *testing.T) {
+	sessions := &sessionRecorder{}
+	origConnect := connectFn
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+		<-ctx.Done() // 模拟 broker 拒绝后 ConnectRetry 永不返回
+		return nil, ctx.Err()
+	}
+	t.Cleanup(func() { connectFn = origConnect })
+
+	cfg := initiatorCfg()
+	h := NewHandler(cfg, "127.0.0.1", nil)
+	h.modeAttemptTimeout = 30 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = h.Run(ctx); close(done) }()
+	// 等待 Run goroutine 退出后再返回：泄漏的 goroutine 会继续读包级
+	// backoffFn/connectFn，与后续测试的注入写入构成数据竞争
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rt := h.Status()
+		if strings.Contains(rt.Error, "attempt timeout") {
+			if sessions.len() != 0 {
+				t.Fatalf("no session should exist after timeout, got %d", sessions.len())
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("attempt timeout never surfaced in Status")
+}
+
+// 建隧道持续失败必须计入退避（复审 F5）：否则 3s 快速重连反复完整重打洞
+// （conntrack 洪泛源）。此测试在修复前会失败（connected=true 重置退避）
+func TestTunnelCreationFailureTriggersBackoff(t *testing.T) {
+	spy := &intSlice{}
+	origConnect := connectFn
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+		spy.add(0)
+		return &failCreateSession{mockSession: newMockSession()}, nil
+	}
+	t.Cleanup(func() { connectFn = origConnect })
+
+	h := NewHandler(initiatorCfg(), "127.0.0.1", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { _ = h.Run(ctx); close(runDone) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	sawBackoff := false
+	for time.Now().Before(deadline) && !sawBackoff {
+		if len(spy.snapshot()) > 0 {
+			sawBackoff = true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !sawBackoff {
+		t.Fatal("CreateTunnel persistent failure must enter backoff (connected must be false)")
+	}
+}
+
+// failCreateSession CreateTunnel 永远失败的会话（模拟对端不应答 OPEN）
+type failCreateSession struct{ *mockSession }
+
+func (m *failCreateSession) CreateTunnel(p tunnel.Params) (session.TunnelInfo, error) {
+	return session.TunnelInfo{}, errors.New("bind: address already in use")
+}
+
+// 字节计数跨重连累计（复审 F15）：重连归零的会话计数不得让总量塌缩为 0
+func TestStatusCountersSurviveReconnect(t *testing.T) {
+	sessions := withFailingConnect(t, 0, nil)
+	h := NewHandler(initiatorCfg(), "127.0.0.1", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = h.Run(ctx) }()
+	t.Cleanup(cancel)
+
+	waitFor(t, func() bool { return sessions.len() > 0 }, 2*time.Second, "session not created")
+	s1 := sessions.at(0)
+	s1.mu.Lock()
+	s1.tunnels = []session.TunnelInfo{{ID: 1, BytesIn: 100, BytesOut: 50}}
+	s1.mu.Unlock()
+	rt1 := h.Status()
+	if rt1.BytesIn != 100 || rt1.BytesOut != 50 {
+		t.Fatalf("first session counters = %d/%d", rt1.BytesIn, rt1.BytesOut)
+	}
+
+	// 模拟重连：Handler 换了新会话（计数从 0 开始）
+	s2 := newMockSession()
+	s2.tunnels = []session.TunnelInfo{{ID: 1, BytesIn: 30, BytesOut: 70}}
+	h.mu.Lock()
+	h.sess = s2
+	h.mu.Unlock()
+	rt2 := h.Status()
+	if rt2.BytesIn != 130 || rt2.BytesOut != 120 {
+		t.Fatalf("counters collapsed on reconnect: %d/%d, want 130/120", rt2.BytesIn, rt2.BytesOut)
+	}
+
+	// 再换一个空会话：累计值保持，不塌缩为 0
+	s3 := newMockSession()
+	h.mu.Lock()
+	h.sess = s3
+	h.mu.Unlock()
+	rt3 := h.Status()
+	if rt3.BytesIn != 130 || rt3.BytesOut != 120 {
+		t.Fatalf("counters collapsed on empty session: %d/%d", rt3.BytesIn, rt3.BytesOut)
 	}
 }

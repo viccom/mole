@@ -79,10 +79,10 @@ func (c *Client) usesDefaultP2PBroker(name string) bool {
 		if err != nil {
 			return false
 		}
-		if len(cfg.MQTTBrokers) == 0 {
-			return true
-		}
-		return equalStringSlices(cfg.MQTTBrokers, p2p.DefaultMQTTBrokers(serverHostFromAddr(c.cfg.ServerAddr)))
+		// 归一化签名比较（复审 F14）：写法不同但指向相同 broker 的配置
+		// 不应被误判为自定义 broker 而匿名连接（会永久被 server broker 拒绝）
+		return p2p.MQTTBrokerSignature(cfg.MQTTBrokers) ==
+			p2p.MQTTBrokerSignature(p2p.DefaultMQTTBrokers(serverHostFromAddr(c.cfg.ServerAddr)))
 	}
 	return false
 }
@@ -157,17 +157,4 @@ func serverHostFromAddr(addr string) string {
 		return host
 	}
 	return addr
-}
-
-// equalStringSlices 顺序敏感的切片相等比较
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

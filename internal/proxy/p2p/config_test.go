@@ -38,14 +38,23 @@ func TestFromPara(t *testing.T) {
 
 	t.Run("room 校验", func(t *testing.T) {
 		bad := []string{
-			`{"room":"ab","protocol":"tcp"}`,            // 过短
-			`{"room":"a23456789!","protocol":"tcp"}`,    // 非法字符
-			`{"protocol":"tcp"}`,                        // 缺失
+			`{"room":"ab","protocol":"tcp"}`,         // 过短
+			`{"room":"a23456789!","protocol":"tcp"}`, // 非法字符
+			`{"protocol":"tcp"}`,                     // 缺失
 		}
 		for _, para := range bad {
 			if _, err := FromPara(json.RawMessage(para)); err == nil {
 				t.Errorf("room invalid case must fail: %s", para)
 			}
+		}
+	})
+
+	t.Run("v4-relay 校验（复审 F12）", func(t *testing.T) {
+		if _, err := FromPara(json.RawMessage(`{"room":"roomOK123456","modes":["v4-relay"],"relay_server":"r.example.com:9999","protocol":"tcp","local_port":1,"target_host":"h","target_port":2}`)); err != nil {
+			t.Fatalf("v4-relay with relay_server must pass: %v", err)
+		}
+		if _, err := FromPara(json.RawMessage(`{"room":"roomOK123456","modes":["v4-relay"],"protocol":"tcp"}`)); err == nil {
+			t.Fatal("v4-relay without relay_server must be rejected at config time")
 		}
 	})
 

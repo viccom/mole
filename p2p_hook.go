@@ -20,9 +20,9 @@ type p2pController interface {
 // P2PRuntime P2P 隧道运行时状态（无 tag，collectTunnelStatuses 与
 // buildTunnelStatus 两处状态收集共用；字段与 proxy/p2p.Runtime 一致，可直接转换）
 type P2PRuntime struct {
-	Running   bool
-	Connected bool
-	BytesIn   uint64
-	BytesOut  uint64
-	Error     string
+	Running   bool   `json:"running"`
+	Connected bool   `json:"connected"`
+	BytesIn   uint64 `json:"bytes_in"`
+	BytesOut  uint64 `json:"bytes_out"`
+	Error     string `json:"error,omitempty"`
 }

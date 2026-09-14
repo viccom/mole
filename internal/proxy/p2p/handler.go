@@ -20,13 +20,14 @@ type SignalCredentials struct {
 	Password string
 }
 
-// Runtime 是 Handler 的运行时快照（两处状态收集共用：tunnel_status 上报 + 本地 REST）
+// Runtime 是 Handler 的运行时快照（两处状态收集共用：tunnel_status 上报 + 本地 REST）。
+// json tag 与其它隧道类型的状态子结构一致（snake_case，复审 F10）
 type Runtime struct {
-	Running   bool
-	Connected bool
-	BytesIn   uint64
-	BytesOut  uint64
-	Error     string
+	Running   bool   `json:"running"`
+	Connected bool   `json:"connected"`
+	BytesIn   uint64 `json:"bytes_in"`
+	BytesOut  uint64 `json:"bytes_out"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Handler 单条 p2p 隧道的连接编排：吸收 p2punch cmd/cli/connection.go 的 glue——
@@ -34,7 +35,7 @@ type Runtime struct {
 // 外加重连退避循环。secure 配置与 yamux 配对在 fork 的 engine 包内部完成，此处不感知。
 type Handler struct {
 	cfg     P2PConfig
-	host    string // serverHost：派生默认 mqtt/stun 服务器地址
+	host    string                                               // serverHost：派生默认 mqtt/stun 服务器地址
 	credsFn func(ctx context.Context) (SignalCredentials, error) // 信令凭据拉取（nil = 匿名，公共/自定义 broker 场景）
 
 	mu        sync.Mutex
@@ -43,11 +44,23 @@ type Handler struct {
 	closeOnce sync.Once
 	cancel    context.CancelFunc
 	stopped   chan struct{}
+
+	// modeAttemptTimeout 单次连接尝试（打洞+信令+会话建立）的上限：
+	// paho ConnectRetry(true) 在 broker 持续拒绝时永不返回，无上限会把
+	// Handler 永久楔死在 connectFn 里（复审 F4）
+	modeAttemptTimeout time.Duration
+
+	// 字节累计（复审 F15）：会话级计数器随重连归零，Handler 维护跨重连的
+	// 累计值——carried 为已结束会话的总和，last 为当前会话上次读数
+	carriedIn  uint64
+	carriedOut uint64
+	lastIn     uint64
+	lastOut    uint64
 }
 
 // NewHandler 构造 Handler（Start 前不产生任何 goroutine）
 func NewHandler(cfg P2PConfig, serverHost string, credsFn func(ctx context.Context) (SignalCredentials, error)) *Handler {
-	return &Handler{cfg: cfg, host: serverHost, credsFn: credsFn, stopped: make(chan struct{})}
+	return &Handler{cfg: cfg, host: serverHost, credsFn: credsFn, stopped: make(chan struct{}), modeAttemptTimeout: 120 * time.Second}
 }
 
 // connectFn / backoffFn 是测试注入点（同包测试替换，生产用默认实现）
@@ -171,19 +184,43 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 				engine.SetSignalCredentials(creds.Username, creds.Password)
 			}
 		}
-		sess, err := connectFn(ctx, modeName, h.cfg, h.host, creds)
+		// 复审 F4：单次尝试上限（看门狗 cancel）——paho ConnectRetry(true) 在
+		// broker 持续拒绝时永不返回，无上限会把 Handler 永久楔死在 connectFn
+		attemptCtx, cancel := context.WithCancel(ctx)
+		timer := time.AfterFunc(h.modeAttemptTimeout, func() {
+			h.setFailure(modeName + " attempt timeout")
+			cancel()
+		})
+		sess, err := connectFn(attemptCtx, modeName, h.cfg, h.host, creds)
+		timerFired := !timer.Stop()
+
 		if err != nil {
-			h.setFailure(modeName + " failed: " + err.Error())
+			cancel()
+			// 看门狗打断导致的返回要保持 timeout 语义（复审 F4）
+			if attemptCtx.Err() != nil && ctx.Err() == nil {
+				h.setFailure(modeName + " attempt timeout")
+			} else {
+				h.setFailure(modeName + " failed: " + err.Error())
+			}
 			continue
 		}
 		// 停机竞态守卫（复审 F6）：connectFn 返回与 setSession 之间若已停机，
 		// 必须就地关闭刚建立的会话——session.Run 不响应 ctx，遗弃会留 35s 幽灵
 		// 连接，且 Handler.Close 的补关看到的是 nil 引用
 		if ctx.Err() != nil {
-			println("DBG ctx-guard closing fresh session")
+			cancel()
 			_ = sess.Close()
 			return false
 		}
+		if timerFired || attemptCtx.Err() != nil {
+			// 尝试超时被打断（复审 F4）：关闭半成品会话，进入退避
+			cancel()
+			_ = sess.Close()
+			h.setFailure(modeName + " attempt timeout")
+			continue
+		}
+		// 成功路径不 cancel attemptCtx（会话内部可能绑定该 ctx），
+		// 其生命周期随 handler ctx 终结统一回收
 		h.setSession(sess)
 
 		// 先启动 session.Run（内部 reader/ticker），再建隧道：
@@ -194,18 +231,26 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 			close(runDone)
 		}()
 
-		if h.cfg.TargetHost != "" {
-			h.restoreTunnel(ctx, sess)
+		// 发起端建隧道持续失败视同未连通：必须走退避而不是 3s 快速重连——
+		// 否则完整重打洞（conntrack 洪泛源）无限循环（复审 F5）
+		tunnelOK := true
+		if h.cfg.TargetHost != "" && !h.restoreTunnel(ctx, sess) {
+			tunnelOK = false
 		}
+
 		<-runDone
 		h.endSession(sess)
+
+		if !tunnelOK {
+			return false
+		}
 		return true
 	}
 	return false
 }
 
 // restoreTunnel 发起端建隧道，3 次重试（对齐上游 connection.go 重连自愈惯例）
-func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) {
+func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) bool {
 	params := tunnel.Params{
 		Protocol:   h.cfg.Protocol,
 		LocalPort:  h.cfg.LocalPort,
@@ -218,14 +263,15 @@ func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) {
 			lastErr = err
 			select {
 			case <-ctx.Done():
-				return
+				return false
 			case <-time.After(tunnelRetryDelay):
 			}
 			continue
 		}
-		return
+		return true
 	}
 	h.setFailure(fmt.Sprintf("tunnel :%d FAILED after 3 retries: %v", h.cfg.LocalPort, lastErr))
+	return false
 }
 
 // Status 运行时快照：Connected = session 已建立；字节聚合自 ListTunnels
@@ -236,10 +282,19 @@ func (h *Handler) Status() Runtime {
 	rt := Runtime{Running: true, Error: h.lastErr}
 	if h.sess != nil {
 		rt.Connected = true
+		var in, out uint64
 		for _, ti := range h.sess.ListTunnels() {
-			rt.BytesIn += ti.BytesIn
-			rt.BytesOut += ti.BytesOut
+			in += ti.BytesIn
+			out += ti.BytesOut
 		}
+		// 会话计数器回退 = 发生了重连：旧会话读数并入累计值（复审 F15）
+		if in < h.lastIn || out < h.lastOut {
+			h.carriedIn += h.lastIn
+			h.carriedOut += h.lastOut
+		}
+		h.lastIn, h.lastOut = in, out
+		rt.BytesIn = h.carriedIn + in
+		rt.BytesOut = h.carriedOut + out
 	}
 	return rt
 }
@@ -260,13 +315,22 @@ func (h *Handler) setSession(sess session.Session) {
 
 // endSession 会话生命周期终结（对端断开/本端停机）：关闭其全部隧道与会话本体，
 // 并清除 Handler 引用。幂等——session.Close 与 NegotiatedConn.Close 均可重入
-//（fork 硬约束 §3.2.6）。此前的 clearSession 只清引用不关闭，会话关闭完全
+// （fork 硬约束 §3.2.6）。此前的 clearSession 只清引用不关闭，会话关闭完全
 // 依赖 h.Close 的快照，异步拆除下会泄漏（复审 F6 根因）。
 func (h *Handler) endSession(sess session.Session) {
 	h.mu.Lock()
 	if h.sess == sess {
 		h.sess = nil
 	}
+	var in, out uint64
+	for _, ti := range sess.ListTunnels() {
+		in += ti.BytesIn
+		out += ti.BytesOut
+	}
+	// 最终计数并入累计值，重连后显示不再从 0 塌缩（复审 F15）
+	h.carriedIn += in
+	h.carriedOut += out
+	h.lastIn, h.lastOut = 0, 0
 	h.mu.Unlock()
 	for _, ti := range sess.ListTunnels() {
 		_ = sess.CloseTunnel(ti.ID)

@@ -66,6 +66,8 @@ type Client struct {
 
 	// p2p 隧道控制器（无 tag hook：默认构建为 nil、调用点 nil-safe，-tags p2p 时为真实现）
 	p2p p2pController
+
+	p2pWarnOnce sync.Once // 默认构建下 p2p 隧道静默失效的一次性告警（复审 F9）
 }
 
 type tunnelMutationKind int
@@ -437,6 +439,17 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 	// 禁用的隧道以「从 map 消失」表达停机信号）
 	if c.p2p != nil {
 		c.p2p.Notify(tunnels)
+	} else {
+		// 复审 F9：默认构建收到 p2p 隧道 = 配置有效但本构建不运行，
+		// 必须告警而不是静默无 connected（仅告警一次）
+		for _, t := range tunnels {
+			if t.Type == TunnelTypeP2P {
+				c.p2pWarnOnce.Do(func() {
+					log.Printf("警告: 本二进制未启用 p2p（需 -tags p2p 编译），p2p 隧道将不会被运行")
+				})
+				break
+			}
+		}
 	}
 }
 

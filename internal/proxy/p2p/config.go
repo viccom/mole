@@ -73,6 +73,11 @@ func (c P2PConfig) Validate() error {
 		if !engine.AllModes[m] {
 			return fmt.Errorf("p2p unknown mode %q", m)
 		}
+		if m == "v4-relay" && c.RelayServer == "" {
+			// 复审 F12：v4-relay 无 relay_server 在运行期必然永久失败，
+			// 且运行期错误文案引用的是不存在的 CLI flag，必须在配置期拦截
+			return fmt.Errorf("p2p modes contains v4-relay but relay_server is empty (para field relay_server)")
+		}
 	}
 	if c.Protocol != "tcp" && c.Protocol != "udp" {
 		return fmt.Errorf("p2p protocol must be tcp or udp")

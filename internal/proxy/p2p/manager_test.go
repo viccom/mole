@@ -112,9 +112,11 @@ func TestStartStopIdempotent(t *testing.T) {
 func TestCloseAll(t *testing.T) {
 	m, sessions := setupTestManager(t)
 
+	b := p2pCfg("closebbb01")
+	b.LocalPort = 18081 // F11：同节点 local_port 唯一性，测试用不同端口
 	m.OnTunnelUpdate(map[string]P2PConfig{
 		"a": p2pCfg("closeaaa01"),
-		"b": p2pCfg("closebbb01"),
+		"b": b,
 	})
 	waitFor(t, func() bool { return sessions.len() >= 2 }, 2*time.Second, "handlers not started")
 
@@ -123,4 +125,23 @@ func TestCloseAll(t *testing.T) {
 		t.Fatalf("Status after Close = %v, want ErrNotFound", err)
 	}
 	m.Close() // 幂等
+}
+
+// 复审 F11：同节点发起端 local_port 唯一性——冲突的后到者跳过启动
+// （否则败者永远绑定失败空转，Status 却显示 Connected）
+func TestLocalPortConflictSkipsNewer(t *testing.T) {
+	h, _ := setupTestManager(t)
+
+	a := p2pCfg("conflicta1") // 按名排序先启动
+	b := p2pCfg("conflictb1")
+	b.LocalPort = a.LocalPort // 故意同端口
+
+	h.OnTunnelUpdate(map[string]P2PConfig{"a": a, "b": b})
+
+	if _, err := h.Status("a"); err != nil {
+		t.Fatalf("first-by-name tunnel must start: %v", err)
+	}
+	if _, err := h.Status("b"); err != ErrNotFound {
+		t.Fatalf("conflicting local_port must be skipped, err = %v", err)
+	}
 }

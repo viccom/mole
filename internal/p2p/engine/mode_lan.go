@@ -26,6 +26,11 @@ func ModeLAN(ctx context.Context, deps Deps) (*session.Outcome, *[crypto.KeyLen]
 	}
 	tcpConn := unwrapTCP(info.Conns[0])
 	if tcpConn == nil {
+		// 对端偏好 UDP 时协商降级为 UDP 连接：必须就地关闭，
+		// 否则每次 lan 尝试泄漏一个 NAT 映射 socket（复审 F13）
+		for _, c := range info.Conns {
+			_ = c.Close()
+		}
 		return nil, nil, errors.New("lan: conn is not TCP")
 	}
 	transport.TuneTCPConn(tcpConn)
