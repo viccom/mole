@@ -265,14 +265,12 @@ func main() {
 		if err != nil {
 			slog.Error("STUN server start failed", "error", err)
 			cancel()
-			return // 显式启用但绑定失败：快速失败，避免以已取消的 ctx 半启动
+			os.Exit(1) // 显式启用但绑定失败：非零退出，监管进程（如 systemd Restart=on-failure）可识别（复审 R8）
 		}
 		go func() {
 			slog.Info("STUN server starting...", "addr", stunSrv.LocalAddr())
-			if err := stunSrv.ListenAndServe(); err != nil {
-				slog.Error("STUN server error", "error", err)
-				cancel()
-			}
+			// 瞬时错误在循环内消化（指数退避封顶 5s），仅 Close 使其返回（复审 R4）
+			_ = stunSrv.ListenAndServe()
 		}()
 	}
 

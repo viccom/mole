@@ -182,3 +182,17 @@ func TestListenAndServeSurvivesTransientErrors(t *testing.T) {
 		t.Fatal("ListenAndServe did not return after Close")
 	}
 }
+
+// 复审 R4：连续错误退避指数增长、5s 封顶（防持久性故障下刷日志与空转）
+func TestStunErrBackoff(t *testing.T) {
+	want := []time.Duration{
+		100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond,
+		800 * time.Millisecond, 1600 * time.Millisecond, 3200 * time.Millisecond,
+		5 * time.Second, 5 * time.Second, 5 * time.Second,
+	}
+	for i, w := range want {
+		if got := stunErrBackoff(i + 1); got != w {
+			t.Fatalf("stunErrBackoff(%d) = %v, want %v", i+1, got, w)
+		}
+	}
+}

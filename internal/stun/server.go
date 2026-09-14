@@ -38,23 +38,36 @@ func (s *Server) LocalAddr() net.Addr { return s.conn.LocalAddr() }
 // Close 关闭监听，ListenAndServe 随之返回
 func (s *Server) Close() error { return s.conn.Close() }
 
+// stunErrBackoff 连续错误退避：100ms 起指数增长、5s 封顶。固定 10Hz 重试在
+// 持久性故障下会以约 86 万行/天刷日志且无升级信号（复审 R4）。
+func stunErrBackoff(consecutive int) time.Duration {
+	d := 100 * time.Millisecond << uint(min(consecutive-1, 6))
+	if d > 5*time.Second {
+		d = 5 * time.Second
+	}
+	return d
+}
+
 // ListenAndServe 阻塞应答 Binding Request，直到 Close。非 STUN / 非 Binding 报文忽略。
 //
 // 瞬时读/写错误（接口抖动、ENOBUFS、ICMP 偶发反馈）只记日志并继续——STUN 是
-// 可选兜底组件，绝不允许它终止服务（main.go 对本函数返回错误的处理是 cancel
-// 根 ctx，等于整个进程陪葬）。读侧 100ms 退避防持久性错误热烧 CPU。
+// 可选兜底组件，绝不允许它终止服务。读侧按连续错误次数指数退避（5s 封顶），
+// 防持久性故障热烧 CPU 与刷日志（复审 R4）。
 func (s *Server) ListenAndServe() error {
 	buf := make([]byte, 1500)
+	consecutiveErrs := 0
 	for {
 		n, from, err := s.conn.ReadFrom(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			slog.Warn("STUN read failed, retrying", "error", err)
-			time.Sleep(100 * time.Millisecond)
+			consecutiveErrs++
+			slog.Warn("STUN read failed, retrying", "error", err, "consecutive", consecutiveErrs)
+			time.Sleep(stunErrBackoff(consecutiveErrs))
 			continue
 		}
+		consecutiveErrs = 0
 		m := &stun.Message{Raw: buf[:n]}
 		if err := m.Decode(); err != nil || m.Type != stun.BindingRequest {
 			continue
