@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/crypto"
@@ -36,6 +37,9 @@ type TunnelConfigService struct {
 	limiter   ratelimit.GatewayLimiter
 	encryptor *crypto.SecretEncryptor // nil = 不加解密
 	p2pTokens *P2PSignalTokenService  // nil = 不签发/吊销 P2P 信令凭据
+	// pairingMu 在变更候选含 p2p 隧道时串行化「配对校验→持久化」区间，
+	// 封闭跨节点 room 扫描与落库之间的 TOCTOU 窗口（审查 #3）
+	pairingMu sync.Mutex
 	// longLivedCtx 是进程级 context，用于 TCP/UDP 监听器生命周期。
 	// 不能用请求级 ctx（如 r.Context()），否则 HTTP 请求返回后监听器 ctx 级联取消，
 	// 新连接的 sem.Acquire/waitBurst 立即失败，隧道建完即失效。
@@ -201,6 +205,33 @@ func maskRoom(room string) string {
 	return room[:3] + "***" + room[len(room)-2:]
 }
 
+// validatePairingAndPersist 配对校验 + 持久化。候选集含 p2p 隧道时
+// 「读旧列表→配对扫描→落库」整体在 pairingMu 互斥锁内完成——配对不变量
+// （同 room 全局 ≤2 条）依赖扫描与落库的原子性，否则并发落库可各自通过
+// 扫描造成 3 条记录（审查 #3）。非 p2p 变更不取锁，行为与原路径一致。
+// 返回持久层旧列表（供吊销对照）。
+func (s *TunnelConfigService) validatePairingAndPersist(ctx context.Context, nodeID string, candidate []core.Tunnel) ([]core.Tunnel, error) {
+	hasP2P := false
+	for _, t := range candidate {
+		if t.Type == core.TunnelTypeP2P {
+			hasP2P = true
+			break
+		}
+	}
+	if hasP2P {
+		s.pairingMu.Lock()
+		defer s.pairingMu.Unlock()
+	}
+	oldTunnels := s.persistedTunnels(ctx, nodeID)
+	if err := s.validateP2PRoomPairing(nodeID, candidate); err != nil {
+		return nil, err
+	}
+	if err := s.persistUpdatedNode(ctx, nodeID, candidate); err != nil {
+		return nil, err
+	}
+	return oldTunnels, nil
+}
+
 // persistedTunnels 读持久化真相源的隧道列表（节点不存在或无 repo 视为空）。
 // 吊销对照必须用它而非内存态：推送失败的既有路径会让内存缺隧道，
 // 内存对照会拿到空列表而漏吊销（审查 #6/#7 的层分叉）。
@@ -302,15 +333,9 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 		updated = append(updated, tunnelCfg)
 	}
 
-	if err := s.validateP2PRoomPairing(nodeID, updated); err != nil {
-		return result, err
-	}
-
-	// 吊销对照的旧列表取持久化真相源（推送失败的既有路径会让内存态缺隧道，
-	// 内存对照会在 Remove 时拿到空列表而漏吊销——审查 #6/#7 的层分叉）
-	oldTunnels := s.persistedTunnels(ctx, nodeID)
-
-	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
+	// p2p 候选在场时「读旧列表→配对→落库」同锁完成，封闭 TOCTOU 窗口（审查 #3）
+	oldTunnels, err := s.validatePairingAndPersist(ctx, nodeID, updated)
+	if err != nil {
 		return result, err
 	}
 	result.Persisted = true
@@ -398,12 +423,10 @@ func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string,
 	}
 
 	updated := append([]core.Tunnel(nil), tunnels...)
-	if err := s.validateP2PRoomPairing(nodeID, updated); err != nil {
+	// p2p 候选在场时「读旧列表→配对→落库」同锁完成，封闭 TOCTOU 窗口（审查 #3）
+	oldTunnels, err := s.validatePairingAndPersist(ctx, nodeID, updated)
+	if err != nil {
 		return core.TunnelChangeResult{}, err
-	}
-	oldTunnels := s.persistedTunnels(ctx, nodeID)
-	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
-		return result, err
 	}
 	s.revokeRemovedP2PTokens(nodeID, oldTunnels, updated)
 	result.Persisted = true
@@ -429,11 +452,9 @@ func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string,
 	if err := validateTunnels(tunnels); err != nil {
 		return err
 	}
-	if err := s.validateP2PRoomPairing(nodeID, tunnels); err != nil {
-		return err
-	}
-	oldTunnels := s.persistedTunnels(ctx, nodeID)
-	if err := s.persistUpdatedNode(ctx, nodeID, tunnels); err != nil {
+	// p2p 候选在场时「读旧列表→配对→落库」同锁完成，封闭 TOCTOU 窗口（审查 #3）
+	oldTunnels, err := s.validatePairingAndPersist(ctx, nodeID, tunnels)
+	if err != nil {
 		return err
 	}
 	s.revokeRemovedP2PTokens(nodeID, oldTunnels, tunnels)
@@ -598,9 +619,12 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 	result := core.TunnelChangeResult{Status: "ok"}
 
 	// 1. 从旧节点移除隧道
+	fromOldTunnels := s.persistedTunnels(ctx, fromNodeID) // 吊销对照（持久层真相源）
 	oldNode, oldOk := s.nodeMgr.Get(ctx, fromNodeID)
 	var oldTunnels []core.Tunnel
 
+	removedFromOld := false
+	var removedOldList []core.Tunnel // 旧节点移除后的列表（吊销对照，移动提交后才吊销）
 	if oldOk {
 		oldTunnels = oldNode.Tunnels
 		updated := make([]core.Tunnel, 0, len(oldNode.Tunnels))
@@ -611,9 +635,12 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 		}
 
 		if len(updated) < len(oldNode.Tunnels) {
+			removedFromOld = true
 			if err := s.persistUpdatedNode(ctx, fromNodeID, updated); err != nil {
 				return result, fmt.Errorf("persist old node after remove: %w", err)
 			}
+			// 隧道已从旧节点持久配置消失；吊销延迟到移动提交后（回滚安全）
+			removedOldList = updated
 			if err := s.applyRuntimeTunnels(ctx, fromNodeID, updated); err != nil {
 				slog.Warn("MoveTunnel: apply runtime for old node failed", "nodeId", fromNodeID, "error", err)
 			}
@@ -623,8 +650,10 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 				}
 			}
 		}
-	} else if s.nodeRepo != nil {
-		// 旧节点不在内存（离线），仍需从持久化数据中移除隧道
+	}
+	if !removedFromOld && s.nodeRepo != nil {
+		// 旧节点不在内存，或内存与持久层分叉（推送失败历史导致内存缺隧道）：
+		// 以持久化真相源执行移除（审查 #2/#7）
 		persisted, err := s.nodeRepo.GetByID(fromNodeID)
 		if err == nil && persisted != nil {
 			updated := make([]core.Tunnel, 0, len(persisted.Tunnels))
@@ -634,9 +663,14 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 				}
 			}
 			oldTunnels = persisted.Tunnels
-			persisted.Tunnels = updated
-			if err := s.nodeRepo.Update(persisted); err != nil {
-				slog.Warn("MoveTunnel: failed to persist old node removal", "nodeId", fromNodeID, "error", err)
+			if len(updated) < len(persisted.Tunnels) {
+				persisted.Tunnels = updated
+				if err := s.nodeRepo.Update(persisted); err != nil {
+					slog.Warn("MoveTunnel: failed to persist old node removal", "nodeId", fromNodeID, "error", err)
+				} else {
+					removedFromOld = true
+					removedOldList = updated
+				}
 			}
 		}
 	}
@@ -662,11 +696,23 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 		updatedNew = append(updatedNew, tunnelCfg)
 	}
 
-	if err := s.persistUpdatedNode(ctx, toNodeID, updatedNew); err != nil {
+	// p2p 候选在场时「读旧列表→配对→落库」同锁完成（审查 #2/#3）
+	if _, err := s.validatePairingAndPersist(ctx, toNodeID, updatedNew); err != nil {
 		s.rollbackOldNode(ctx, fromNodeID, oldOk, oldTunnels, tunnelCfg)
-		return result, fmt.Errorf("persist new node: %w", err)
+		return result, err
 	}
 	result.Persisted = true
+
+	// 凭据换主：移动提交后才吊销旧节点侧凭据——新节点持久化失败会回滚旧节点
+	// 配置，此时凭据必须仍在（审查 #2）；预签发在提交后，失败路径无残留凭据。
+	if removedFromOld {
+		s.revokeRemovedP2PTokens(fromNodeID, fromOldTunnels, removedOldList)
+	}
+	if tunnelCfg.Type == core.TunnelTypeP2P && tunnelCfg.IsEnabled() && s.p2pTokens != nil {
+		if _, _, _, err := s.p2pTokens.IssueP2PSignalToken(toNodeID, tunnelCfg.Name); err != nil {
+			slog.Warn("MoveTunnel: pre-issue p2p signal token failed", "node", toNodeID, "tunnel", tunnelCfg.Name, "error", err)
+		}
+	}
 
 	// 在线新节点：推送 + 创建运行时
 	if newNode.Status == core.NodeStatusOnline && s.pusher != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"moleAgent_Serv/internal/core"
@@ -435,8 +436,10 @@ func TestP2PRoomPairing(t *testing.T) {
 // p2pRevocationHarness 组装真实凭据服务的 svc（节点在线、推送必失败，
 // 用于复现「提前返回跳过吊销」的路径）
 type p2pRevocationHarness struct {
-	svc    *TunnelConfigService
-	tokens *P2PSignalTokenService
+	svc     *TunnelConfigService
+	tokens  *P2PSignalTokenService
+	nodeMgr *node.ShardedNodeManager
+	repo    *mockNodeRepo
 }
 
 func setupRevocationHarness(t *testing.T) *p2pRevocationHarness {
@@ -448,12 +451,12 @@ func setupRevocationHarness(t *testing.T) *p2pRevocationHarness {
 	pusher := &mockPusher{err: errors.New("push down")}
 	svc := NewTunnelConfigService(nil, nodeMgr, repo, &mockGateway{}, pusher, nil, nil)
 	svc.SetP2PSignalTokenService(tokens)
-	for _, id := range []string{"Node0001", "Node0002"} {
+	for _, id := range []string{"Node0001", "Node0002", "Node0003", "Node0004"} {
 		if err := nodeMgr.Add(context.Background(), &core.Node{ID: id, Name: id, Status: core.NodeStatusOnline}); err != nil {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
-	return &p2pRevocationHarness{svc: svc, tokens: tokens}
+	return &p2pRevocationHarness{svc: svc, tokens: tokens, nodeMgr: nodeMgr, repo: repo}
 }
 
 // mustIssue 在线节点签发并返回 tokenID（推送失败不影响签发与持久化）
@@ -537,4 +540,81 @@ func TestDisabledP2PTunnelRevokedAndNotIssued(t *testing.T) {
 		t.Fatalf("disabling must revoke the credential, find err = %v", err)
 	}
 	_ = tok
+}
+
+// ===== 审查 #2/#3：MoveTunnel 配对校验 + 并发 TOCTOU =====
+
+// MoveTunnel 是第四个落库入口：配对校验必须覆盖，且合法移动要完成凭据换主
+//（旧节点吊销、新节点预签发）（审查 #2）
+func TestMoveTunnelP2PPairingAndTokens(t *testing.T) {
+	h := setupRevocationHarness(t)
+	c := context.Background()
+
+	// 合法移动：room 只在 A，移到 Node0003
+	h.mustIssue(t, "Node0001", "p2p-m", "movetoken1")
+	if _, err := h.svc.MoveTunnel(c, "Node0001", "Node0003", p2pTunnel("p2p-m", "movetoken1")); err != nil {
+		t.Fatalf("legal move rejected: %v", err)
+	}
+	if _, err := h.tokens.repo.FindByOwner("Node0001", "p2p-m"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("source token must be revoked after move, err = %v", err)
+	}
+	if _, err := h.tokens.repo.FindByOwner("Node0003", "p2p-m"); err != nil {
+		t.Fatalf("target node must have pre-issued token, err = %v", err)
+	}
+
+	// 非法移动：room movelock01 已在 Node0002+Node0003 配对；把 A 上的
+	// p2p-src（原 room srcroom001）移动并改成 room movelock01 移入 Node0004
+	// → 候选将构成第 3 条记录 → 拒绝且回滚
+	h.mustIssue(t, "Node0002", "p2p-p", "movelock01")
+	h.mustIssue(t, "Node0003", "p2p-p", "movelock01")
+	if _, err := h.svc.ApplyTunnel(c, "Node0001", p2pTunnel("p2p-src", "srcroom001")); err != nil {
+		t.Fatalf("seed src: %v", err)
+	}
+	if _, err := h.svc.MoveTunnel(c, "Node0001", "Node0004", p2pTunnel("p2p-src", "movelock01")); err == nil {
+		t.Fatal("moving a third record into a paired room must be rejected")
+	}
+	// 回滚后 A 的原隧道仍在（持久层），Node0004 无残留
+	if _, err := h.tokens.repo.FindByOwner("Node0001", "p2p-src"); err != nil {
+		t.Fatalf("source tunnel token must survive rollback, err = %v", err)
+	}
+}
+
+// 并发不变量：A 已持有 room R，B/C 并发申请同 room —— 最终全局 ≤2 条记录（审查 #3）
+func TestConcurrentApplySameRoomInvariant(t *testing.T) {
+	h := setupRevocationHarness(t)
+	h.mustIssue(t, "Node0001", "p2p-a", "raceinvari1")
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	targets := []string{"Node0002", "Node0003"}
+	for i, target := range targets {
+		wg.Add(1)
+		go func(i int, target string) {
+			defer wg.Done()
+			<-start
+			_, _ = h.svc.ApplyTunnel(context.Background(), target, p2pTunnel("p2p-x", "raceinvari1"))
+		}(i, target)
+	}
+	close(start)
+	wg.Wait()
+
+	// 扫持久层全节点统计持有该 room 的记录数
+	count := 0
+	nodes, err := h.repo.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+	for _, n := range nodes {
+		for _, tl := range n.Tunnels {
+			if tl.Type != core.TunnelTypeP2P {
+				continue
+			}
+			if room, err := core.P2PRoom(tl.Para); err == nil && room == "raceinvari1" {
+				count++
+			}
+		}
+	}
+	if count > 2 {
+		t.Fatalf("pairing invariant broken under concurrency: %d records hold the room, want <= 2", count)
+	}
 }
