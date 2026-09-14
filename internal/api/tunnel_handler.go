@@ -13,17 +13,17 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/crypto"
-	"moleAgent_Serv/internal/ratelimit"
 	"moleAgent_Serv/internal/node"
+	"moleAgent_Serv/internal/ratelimit"
 )
 
 type TunnelHandler struct {
-	nodeMgr   *node.ShardedNodeManager
-	tunnelSvc core.TunnelConfigManager // 隧道配置单一变更入口
-	stats     core.TunnelStatsReader   // 运行时统计读取
-	limiter   ratelimit.GatewayLimiter // 限速配置读取
-	encryptor *crypto.SecretEncryptor  // 隧道凭证加密（nil=不加密）
-	controlSrv ControlServer           // 控制端口（隧道操作）
+	nodeMgr    *node.ShardedNodeManager
+	tunnelSvc  core.TunnelConfigManager // 隧道配置单一变更入口
+	stats      core.TunnelStatsReader   // 运行时统计读取
+	limiter    ratelimit.GatewayLimiter // 限速配置读取
+	encryptor  *crypto.SecretEncryptor  // 隧道凭证加密（nil=不加密）
+	controlSrv ControlServer            // 控制端口（隧道操作）
 }
 
 type ControlServer interface {
@@ -44,18 +44,18 @@ func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelCon
 func (h *TunnelHandler) List(w http.ResponseWriter, r *http.Request) {
 	nodes := h.nodeMgr.GetAll(r.Context())
 	type tunnelInfo struct {
-		Name       string          `json:"name"`
-		Type       string          `json:"type"`
-		Target     string          `json:"target"`
-		Domain     string          `json:"domain,omitempty"`
-		ListenPort int             `json:"listen_port,omitempty"`
-		Enabled    bool            `json:"enabled"`
-		NodeID     string          `json:"node_id"`
-		Status     string          `json:"status"`
-		Para       json.RawMessage `json:"para,omitempty"`
+		Name              string                `json:"name"`
+		Type              string                `json:"type"`
+		Target            string                `json:"target"`
+		Domain            string                `json:"domain,omitempty"`
+		ListenPort        int                   `json:"listen_port,omitempty"`
+		Enabled           bool                  `json:"enabled"`
+		NodeID            string                `json:"node_id"`
+		Status            string                `json:"status"`
+		Para              json.RawMessage       `json:"para,omitempty"`
 		RateLimit         *core.TunnelRateLimit `json:"rate_limit,omitempty"`
-		EffectiveMaxConns int   `json:"effective_max_conns,omitempty"`
-		EffectiveMaxBW    int64 `json:"effective_max_bandwidth,omitempty"`
+		EffectiveMaxConns int                   `json:"effective_max_conns,omitempty"`
+		EffectiveMaxBW    int64                 `json:"effective_max_bandwidth,omitempty"`
 	}
 
 	claims := auth.GetClaims(r.Context())
@@ -130,6 +130,7 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	vpnMgrCount := 0
 	ser2tcpCount := 0
 	ser2udpCount := 0
+	p2pCount := 0
 
 	for _, n := range nodes {
 		totalTunnels += len(n.Tunnels)
@@ -156,6 +157,8 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 				ser2udpCount++
 			case "webssh":
 				// webssh tunnels counted in total
+			case core.TunnelTypeP2P:
+				p2pCount++
 			}
 		}
 	}
@@ -173,29 +176,30 @@ func (h *TunnelHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		"total_tunnels":   totalTunnels,
 		"enabled_tunnels": enabledTunnels,
 		"active_tunnels":  activeTunnels,
-		"tcp_tunnels":    tcpCount,
-		"udp_tunnels":    udpCount,
-		"http_tunnels":   httpCount,
-		"https_tunnels":  httpsCount,
+		"tcp_tunnels":     tcpCount,
+		"udp_tunnels":     udpCount,
+		"http_tunnels":    httpCount,
+		"https_tunnels":   httpsCount,
 		"ser2mq_tunnels":  ser2mqCount,
 		"vpn_mgr_tunnels": vpnMgrCount,
 		"ser2tcp_tunnels": ser2tcpCount,
 		"ser2udp_tunnels": ser2udpCount,
+		"p2p_tunnels":     p2pCount,
 	})
 }
 
 // Create 创建/更新隧道配置，通过 TunnelConfigService 统一处理
 func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name           string          `json:"name"`
-		Type           string          `json:"type"`
-		Target         string          `json:"target"`
-		Domain         string          `json:"domain,omitempty"`
-		ListenPort     int             `json:"listen_port,omitempty"`
-		Enabled        *bool           `json:"enabled,omitempty"`
-		NodeID         string          `json:"node_id"`
-		OriginalNodeID string          `json:"original_node_id,omitempty"`
-		Para           json.RawMessage `json:"para,omitempty"`
+		Name           string                `json:"name"`
+		Type           string                `json:"type"`
+		Target         string                `json:"target"`
+		Domain         string                `json:"domain,omitempty"`
+		ListenPort     int                   `json:"listen_port,omitempty"`
+		Enabled        *bool                 `json:"enabled,omitempty"`
+		NodeID         string                `json:"node_id"`
+		OriginalNodeID string                `json:"original_node_id,omitempty"`
+		Para           json.RawMessage       `json:"para,omitempty"`
 		RateLimit      *core.TunnelRateLimit `json:"rate_limit,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -389,24 +393,24 @@ func (h *TunnelHandler) Usage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type usageItem struct {
-		Name         string          `json:"name"`
-		Type         string          `json:"type"`
-		Target       string          `json:"target"`
-		Domain       string          `json:"domain,omitempty"`
-		ListenPort   int             `json:"listen_port,omitempty"`
-		Enabled      bool            `json:"enabled"`
-		NodeID       string          `json:"node_id"`
-		NodeStatus   string          `json:"node_status"`
-		OwnerUserID  string          `json:"owner_user_id"`
-		BytesIn      int64           `json:"bytes_in"`
-		BytesOut     int64           `json:"bytes_out"`
-		TotalConns   int64           `json:"total_connections"`
-		ActiveConns  int64           `json:"active_connections"`
-		LastActivity string          `json:"last_activity,omitempty"`
-		Para              json.RawMessage `json:"para,omitempty"`
+		Name              string                `json:"name"`
+		Type              string                `json:"type"`
+		Target            string                `json:"target"`
+		Domain            string                `json:"domain,omitempty"`
+		ListenPort        int                   `json:"listen_port,omitempty"`
+		Enabled           bool                  `json:"enabled"`
+		NodeID            string                `json:"node_id"`
+		NodeStatus        string                `json:"node_status"`
+		OwnerUserID       string                `json:"owner_user_id"`
+		BytesIn           int64                 `json:"bytes_in"`
+		BytesOut          int64                 `json:"bytes_out"`
+		TotalConns        int64                 `json:"total_connections"`
+		ActiveConns       int64                 `json:"active_connections"`
+		LastActivity      string                `json:"last_activity,omitempty"`
+		Para              json.RawMessage       `json:"para,omitempty"`
 		RateLimit         *core.TunnelRateLimit `json:"rate_limit,omitempty"`
-		EffectiveMaxConns int   `json:"effective_max_conns,omitempty"`
-		EffectiveMaxBW    int64 `json:"effective_max_bandwidth,omitempty"`
+		EffectiveMaxConns int                   `json:"effective_max_conns,omitempty"`
+		EffectiveMaxBW    int64                 `json:"effective_max_bandwidth,omitempty"`
 	}
 
 	items := make([]usageItem, 0)

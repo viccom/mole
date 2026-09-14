@@ -56,18 +56,18 @@ func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type nodeInfo struct {
-		ID             string                   `json:"id"`
-		Name           string                   `json:"name"`
-		Status         core.NodeStatus          `json:"status"`
-		OwnerUserID    string                   `json:"owner_user_id"`
-		ConnectedAt    *string                  `json:"connected_at,omitempty"`
-		LastHeartbeat  *string                  `json:"last_heartbeat,omitempty"`
-		TunnelCount    int                      `json:"tunnel_count"`
-		Tunnels        []core.Tunnel            `json:"tunnels"`
-		RemoteAddr     string                   `json:"remote_addr,omitempty"`
-		SysInfo        *core.SysInfo            `json:"sysinfo,omitempty"`
+		ID             string                    `json:"id"`
+		Name           string                    `json:"name"`
+		Status         core.NodeStatus           `json:"status"`
+		OwnerUserID    string                    `json:"owner_user_id"`
+		ConnectedAt    *string                   `json:"connected_at,omitempty"`
+		LastHeartbeat  *string                   `json:"last_heartbeat,omitempty"`
+		TunnelCount    int                       `json:"tunnel_count"`
+		Tunnels        []core.Tunnel             `json:"tunnels"`
+		RemoteAddr     string                    `json:"remote_addr,omitempty"`
+		SysInfo        *core.SysInfo             `json:"sysinfo,omitempty"`
 		ClientStatuses []core.ClientTunnelStatus `json:"client_statuses,omitempty"`
-		RTT            int64                    `json:"rtt,omitempty"`
+		RTT            int64                     `json:"rtt,omitempty"`
 	}
 	items := make([]nodeInfo, 0, len(nodes))
 	for _, n := range nodes {
@@ -292,7 +292,6 @@ func (h *NodeHandler) listTunnels(w http.ResponseWriter, r *http.Request, nodeID
 	}
 	ResponseOK(w, node.Tunnels)
 }
-
 
 // ListPersisted handles GET /api/v1/nodes/persisted — returns all persisted nodes from the database.
 // Used for managing offline node data: cleanup and tunnel migration.
