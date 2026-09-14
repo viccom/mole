@@ -24,7 +24,9 @@ func TestValidateP2PPara(t *testing.T) {
 	}{
 		{"发起端合法（带 modes）", `{"room":"` + validRoom + `","modes":["lan","tcp-v6"],"protocol":"tcp","local_port":18080,"target_host":"127.0.0.1","target_port":8080}`, false},
 		{"发起端合法（modes 缺省）", `{"room":"` + validRoom + `","protocol":"udp","local_port":1,"target_host":"192.168.1.2","target_port":65535}`, false},
-		{"纯会话端合法（无 target）", `{"room":"` + validRoom + `","modes":["v4-relay","tcp-v4"],"protocol":"tcp"}`, false},
+		{"纯会话端合法（无 target）", `{"room":"` + validRoom + `","modes":["lan","tcp-v4"],"protocol":"tcp"}`, false},
+		{"v4-relay 带 relay_server 合法", `{"room":"` + validRoom + `","modes":["v4-relay"],"relay_server":"relay.example.com:9999","protocol":"tcp"}`, false},
+		{"v4-relay 缺 relay_server 拒绝", `{"room":"` + validRoom + `","modes":["v4-relay"],"protocol":"tcp"}`, true},
 		{"纯会话端合法（target_port=0）", `{"room":"` + validRoom + `","protocol":"udp","target_port":0}`, false},
 		{"room 过短（7 字符）", `{"room":"abcd123","protocol":"tcp"}`, true},
 		{"room 过长（33 字符）", `{"room":"` + strings.Repeat("a", 33) + `","protocol":"tcp"}`, true},

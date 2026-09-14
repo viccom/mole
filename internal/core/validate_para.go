@@ -30,12 +30,13 @@ var p2pRoomRegexp = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,32}$`)
 //   - 纯会话端（target_host 空）：target_port 必须为 0
 func ValidateP2PPara(para json.RawMessage) error {
 	var p struct {
-		Room       string   `json:"room"`
-		Modes      []string `json:"modes"`
-		Protocol   string   `json:"protocol"`
-		LocalPort  int      `json:"local_port"`
-		TargetHost string   `json:"target_host"`
-		TargetPort int      `json:"target_port"`
+		Room        string   `json:"room"`
+		Modes       []string `json:"modes"`
+		RelayServer string   `json:"relay_server"`
+		Protocol    string   `json:"protocol"`
+		LocalPort   int      `json:"local_port"`
+		TargetHost  string   `json:"target_host"`
+		TargetPort  int      `json:"target_port"`
 	}
 	if err := json.Unmarshal(para, &p); err != nil {
 		return fmt.Errorf("%w: p2p para is not valid JSON", ErrTunnelInvalid)
@@ -46,6 +47,10 @@ func ValidateP2PPara(para json.RawMessage) error {
 	for _, m := range p.Modes {
 		if !p2pModeSet[m] {
 			return fmt.Errorf("%w: p2p unknown mode %q", ErrTunnelInvalid, m)
+		}
+		if m == "v4-relay" && p.RelayServer == "" {
+			// 复审 F12：v4-relay 缺 relay_server 在运行期必然永久失败，配置期拦截
+			return fmt.Errorf("%w: p2p modes contains v4-relay but relay_server is empty", ErrTunnelInvalid)
 		}
 	}
 	if p.Protocol != "tcp" && p.Protocol != "udp" {
