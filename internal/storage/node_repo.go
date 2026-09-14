@@ -2,6 +2,8 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/nalgeon/redka"
 
@@ -29,7 +31,13 @@ func (r *nodeRepo) Create(node *core.Node) error {
 func (r *nodeRepo) GetByID(id string) (*core.Node, error) {
 	val, err := r.db.Hash().Get("nodes", id)
 	if err != nil {
-		return nil, core.ErrNodeNotFound
+		// redka 缺失 key 返回 ErrNotFound；其余为真 DB 错误，必须上抛——
+		// 调用方的吊销/签发守卫靠这一区分工作（复审 #3：此前全部折叠为
+		// ErrNodeNotFound 使 persistedTunnels/发现检查的错误分支不可达）
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrNodeNotFound
+		}
+		return nil, fmt.Errorf("get node %s: %w", id, err)
 	}
 	var node core.Node
 	if err := json.Unmarshal([]byte(val.String()), &node); err != nil {

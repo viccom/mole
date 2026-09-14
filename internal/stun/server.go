@@ -41,6 +41,9 @@ func (s *Server) Close() error { return s.conn.Close() }
 // stunErrBackoff 连续错误退避：100ms 起指数增长、5s 封顶。固定 10Hz 重试在
 // 持久性故障下会以约 86 万行/天刷日志且无升级信号（复审 R4）。
 func stunErrBackoff(consecutive int) time.Duration {
+	if consecutive < 1 {
+		consecutive = 1 // 防 (consecutive-1) 下溢（复审：写侧复用时的边界）
+	}
 	d := 100 * time.Millisecond << uint(min(consecutive-1, 6))
 	if d > 5*time.Second {
 		d = 5 * time.Second
@@ -56,6 +59,7 @@ func stunErrBackoff(consecutive int) time.Duration {
 func (s *Server) ListenAndServe() error {
 	buf := make([]byte, 1500)
 	consecutiveErrs := 0
+	writeErrs := 0
 	for {
 		n, from, err := s.conn.ReadFrom(buf)
 		if err != nil {
@@ -94,8 +98,14 @@ func (s *Server) ListenAndServe() error {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			slog.Warn("STUN write failed, dropping response", "error", err)
+			// 写侧节流：首个错误与每第 100 个记日志，其余静默（复审：
+			// 每包一个 Warn 在故障下会刷爆日志）
+			writeErrs++
+			if writeErrs == 1 || writeErrs%100 == 0 {
+				slog.Warn("STUN write failed, dropping response", "error", err, "consecutive", writeErrs)
+			}
 			continue
 		}
+		writeErrs = 0
 	}
 }

@@ -133,7 +133,7 @@ func validateTunnels(tunnels []core.Tunnel) error {
 }
 
 const (
-	maxConnsUpperBound     = 100000
+	maxConnsUpperBound           = 100000
 	maxBandwidthUpperBound int64 = 10737418240 // 10 GB/s (显式 int64，避免 32-bit 平台 int 溢出)
 )
 
@@ -142,7 +142,8 @@ const (
 // 依据：p2punch 假设 room 内恰两端（MQTT 首个响应者即配对），第三端持同 room
 // 入场会与陌生节点完成 ECDHE 建连——等于把流量隧穿给陌生节点，必须挡在落库前。
 // nodeID 是本次变更的节点：其旧记录整体被 updated 取代，扫描时排除（更新自身不误判）。
-// ApplyTunnel / ReplaceTunnels / SyncFromClient 三个落库入口均须调用。
+// 全部落库入口（ApplyTunnel / ReplaceTunnels / SyncFromClient / MoveTunnel）
+// 经 applyTunnelChange(Locked) 统一调用。
 func (s *TunnelConfigService) validateP2PRoomPairing(nodeID string, updated []core.Tunnel) error {
 	if s.nodeRepo == nil {
 		return nil
@@ -206,41 +207,33 @@ func maskRoom(room string) string {
 	return room[:3] + "***" + room[len(room)-2:]
 }
 
-// validatePairingAndPersist 配对校验 + 持久化。候选集含 p2p 隧道时
-// 「读旧列表→配对扫描→落库」整体在 pairingMu 互斥锁内完成——配对不变量
-// （同 room 全局 ≤2 条）依赖扫描与落库的原子性，否则并发落库可各自通过
-// 扫描造成 3 条记录（审查 #3）。非 p2p 变更不取锁，行为与原路径一致。
-// 返回持久层旧列表（供吊销对照）。
-func (s *TunnelConfigService) validatePairingAndPersist(ctx context.Context, nodeID string, candidate []core.Tunnel) ([]core.Tunnel, error) {
-	hasP2P := false
-	for _, t := range candidate {
-		if t.Type == core.TunnelTypeP2P {
-			hasP2P = true
-			break
-		}
-	}
-	if hasP2P {
-		s.pairingMu.Lock()
-		defer s.pairingMu.Unlock()
-	}
-	return s.validatePairingAndPersistLocked(ctx, nodeID, candidate)
+// applyTunnelChange 配置变更的串行化核心：全程持 pairingMu，覆盖
+// 「读持久层真相源→构建新列表→配对校验→落库」，返回（旧列表, 新列表, error）。
+// 基线一律取持久层而非内存：内存分叉（推送失败历史/注册竞态产物）不应进入
+// 写路径，且并发变更会以陈旧内存基线互相覆盖（复审 #4/#6/#14）；
+// 锁范围覆盖基线读取到落库，收口配对扫描的 TOCTOU（审查 #3）。
+func (s *TunnelConfigService) applyTunnelChange(ctx context.Context, nodeID string, build func(base []core.Tunnel) []core.Tunnel) ([]core.Tunnel, []core.Tunnel, error) {
+	s.pairingMu.Lock()
+	defer s.pairingMu.Unlock()
+	return s.applyTunnelChangeLocked(ctx, nodeID, build)
 }
 
-// validatePairingAndPersistLocked 为 validatePairingAndPersist 的不加锁内核
-// （调用方已持 pairingMu，如 MoveTunnel 的全序列临界区，复审 R7）
-func (s *TunnelConfigService) validatePairingAndPersistLocked(ctx context.Context, nodeID string, candidate []core.Tunnel) ([]core.Tunnel, error) {
-	oldTunnels, err := s.persistedTunnels(ctx, nodeID)
+// applyTunnelChangeLocked 为 applyTunnelChange 的不加锁内核
+// （MoveTunnel 全序列临界区使用，复审 R7）
+func (s *TunnelConfigService) applyTunnelChangeLocked(ctx context.Context, nodeID string, build func(base []core.Tunnel) []core.Tunnel) ([]core.Tunnel, []core.Tunnel, error) {
+	base, err := s.persistedTunnels(ctx, nodeID)
 	if err != nil {
-		// 真 DB 错误必须中止变更：静默跳过吊销对照 = 凭据带病存活到 TTL（复审 R2）
-		return nil, err
+		// 真 DB 错误中止变更：静默跳过会让吊销对照缺失（复审 R2）
+		return nil, nil, err
 	}
-	if err := s.validateP2PRoomPairing(nodeID, candidate); err != nil {
-		return nil, err
+	next := build(base)
+	if err := s.validateP2PRoomPairing(nodeID, next); err != nil {
+		return nil, nil, err
 	}
-	if err := s.persistUpdatedNode(ctx, nodeID, candidate); err != nil {
-		return nil, err
+	if err := s.persistUpdatedNode(ctx, nodeID, next); err != nil {
+		return nil, nil, err
 	}
-	return oldTunnels, nil
+	return base, next, nil
 }
 
 // preIssueP2PToken 预签发信令凭据：仅 p2p 且启用且已注入凭据服务时执行；
@@ -268,6 +261,9 @@ func (s *TunnelConfigService) persistedTunnels(ctx context.Context, nodeID strin
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read persisted tunnels of node %s: %w", nodeID, err)
+	}
+	if n == nil {
+		return nil, nil // 防约定外的 (nil, nil) 实现导致解引用（复审补）
 	}
 	return n.Tunnels, nil
 }
@@ -344,23 +340,23 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 		return result, core.ErrNodeNotFound
 	}
 
-	// 追加或替换同名隧道
-	updated := make([]core.Tunnel, 0, len(node.Tunnels)+1)
-	replaced := false
-	for _, t := range node.Tunnels {
-		if t.Name == tunnelCfg.Name {
-			updated = append(updated, tunnelCfg)
-			replaced = true
-		} else {
-			updated = append(updated, t)
+	// 变更基线取持久层（复审 #4/#6）：追加或替换同名隧道
+	oldTunnels, updated, err := s.applyTunnelChange(ctx, nodeID, func(base []core.Tunnel) []core.Tunnel {
+		next := make([]core.Tunnel, 0, len(base)+1)
+		replaced := false
+		for _, t := range base {
+			if t.Name == tunnelCfg.Name {
+				next = append(next, tunnelCfg)
+				replaced = true
+			} else {
+				next = append(next, t)
+			}
 		}
-	}
-	if !replaced {
-		updated = append(updated, tunnelCfg)
-	}
-
-	// p2p 候选在场时「读旧列表→配对→落库」同锁完成，封闭 TOCTOU 窗口（审查 #3）
-	oldTunnels, err := s.validatePairingAndPersist(ctx, nodeID, updated)
+		if !replaced {
+			next = append(next, tunnelCfg)
+		}
+		return next
+	})
 	if err != nil {
 		return result, err
 	}
@@ -369,8 +365,7 @@ func (s *TunnelConfigService) ApplyTunnel(ctx context.Context, nodeID string, tu
 	// 吊销跟随持久化真相源，且必须在推送提前返回之前执行（审查 #6）
 	s.revokeRemovedP2PTokens(nodeID, oldTunnels, updated)
 
-	// p2p 隧道创建即预签发信令凭据（客户端 p2p_signal_token 请求时按 owner 幂等命中）；
-	// 禁用的隧道不签发——「禁用即切断信令」与 TCP/UDP 停监听语义一致（审查 #8）
+	// p2p 隧道创建即预签发信令凭据（客户端 p2p_signal_token 请求时按 owner 幂等命中）
 	s.preIssueP2PToken(nodeID, tunnelCfg)
 
 	// 在线节点只有在客户端成功接收配置后，才更新服务端运行态索引，避免路由先切流导致业务异常。
@@ -398,21 +393,17 @@ func (s *TunnelConfigService) RemoveTunnel(ctx context.Context, nodeID string, t
 		return result, core.ErrNodeNotFound
 	}
 
-	// 过滤掉目标隧道
-	updated := make([]core.Tunnel, 0, len(node.Tunnels))
-	for _, t := range node.Tunnels {
-		if t.Name != tunnelName {
-			updated = append(updated, t)
+	// 变更基线取持久层（复审 #4/#6）
+	oldTunnels, updated, err := s.applyTunnelChange(ctx, nodeID, func(base []core.Tunnel) []core.Tunnel {
+		next := make([]core.Tunnel, 0, len(base))
+		for _, t := range base {
+			if t.Name != tunnelName {
+				next = append(next, t)
+			}
 		}
-	}
-
-	// 吊销对照读取失败必须中止（持久层尚未变更，天然一致）（复审 R2）
-	oldTunnels, err := s.persistedTunnels(ctx, nodeID)
+		return next
+	})
 	if err != nil {
-		return result, err
-	}
-
-	if err := s.persistUpdatedNode(ctx, nodeID, updated); err != nil {
 		return result, err
 	}
 	result.Persisted = true
@@ -448,8 +439,7 @@ func (s *TunnelConfigService) ReplaceTunnels(ctx context.Context, nodeID string,
 	}
 
 	updated := append([]core.Tunnel(nil), tunnels...)
-	// p2p 候选在场时「读旧列表→配对→落库」同锁完成，封闭 TOCTOU 窗口（审查 #3）
-	oldTunnels, err := s.validatePairingAndPersist(ctx, nodeID, updated)
+	oldTunnels, _, err := s.applyTunnelChange(ctx, nodeID, func([]core.Tunnel) []core.Tunnel { return updated })
 	if err != nil {
 		return core.TunnelChangeResult{}, err
 	}
@@ -477,14 +467,13 @@ func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string,
 	if err := validateTunnels(tunnels); err != nil {
 		return err
 	}
-	// p2p 候选在场时「读旧列表→配对→落库」同锁完成，封闭 TOCTOU 窗口（审查 #3）
-	oldTunnels, err := s.validatePairingAndPersist(ctx, nodeID, tunnels)
+	oldTunnels, next, err := s.applyTunnelChange(ctx, nodeID, func([]core.Tunnel) []core.Tunnel { return tunnels })
 	if err != nil {
 		return err
 	}
-	s.revokeRemovedP2PTokens(nodeID, oldTunnels, tunnels)
+	s.revokeRemovedP2PTokens(nodeID, oldTunnels, next)
 
-	if err := s.applyRuntimeTunnels(ctx, nodeID, tunnels); err != nil {
+	if err := s.applyRuntimeTunnels(ctx, nodeID, next); err != nil {
 		return err
 	}
 
@@ -540,8 +529,8 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		sKey := nodeID + "/" + t.Name
 		if t.RateLimit != nil {
 			cfg := ratelimit.TunnelRateConfig{
-				MaxConns: t.RateLimit.MaxConns,
-				MaxBandwidth:   t.RateLimit.MaxBandwidth,
+				MaxConns:     t.RateLimit.MaxConns,
+				MaxBandwidth: t.RateLimit.MaxBandwidth,
 			}
 			s.limiter.UpdateTunnelConfig(sKey, cfg)
 		} else {
@@ -550,17 +539,18 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 	}
 
 	// 清理已删除隧道的 override（不再出现在新 tunnel 列表中）
-	{ oldNames := make(map[string]bool, len(oldTunnels))
-	for _, t := range oldTunnels {
-		oldNames[t.Name] = true
-	}
-	for _, t := range tunnels {
-		delete(oldNames, t.Name)
-	}
-	for name := range oldNames {
-		s.limiter.RemoveTunnel(nodeID + "/" + name)
-	}
+	{
+		oldNames := make(map[string]bool, len(oldTunnels))
+		for _, t := range oldTunnels {
+			oldNames[t.Name] = true
 		}
+		for _, t := range tunnels {
+			delete(oldNames, t.Name)
+		}
+		for name := range oldNames {
+			s.limiter.RemoveTunnel(nodeID + "/" + name)
+		}
+	}
 
 	if s.gateway != nil {
 		s.gateway.RebuildIndex(ctx)
@@ -643,106 +633,75 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 	}
 	result := core.TunnelChangeResult{Status: "ok"}
 
-	// p2p 移动整段进 pairingMu：旧节点移除、目标节点配对、拒绝回滚必须同临界区，
-	// 否则「移除→并发 Apply 挤入→移动拒绝→回滚」可残留 3 条同 room 记录（复审 R7）
-	if tunnelCfg.Type == core.TunnelTypeP2P {
-		s.pairingMu.Lock()
-		defer s.pairingMu.Unlock()
-	}
+	// 移动整段进 pairingMu：源移除、目标配对、拒绝回滚必须同一临界区（复审 R7）；
+	// 锁判据不限于 p2p 类型——非 p2p 移动进含 p2p 记录的目标同样要原子（复审 #5）
+	s.pairingMu.Lock()
+	defer s.pairingMu.Unlock()
 
-	// 1. 从旧节点移除隧道
-	fromOldTunnels, pdErr := s.persistedTunnels(ctx, fromNodeID) // 吊销对照（持久层真相源）
-	if pdErr != nil {
-		return result, pdErr // 变更未开始，中止即一致（复审 R2）
+	// 1. 从源节点移除：一律以持久层为基线（内存分叉不参与写路径，复审 #4/#6）。
+	// 移动前读取的原列表既作吊销对照、又作失败回滚的还原内容
+	fromOriginal, err := s.persistedTunnels(ctx, fromNodeID)
+	if err != nil {
+		return result, err
 	}
-	oldNode, oldOk := s.nodeMgr.Get(ctx, fromNodeID)
-	var oldTunnels []core.Tunnel
-
-	removedFromOld := false
-	var removedOldList []core.Tunnel // 旧节点移除后的列表（吊销对照，移动提交后才吊销）
-	if oldOk {
-		oldTunnels = oldNode.Tunnels
-		updated := make([]core.Tunnel, 0, len(oldNode.Tunnels))
-		for _, t := range oldNode.Tunnels {
-			if t.Name != tunnelCfg.Name {
-				updated = append(updated, t)
-			}
+	removedOldList := make([]core.Tunnel, 0, len(fromOriginal))
+	for _, t := range fromOriginal {
+		if t.Name != tunnelCfg.Name {
+			removedOldList = append(removedOldList, t)
 		}
-
-		if len(updated) < len(oldNode.Tunnels) {
-			removedFromOld = true
-			if err := s.persistUpdatedNode(ctx, fromNodeID, updated); err != nil {
-				return result, fmt.Errorf("persist old node after remove: %w", err)
-			}
-			// 隧道已从旧节点持久配置消失；吊销延迟到移动提交后（回滚安全）
-			removedOldList = updated
-			if err := s.applyRuntimeTunnels(ctx, fromNodeID, updated); err != nil {
+	}
+	removedFromOld := len(removedOldList) < len(fromOriginal)
+	if removedFromOld {
+		if err := s.persistUpdatedNode(ctx, fromNodeID, removedOldList); err != nil {
+			return result, fmt.Errorf("persist old node after remove: %w", err)
+		}
+		if fromNode, ok := s.nodeMgr.Get(ctx, fromNodeID); ok {
+			if err := s.applyRuntimeTunnels(ctx, fromNodeID, removedOldList); err != nil {
 				slog.Warn("MoveTunnel: apply runtime for old node failed", "nodeId", fromNodeID, "error", err)
 			}
-			if oldNode.Status == core.NodeStatusOnline && s.pusher != nil {
-				if err := s.pushToClient(ctx, fromNodeID, updated); err != nil {
+			if fromNode.Status == core.NodeStatusOnline && s.pusher != nil {
+				if err := s.pushToClient(ctx, fromNodeID, removedOldList); err != nil {
 					slog.Warn("MoveTunnel: push to old node failed", "nodeId", fromNodeID, "error", err)
 				}
 			}
 		}
 	}
-	if !removedFromOld && s.nodeRepo != nil {
-		// 旧节点不在内存，或内存与持久层分叉（推送失败历史导致内存缺隧道）：
-		// 以持久化真相源执行移除（审查 #2/#7）
-		persisted, err := s.nodeRepo.GetByID(fromNodeID)
-		if err == nil && persisted != nil {
-			updated := make([]core.Tunnel, 0, len(persisted.Tunnels))
-			for _, t := range persisted.Tunnels {
-				if t.Name != tunnelCfg.Name {
-					updated = append(updated, t)
-				}
-			}
-			oldTunnels = persisted.Tunnels
-			if len(updated) < len(persisted.Tunnels) {
-				persisted.Tunnels = updated
-				if err := s.nodeRepo.Update(persisted); err != nil {
-					slog.Warn("MoveTunnel: failed to persist old node removal", "nodeId", fromNodeID, "error", err)
-				} else {
-					removedFromOld = true
-					removedOldList = updated
-				}
-			}
-		}
-	}
 
-	// 2. 添加到新节点
+	// 2. 添加到新节点（配对校验 + 落库同锁，基线取持久层）
 	newNode, newOk := s.nodeMgr.Get(ctx, toNodeID)
 	if !newOk {
-		s.rollbackOldNode(ctx, fromNodeID, oldOk, oldTunnels, tunnelCfg)
+		s.rollbackOldNode(ctx, fromNodeID, fromOriginal, removedFromOld)
 		return result, core.ErrNodeNotFound
 	}
-
-	updatedNew := make([]core.Tunnel, 0, len(newNode.Tunnels)+1)
-	replaced := false
-	for _, t := range newNode.Tunnels {
-		if t.Name == tunnelCfg.Name {
-			updatedNew = append(updatedNew, tunnelCfg)
-			replaced = true
-		} else {
-			updatedNew = append(updatedNew, t)
+	destOld, updatedNew, err := s.applyTunnelChangeLocked(ctx, toNodeID, func(base []core.Tunnel) []core.Tunnel {
+		next := make([]core.Tunnel, 0, len(base)+1)
+		replaced := false
+		for _, t := range base {
+			if t.Name == tunnelCfg.Name {
+				next = append(next, tunnelCfg)
+				replaced = true
+			} else {
+				next = append(next, t)
+			}
 		}
-	}
-	if !replaced {
-		updatedNew = append(updatedNew, tunnelCfg)
-	}
-
-	// 外层已持 pairingMu（p2p 时），用不加锁内核避免重入（审查 #2/#3 + 复审 R7）
-	if _, err := s.validatePairingAndPersistLocked(ctx, toNodeID, updatedNew); err != nil {
-		s.rollbackOldNode(ctx, fromNodeID, oldOk, oldTunnels, tunnelCfg)
+		if !replaced {
+			next = append(next, tunnelCfg)
+		}
+		return next
+	})
+	if err != nil {
+		s.rollbackOldNode(ctx, fromNodeID, fromOriginal, removedFromOld)
 		return result, err
 	}
 	result.Persisted = true
 
-	// 凭据换主：移动提交后才吊销旧节点侧凭据——新节点持久化失败会回滚旧节点
-	// 配置，此时凭据必须仍在（审查 #2）；预签发在提交后，失败路径无残留凭据。
+	// 凭据换主（提交后执行，失败回滚路径发生在任何吊销之前）：
+	// 源侧消失的吊销、目标侧被同名替换掉的旧 p2p 隧道吊销（复审 #1/#2）、
+	// 新配置预签发。
 	if removedFromOld {
-		s.revokeRemovedP2PTokens(fromNodeID, fromOldTunnels, removedOldList)
+		s.revokeRemovedP2PTokens(fromNodeID, fromOriginal, removedOldList)
 	}
+	s.revokeRemovedP2PTokens(toNodeID, destOld, updatedNew)
 	s.preIssueP2PToken(toNodeID, tunnelCfg)
 
 	// 在线新节点：推送 + 创建运行时
@@ -763,45 +722,36 @@ func (s *TunnelConfigService) MoveTunnel(ctx context.Context, fromNodeID, toNode
 	return result, nil
 }
 
-// rollbackOldNode 回滚旧节点：将隧道加回持久化 + 更新内存状态
-func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID string, oldOk bool, oldTunnels []core.Tunnel, tunnelCfg core.Tunnel) {
-	if !oldOk {
-		// 离线节点（仅持久层持有）：从持久层回滚。此前直接 return 会让
-		// 「移除成功→目标节点失败」的移动把隧道从持久层永久删除（复审 R9）。
-		if s.nodeRepo == nil {
+// rollbackOldNode 回滚源节点到移动前的原始持久化配置（仅在移除已提交时执行）。
+// 恢复内容必须是移动前读取的原列表——回写 incoming tunnelCfg 会把移动目标的
+// room 落进源节点，让配对拒绝的回滚凭空造出第三条同 room 记录（复审 #1）。
+func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID string, original []core.Tunnel, removed bool) {
+	if !removed {
+		return
+	}
+	if _, ok := s.nodeMgr.Get(ctx, fromNodeID); ok {
+		if rbErr := s.persistUpdatedNode(ctx, fromNodeID, original); rbErr != nil {
+			slog.Error("MoveTunnel: rollback persist failed", "nodeId", fromNodeID, "error", rbErr)
 			return
 		}
-		persisted, err := s.nodeRepo.GetByID(fromNodeID)
-		if err != nil || persisted == nil {
-			slog.Error("MoveTunnel: rollback read persisted node failed", "nodeId", fromNodeID, "error", err)
-			return
-		}
-		rollback := make([]core.Tunnel, 0, len(persisted.Tunnels)+1)
-		for _, t := range persisted.Tunnels {
-			if t.Name != tunnelCfg.Name {
-				rollback = append(rollback, t)
-			}
-		}
-		rollback = append(rollback, tunnelCfg)
-		persisted.Tunnels = rollback
-		if err := s.nodeRepo.Update(persisted); err != nil {
-			slog.Error("MoveTunnel: rollback persist (offline) failed", "nodeId", fromNodeID, "error", err)
+		if rbErr := s.applyRuntimeTunnels(ctx, fromNodeID, original); rbErr != nil {
+			slog.Error("MoveTunnel: rollback runtime failed", "nodeId", fromNodeID, "error", rbErr)
 		}
 		return
 	}
-	rollback := make([]core.Tunnel, 0, len(oldTunnels)+1)
-	for _, t := range oldTunnels {
-		if t.Name != tunnelCfg.Name {
-			rollback = append(rollback, t)
-		}
-	}
-	rollback = append(rollback, tunnelCfg)
-	if rbErr := s.persistUpdatedNode(ctx, fromNodeID, rollback); rbErr != nil {
-		slog.Error("MoveTunnel: rollback persist failed", "nodeId", fromNodeID, "error", rbErr)
+	// 离线节点：直接回写持久层（复审 R9：此前 !oldOk 直接 return 会让
+	// 「移除成功→目标失败」的移动把隧道从持久层永久删除）
+	if s.nodeRepo == nil {
 		return
 	}
-	if rbErr := s.applyRuntimeTunnels(ctx, fromNodeID, rollback); rbErr != nil {
-		slog.Error("MoveTunnel: rollback runtime failed", "nodeId", fromNodeID, "error", rbErr)
+	persisted, err := s.nodeRepo.GetByID(fromNodeID)
+	if err != nil || persisted == nil {
+		slog.Error("MoveTunnel: rollback read persisted node failed", "nodeId", fromNodeID, "error", err)
+		return
+	}
+	persisted.Tunnels = original
+	if err := s.nodeRepo.Update(persisted); err != nil {
+		slog.Error("MoveTunnel: rollback persist (offline) failed", "nodeId", fromNodeID, "error", err)
 	}
 }
 

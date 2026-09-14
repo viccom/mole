@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -287,7 +288,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
-		if err == core.ErrTunnelInvalid {
+		if errors.Is(err, core.ErrTunnelInvalid) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
@@ -523,7 +524,7 @@ func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 	}
 	results, err := h.tunnelSvc.BatchUpdateRateLimit(r.Context(), req.Items)
 	if err != nil {
-		if err == core.ErrTunnelInvalid || err == core.ErrNodeNotFound {
+		if errors.Is(err, core.ErrTunnelInvalid) || err == core.ErrNodeNotFound {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}

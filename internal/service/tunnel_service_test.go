@@ -73,9 +73,9 @@ func (s *mockStatsReader) Remove(name string) {
 func (g *mockGateway) RebuildIndex(_ context.Context)                  { g.rebuilds++ }
 func (g *mockGateway) StartTCP(_ context.Context, _ core.Tunnel) error { return nil }
 func (g *mockGateway) StartUDP(_ context.Context, _ core.Tunnel) error { return nil }
-func (g *mockGateway) StopTunnel(name string)                           { g.stopped = append(g.stopped, name) }
-func (g *mockGateway) Registry() *tunnel.ListenerRegistry               { return nil }
-func (g *mockGateway) Stats() core.TunnelStatsReader                    { return g.stats }
+func (g *mockGateway) StopTunnel(name string)                          { g.stopped = append(g.stopped, name) }
+func (g *mockGateway) Registry() *tunnel.ListenerRegistry              { return nil }
+func (g *mockGateway) Stats() core.TunnelStatsReader                   { return g.stats }
 
 type mockPusher struct {
 	err   error
@@ -111,6 +111,13 @@ func TestApplyTunnel_PushFailureDoesNotFlipRuntime(t *testing.T) {
 	}
 	if err := nodeMgr.Add(ctx, online); err != nil {
 		t.Fatalf("Add failed: %v", err)
+	}
+	// 持久层真相源与内存一致（变更基线取持久层，复审 #4）
+	if err := repo.Create(&core.Node{
+		ID: online.ID, Name: online.Name, Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{{Name: "old", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8080"}},
+	}); err != nil {
+		t.Fatalf("repo.Create failed: %v", err)
 	}
 
 	newTunnel := core.Tunnel{Name: "new", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:9090"}
@@ -545,7 +552,7 @@ func TestDisabledP2PTunnelRevokedAndNotIssued(t *testing.T) {
 // ===== 审查 #2/#3：MoveTunnel 配对校验 + 并发 TOCTOU =====
 
 // MoveTunnel 是第四个落库入口：配对校验必须覆盖，且合法移动要完成凭据换主
-//（旧节点吊销、新节点预签发）（审查 #2）
+// （旧节点吊销、新节点预签发）（审查 #2）
 func TestMoveTunnelP2PPairingAndTokens(t *testing.T) {
 	h := setupRevocationHarness(t)
 	c := context.Background()
@@ -577,6 +584,54 @@ func TestMoveTunnelP2PPairingAndTokens(t *testing.T) {
 	if _, err := h.tokens.repo.FindByOwner("Node0001", "p2p-src"); err != nil {
 		t.Fatalf("source tunnel token must survive rollback, err = %v", err)
 	}
+	// 复审 #1 断言：回滚必须还原「移动前原列表」，不得把目标配置的 room
+	// 写进源节点（否则 movelock01 会出现第 3 条持有记录）
+	if n := countRoomHolders(t, h.repo, "movelock01"); n != 2 {
+		t.Fatalf("movelock01 holders after rejected move = %d, want 2 (rollback must restore original room)", n)
+	}
+	srcRoom := tunnelRoomOf(t, h.repo, "Node0001", "p2p-src")
+	if srcRoom != "srcroom001" {
+		t.Fatalf("source tunnel room after rollback = %q, want original srcroom001 (复审 #1)", srcRoom)
+	}
+}
+
+// countRoomHolders 统计持久层中持有指定 room 的 p2p 记录数
+func countRoomHolders(t *testing.T, repo *mockNodeRepo, room string) int {
+	t.Helper()
+	nodes, err := repo.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+	count := 0
+	for _, n := range nodes {
+		for _, tl := range n.Tunnels {
+			if tl.Type == core.TunnelTypeP2P {
+				if r, err := core.P2PRoom(tl.Para); err == nil && r == room {
+					count++
+				}
+			}
+		}
+	}
+	return count
+}
+
+// tunnelRoomOf 读取指定节点/隧道在持久层的 room
+func tunnelRoomOf(t *testing.T, repo *mockNodeRepo, nodeID, name string) string {
+	t.Helper()
+	n, err := repo.GetByID(nodeID)
+	if err != nil {
+		t.Fatalf("GetByID(%s): %v", nodeID, err)
+	}
+	for _, tl := range n.Tunnels {
+		if tl.Name == name {
+			r, err := core.P2PRoom(tl.Para)
+			if err != nil {
+				t.Fatalf("P2PRoom: %v", err)
+			}
+			return r
+		}
+	}
+	return ""
 }
 
 // 并发不变量：A 已持有 room R，B/C 并发申请同 room —— 最终全局 ≤2 条记录（审查 #3）
@@ -586,17 +641,29 @@ func TestConcurrentApplySameRoomInvariant(t *testing.T) {
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
 	targets := []string{"Node0002", "Node0003"}
 	for i, target := range targets {
 		wg.Add(1)
 		go func(i int, target string) {
 			defer wg.Done()
 			<-start
-			_, _ = h.svc.ApplyTunnel(context.Background(), target, p2pTunnel("p2p-x", "raceinvari1"))
+			_, err := h.svc.ApplyTunnel(context.Background(), target, p2pTunnel("p2p-x", "raceinvari1"))
+			mu.Lock()
+			if err == nil {
+				successes++
+			}
+			mu.Unlock()
 		}(i, target)
 	}
 	close(start)
 	wg.Wait()
+	// 互斥语义：恰有一个并发申请者成功（复核 #15：仅断言 count≤2 时
+	// 两个都失败或都成功都可能静默通过）
+	if successes != 1 {
+		t.Fatalf("exactly one concurrent applicant must succeed, got %d", successes)
+	}
 
 	// 扫持久层全节点统计持有该 room 的记录数
 	count := 0
@@ -616,5 +683,69 @@ func TestConcurrentApplySameRoomInvariant(t *testing.T) {
 	}
 	if count > 2 {
 		t.Fatalf("pairing invariant broken under concurrency: %d records hold the room, want <= 2", count)
+	}
+}
+
+// ===== 复审第三轮回归 =====
+
+// 移动替换掉目标节点的同名 p2p 隧道时，被替换者的凭据必须吊销死
+// （复审 #2：仅换主源侧、不吊销目标侧旧凭据会留下 24h 可用孤儿）
+func TestMoveTunnelReplacingDestinationP2PRevokesCredential(t *testing.T) {
+	h := setupRevocationHarness(t)
+	c := context.Background()
+
+	// 目标节点 Node0003 持有 p2p 't1'（room destp2p01）并有凭据
+	h.mustIssue(t, "Node0003", "t1", "destsame001")
+	// 源节点 Node0001 持有一个同名但非 p2p 的隧道
+	if _, err := h.svc.ApplyTunnel(c, "Node0001", core.Tunnel{
+		Name: "t1", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8080",
+	}); err != nil {
+		t.Fatalf("seed http: %v", err)
+	}
+
+	// 把 HTTP 的 t1 移到 Node0003，同名替换掉其 p2p 记录
+	if _, err := h.svc.MoveTunnel(c, "Node0001", "Node0003", core.Tunnel{
+		Name: "t1", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8080",
+	}); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if _, err := h.tokens.repo.FindByOwner("Node0003", "t1"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("replaced destination p2p credential must be revoked, find err = %v", err)
+	}
+}
+
+// 变更基线取持久层：内存分叉（推送失败历史让内存缺隧道）不得让一次
+// 无关变更把持久层里存在的隧道洗掉（复审 #4/#6）
+func TestApplyTunnelPreservesPersistedOnlyTunnels(t *testing.T) {
+	h := setupRevocationHarness(t)
+	c := context.Background()
+
+	// 持久层：节点持有 p2p-X（内存里没有——模拟推送失败分叉）
+	if err := h.repo.Create(&core.Node{
+		ID: "Node0001", Name: "Node0001", Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{{Name: "p2p-x", Type: core.TunnelTypeP2P, Para: []byte(`{"room":"persistX01","protocol":"tcp"}`)}},
+	}); err != nil {
+		t.Fatalf("seed repo: %v", err)
+	}
+
+	// 施加一个无关变更
+	if _, err := h.svc.ApplyTunnel(c, "Node0001", core.Tunnel{
+		Name: "web", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:80",
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	persisted, err := h.repo.GetByID("Node0001")
+	if err != nil {
+		t.Fatalf("repo read: %v", err)
+	}
+	found := false
+	for _, tl := range persisted.Tunnels {
+		if tl.Name == "p2p-x" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("persisted-only tunnel must survive unrelated apply, got %+v", persisted.Tunnels)
 	}
 }

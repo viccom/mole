@@ -267,16 +267,11 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			persistedTunnels = persisted.Tunnels
 		}
 	}
-	seen := make(map[string]bool, len(memoryTunnels)+len(persistedTunnels))
+	// 两个来源并列并集、不按名去重：同名不同类型时两者都要交给吊销器
+	//（按名去重会因「内存先到」丢掉持久层的 p2p 记录，复审 #9b）
 	tunnels := make([]core.Tunnel, 0, len(memoryTunnels)+len(persistedTunnels))
-	for _, list := range [][]core.Tunnel{memoryTunnels, persistedTunnels} {
-		for _, t := range list {
-			if !seen[t.Name] {
-				seen[t.Name] = true
-				tunnels = append(tunnels, t)
-			}
-		}
-	}
+	tunnels = append(tunnels, memoryTunnels...)
+	tunnels = append(tunnels, persistedTunnels...)
 	h.nodeMgr.Disconnect(r.Context(), id)
 	h.nodeRepo.Delete(id)
 	// 节点删除后 (nodeID, tunnelName) 定位不到凭据，必须在此显式吊销（审查 #5）
