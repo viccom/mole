@@ -388,3 +388,57 @@ func TestNodeHandler_Delete_NonOwnerGets404(t *testing.T) {
 		t.Fatal("node should still exist after non-owner delete attempt")
 	}
 }
+
+// ===== 审查 #5：节点删除级联吊销 p2p 信令凭据 =====
+
+type fakeP2PRevoker struct {
+	calls   []string
+	tunnels []core.Tunnel
+}
+
+func (f *fakeP2PRevoker) RevokeNodeP2PTokens(nodeID string, tunnels []core.Tunnel) {
+	f.calls = append(f.calls, nodeID)
+	f.tunnels = append([]core.Tunnel(nil), tunnels...)
+}
+
+// 删除节点必须把其隧道列表交给凭据吊销器——否则被删节点的信令凭据
+// 存活到 TTL，恰好赶上被释放的 room 被新配对注册（审查 #5 场景）
+func TestNodeHandlerDelete_RevokesP2PTokens(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	if err := nodeMgr.Add(ctx, &core.Node{
+		ID:     "Node0001",
+		Name:   "n1",
+		Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{
+			{Name: "p2p-a", Type: core.TunnelTypeP2P},
+			{Name: "web", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:80"},
+		},
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	repo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, repo, &testTunnelConfigManager{}, nil)
+	revoker := &fakeP2PRevoker{}
+	handler.SetP2PTokenRevoker(revoker)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/Node0001", nil)
+	rec := httptest.NewRecorder()
+	handler.Delete(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d", rec.Code)
+	}
+
+	if len(revoker.calls) != 1 || revoker.calls[0] != "Node0001" {
+		t.Fatalf("revoker calls = %v, want [Node0001]", revoker.calls)
+	}
+	found := false
+	for _, tl := range revoker.tunnels {
+		if tl.Name == "p2p-a" && tl.Type == core.TunnelTypeP2P {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("revoker must receive the node's p2p tunnels, got %+v", revoker.tunnels)
+	}
+}

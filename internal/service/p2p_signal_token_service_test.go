@@ -275,3 +275,36 @@ func TestConcurrentIssueSameOwnerConverges(t *testing.T) {
 		}
 	}
 }
+
+// 节点删除级联：吊销该节点全部 p2p 隧道凭据，非 p2p 隧道无 token 可吊销、不影响（审查 #5）
+func TestRevokeNodeP2PTokens(t *testing.T) {
+	svc, _ := newP2PTokenService(t)
+
+	userA, _, _, err := svc.IssueP2PSignalToken("Node0001", "p2p-a")
+	if err != nil {
+		t.Fatalf("issue a: %v", err)
+	}
+	if _, _, _, err = svc.IssueP2PSignalToken("Node0001", "p2p-b"); err != nil {
+		t.Fatalf("issue b: %v", err)
+	}
+
+	svc.RevokeNodeP2PTokens("Node0001", []core.Tunnel{
+		{Name: "p2p-a", Type: core.TunnelTypeP2P},
+		{Name: "p2p-b", Type: core.TunnelTypeP2P},
+		{Name: "web", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:80"}, // 非 p2p：无凭据，忽略
+	})
+
+	if svc.VerifyP2PSignalToken(tokenIDFromUsername(userA), "") {
+		t.Fatal("unreachable")
+	}
+	if _, err := svc.repo.FindByOwner("Node0001", "p2p-a"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("p2p-a token must be revoked, err = %v", err)
+	}
+	if _, err := svc.repo.FindByOwner("Node0001", "p2p-b"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("p2p-b token must be revoked, err = %v", err)
+	}
+	// 其他节点不受影响
+	if _, _, _, err := svc.IssueP2PSignalToken("Node0002", "p2p-a"); err != nil {
+		t.Fatalf("other node issue: %v", err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -103,6 +104,20 @@ func (s *P2PSignalTokenService) RevokeP2PSignalToken(nodeID, tunnelName string) 
 		return fmt.Errorf("find p2p signal token for revoke: %w", err)
 	}
 	return s.repo.Delete(tok.TokenID)
+}
+
+// RevokeNodeP2PTokens 吊销节点全部 p2p 隧道的信令凭据（节点删除级联，审查 #5）。
+// 节点删除后 FindByOwner 永远定位不到其凭据，必须在删除时显式吊销；
+// 非 p2p 隧道无凭据，忽略。
+func (s *P2PSignalTokenService) RevokeNodeP2PTokens(nodeID string, tunnels []core.Tunnel) {
+	for _, t := range tunnels {
+		if t.Type != core.TunnelTypeP2P {
+			continue
+		}
+		if err := s.RevokeP2PSignalToken(nodeID, t.Name); err != nil {
+			slog.Warn("Failed to revoke p2p signal token on node delete", "node", nodeID, "tunnel", t.Name, "error", err)
+		}
+	}
 }
 
 func isP2PSignalUsername(username string) bool {

@@ -285,7 +285,7 @@ func main() {
 	dingtalkBindingRepo := storage.NewDingTalkBindingRepo(db)
 
 	// --- HTTP API 服务（静态文件 + API） ---
-	apiRouter := buildAPIRouter(authMW, apiLimiter, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr, gatewayLimiter, tunnelEncryptor)
+	apiRouter := buildAPIRouter(authMW, apiLimiter, authSvc, nodeMgr, cfg, mqttBroker, gateway, controlSrv, userRepo, roleRepo, rbacEngine, nodeRepo, tunnelSvc, accessTokenRepo, feishuClient, feishuBindingRepo, dingtalkClient, dingtalkBindingRepo, jwtMgr, gatewayLimiter, tunnelEncryptor, p2pTokenSvc)
 	adminDir, _ := os.Getwd()
 	distDir := filepath.Join(adminDir, "admin", "dist")
 	fileServer := http.FileServer(http.Dir(distDir))
@@ -400,6 +400,7 @@ func buildAPIRouter(
 	jwtMgr *auth.JWTManager,
 	gatewayLimiter ratelimit.GatewayLimiter,
 	tunnelEncryptor *crypto.SecretEncryptor,
+	p2pTokens *service.P2PSignalTokenService,
 ) http.Handler {
 	router := api.NewRouter(mw, apiLimiter)
 
@@ -408,6 +409,7 @@ func buildAPIRouter(
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo, nodeMgr)
 	roleH := api.NewRoleHandler(roleRepo)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc, controlSrv)
+	nodeH.SetP2PTokenRevoker(p2pTokens)
 	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats(), gatewayLimiter, tunnelEncryptor, controlSrv)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)

@@ -589,3 +589,84 @@ func TestHandleP2PSignalToken(t *testing.T) {
 		}
 	})
 }
+
+// ===== 审查 #1/#8a：签发只认持久层真相源 + 禁用隧道不签发 =====
+
+// fakeControlNodeRepo 隔离内存态与持久层的桩：nodeMgr 里有的，repo 里可以没有
+//（复现 register 竞态：handleRegister 先写内存、SyncFromClient 拒绝后持久层为空）
+type fakeControlNodeRepo struct{ nodes map[string]*core.Node }
+
+func newFakeControlNodeRepo() *fakeControlNodeRepo {
+	return &fakeControlNodeRepo{nodes: map[string]*core.Node{}}
+}
+
+func (f *fakeControlNodeRepo) Create(n *core.Node) error       { f.nodes[n.ID] = n; return nil }
+func (f *fakeControlNodeRepo) Update(n *core.Node) error       { f.nodes[n.ID] = n; return nil }
+func (f *fakeControlNodeRepo) Delete(id string) error          { delete(f.nodes, id); return nil }
+func (f *fakeControlNodeRepo) GetAll() ([]*core.Node, error) {
+	out := make([]*core.Node, 0, len(f.nodes))
+	for _, n := range f.nodes {
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func (f *fakeControlNodeRepo) GetByID(id string) (*core.Node, error) {
+	n, ok := f.nodes[id]
+	if !ok {
+		return nil, core.ErrNodeNotFound
+	}
+	return n, nil
+}
+
+// 凭据签发的发现检查必须以持久层为准：仅存在于 nodeMgr 内存（注册竞态产物、
+// 配对校验已拒绝该配置）的 p2p 隧道不得签发；禁用隧道同样不签发
+func TestHandleP2PSignalTokenTrustsPersistedTruthOnly(t *testing.T) {
+	enabled := true
+	disabled := false
+
+	nodeMgr := node.NewShardedNodeManager(4)
+	// 内存态：包含一个配对已被拒绝的 p2p 隧道（register 竞态写入）与一个禁用隧道
+	_ = nodeMgr.Add(context.Background(), &core.Node{
+		ID:     "Node0001",
+		Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{
+			{Name: "p2p-race", Type: core.TunnelTypeP2P},
+			{Name: "p2p-off", Type: core.TunnelTypeP2P, Enabled: &disabled},
+			{Name: "p2p-ok", Type: core.TunnelTypeP2P, Enabled: &enabled},
+		},
+	})
+	repo := newFakeControlNodeRepo()
+	// 持久层真相源：只有启用的 p2p-ok（配对被拒的 p2p-race 与禁用的 p2p-off 不在其中）
+	_ = repo.Create(&core.Node{
+		ID:     "Node0001",
+		Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{
+			{Name: "p2p-ok", Type: core.TunnelTypeP2P, Enabled: &enabled},
+		},
+	})
+
+	issuer := &fakeP2PIssuer{}
+	cs := &ControlServer{nodeMgr: nodeMgr, nodeRepo: repo, p2pIssuer: issuer}
+	state := &connState{}
+	state.set(&core.Node{ID: "Node0001"})
+
+	run := func(name string) p2pSignalTokenResp {
+		srv, cli := newP2PTokenTestStream(t)
+		go cs.handleP2PSignalToken(context.Background(), ControlCmd{Cmd: "p2p_signal_token", Name: name}, state, srv)
+		return readP2PTokenResp(t, cli)
+	}
+
+	// 内存有、持久层无：必须拒绝（否则 register 竞态绕过配对不变量拿到凭据）
+	if resp := run("p2p-race"); resp.OK {
+		t.Fatal("tunnel rejected by pairing but present only in memory must NOT be issued")
+	}
+	// 持久层存在但禁用：必须拒绝
+	if resp := run("p2p-off"); resp.OK {
+		t.Fatal("disabled tunnel must NOT be issued")
+	}
+	// 持久层存在且启用：签发
+	if resp := run("p2p-ok"); !resp.OK {
+		t.Fatalf("enabled persisted tunnel must be issued, got %+v", resp)
+	}
+}

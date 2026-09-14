@@ -597,13 +597,23 @@ func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCm
 		fail("name is required")
 		return
 	}
+	// 发现检查以持久层真相源为准：nodeMgr 内存可能包含注册竞态产物
+	// （handleRegister 先写内存、SyncFromClient 配对拒绝后仅记警告不回滚，
+	// 审查 #1），凭据签发不能认它。nodeRepo 为 nil 时回退内存（测试场景）。
+	var tunnels []core.Tunnel
+	if cs.nodeRepo != nil {
+		if persisted, err := cs.nodeRepo.GetByID(node.ID); err == nil && persisted != nil {
+			tunnels = persisted.Tunnels
+		}
+	} else if cur, ok := cs.nodeMgr.Get(ctx, node.ID); ok {
+		tunnels = cur.Tunnels
+	}
 	found := false
-	if cur, ok := cs.nodeMgr.Get(ctx, node.ID); ok {
-		for _, t := range cur.Tunnels {
-			if t.Name == cmd.Name && t.Type == core.TunnelTypeP2P {
-				found = true
-				break
-			}
+	for _, t := range tunnels {
+		// 禁用隧道不签发：「禁用即切断信令」（审查 #8）
+		if t.Name == cmd.Name && t.Type == core.TunnelTypeP2P && t.IsEnabled() {
+			found = true
+			break
 		}
 	}
 	if !found {

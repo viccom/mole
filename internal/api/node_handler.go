@@ -17,10 +17,23 @@ type NodeHandler struct {
 	nodeRepo   core.NodeRepo
 	tunnelSvc  core.TunnelConfigManager
 	controlSrv NodeControlServer
+	// p2pRevoker 节点删除时级联吊销 p2p 信令凭据（main.go 注入 service 实现；
+	// nil = 跳过吊销）。独立小接口避免为窄关注点扩 core.TunnelConfigManager。
+	p2pRevoker P2PTokenRevoker
 }
 
 type NodeControlServer interface {
 	RestartNode(ctx context.Context, nodeID string, delay int, reason string) error
+}
+
+// P2PTokenRevoker 节点删除时的 p2p 信令凭据级联吊销（service 包实现）
+type P2PTokenRevoker interface {
+	RevokeNodeP2PTokens(nodeID string, tunnels []core.Tunnel)
+}
+
+// SetP2PTokenRevoker 注入凭据级联吊销器
+func (h *NodeHandler) SetP2PTokenRevoker(v P2PTokenRevoker) {
+	h.p2pRevoker = v
 }
 
 func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager, controlSrv NodeControlServer) *NodeHandler {
@@ -236,20 +249,27 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id = strings.TrimRight(id, "/")
-	// 归属检查：先查内存，再查持久化
+	// 归属检查：先查内存，再查持久化；同时收集隧道列表供凭据级联吊销
+	var tunnels []core.Tunnel
 	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
 		if !checkNodeOwnership(w, r, node) {
 			return
 		}
+		tunnels = node.Tunnels
 	} else if h.nodeRepo != nil {
 		if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
 			if !checkNodeOwnership(w, r, persisted) {
 				return
 			}
+			tunnels = persisted.Tunnels
 		}
 	}
 	h.nodeMgr.Disconnect(r.Context(), id)
 	h.nodeRepo.Delete(id)
+	// 节点删除后 (nodeID, tunnelName) 定位不到凭据，必须在此显式吊销（审查 #5）
+	if h.p2pRevoker != nil {
+		h.p2pRevoker.RevokeNodeP2PTokens(id, tunnels)
+	}
 	ResponseOK(w, "deleted")
 }
 
