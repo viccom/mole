@@ -62,6 +62,8 @@ func (m *mockSession) ListTunnels() []session.TunnelInfo {
 	return out
 }
 
+func (m *mockSession) CloseTunnel(id uint32) error { return nil }
+
 func (m *mockSession) Close() error {
 	m.mu.Lock()
 	m.closed = true
@@ -319,7 +321,7 @@ func TestHandlerCredsInjection(t *testing.T) {
 		return s, nil
 	}
 	// 确定性时序：第 1 次拉取失败（匿名回落），之后成功
-	credsFn := func() (SignalCredentials, error) {
+	credsFn := func(ctx context.Context) (SignalCredentials, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		credCalls++

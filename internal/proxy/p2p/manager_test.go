@@ -51,10 +51,9 @@ func TestNotifyParaChangeRestarts(t *testing.T) {
 	changed.LocalPort = 19999
 	m.OnTunnelUpdate(map[string]P2PConfig{"a": changed})
 	waitFor(t, func() bool { return sessions.len() >= 2 }, 2*time.Second, "handler not restarted on Para change")
-
-	if !first.wasClosed() {
-		t.Fatal("old handler session must be closed on restart")
-	}
+	// 拆除在 OnTunnelUpdate 锁外异步完成（复审 F1）：等待旧会话关闭而非立即断言
+	waitFor(t, func() bool { return first.wasClosed() }, 2*time.Second, "old handler session not closed on restart")
+	t.Logf("DBG len=%d closed0=%v closed1=%v", sessions.len(), sessions.at(0).wasClosed(), sessions.at(1).wasClosed())
 	// 新 handler 以新配置建隧道
 	waitFor(t, func() bool { return sessions.at(1).createCount() == 1 }, 2*time.Second, "restarted handler did not create tunnel")
 	if calls := sessions.at(1).createCallsForAssert(); calls[0].LocalPort != 19999 {

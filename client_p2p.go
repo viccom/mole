@@ -3,6 +3,7 @@
 package moleAgent_client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -27,11 +28,11 @@ func newP2PController(c *Client) p2pController {
 	mgr := p2p.NewManager(serverHostFromAddr(c.cfg.ServerAddr))
 	// 信令凭据拉取策略（阶段 6.5）：仅当使用默认 server broker 时经控制通道
 	// 拉取 P2PSignalToken；自定义/公共 broker 直接匿名，不依赖控制面
-	mgr.SetCredsProvider(func(name string) (string, string, int64, error) {
+	mgr.SetCredsProvider(func(ctx context.Context, name string) (string, string, int64, error) {
 		if !c.usesDefaultP2PBroker(name) {
 			return "", "", 0, nil
 		}
-		return c.requestP2PSignalToken(name)
+		return c.requestP2PSignalToken(ctx, name)
 	})
 	return &p2pManagerController{mgr: mgr, c: c}
 }
@@ -89,8 +90,12 @@ func (c *Client) usesDefaultP2PBroker(name string) bool {
 // requestP2PSignalToken 经现有已认证 smux 控制通道请求 P2P 信令凭据（C→S
 // p2p_signal_token）。响应为 ad-hoc 平铺 JSON（两端各自解码，不扩 ControlResponse）；
 // 凭据只存内存，进程重启/过期由调用方（Handler 每次连接尝试前拉取）自然重取。
-func (c *Client) requestP2PSignalToken(name string) (username, password string, expiresAt int64, err error) {
-	c.ctrlMu.Lock()
+func (c *Client) requestP2PSignalToken(ctx context.Context, name string) (username, password string, expiresAt int64, err error) {
+	// 复审 F1：ctrlMu 获取必须可取消——隧道拆除时本请求若持锁排队，
+	// 不可取消的等待会与 Manager.mu/ctrlMu 构成三路死锁环
+	if err := c.tryLockCtrlMu(ctx); err != nil {
+		return "", "", 0, err
+	}
 	defer c.ctrlMu.Unlock()
 
 	session := c.transport.Session()
@@ -130,6 +135,20 @@ func (c *Client) requestP2PSignalToken(name string) (username, password string, 
 		return "", "", 0, fmt.Errorf("p2p_signal_token rejected: %s", resp.Error)
 	}
 	return resp.Username, resp.Password, resp.ExpiresAt, nil
+}
+
+// tryLockCtrlMu 可取消地获取 ctrlMu（sync.Mutex 无 ctx 感知，轮询 TryLock）
+func (c *Client) tryLockCtrlMu(ctx context.Context) error {
+	for {
+		if c.ctrlMu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // serverHostFromAddr 从 ServerAddr（host:port）提取 host

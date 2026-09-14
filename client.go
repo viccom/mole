@@ -740,6 +740,10 @@ func (c *Client) collectTunnelStatuses() []protocol.TunnelStatus {
 
 // sendTunnelStatus 上报隧道运行时状态
 func (c *Client) sendTunnelStatus() {
+	// 先在锁外收集状态：collectTunnelStatuses 会取各 Manager 的内部锁，
+	// 持 ctrlMu 跨 Manager 锁会与凭据请求构成死锁环（复审 F1）
+	statuses := c.collectTunnelStatuses()
+
 	c.ctrlMu.Lock()
 	defer c.ctrlMu.Unlock()
 
@@ -757,7 +761,7 @@ func (c *Client) sendTunnelStatus() {
 	cmd := protocol.ControlCmd{
 		Cmd:      "tunnel_status",
 		NodeID:   c.cfg.NodeID,
-		Statuses: c.collectTunnelStatuses(),
+		Statuses: statuses,
 	}
 	if err := writeCmd(stream, cmd); err != nil {
 		return

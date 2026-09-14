@@ -35,7 +35,7 @@ type Runtime struct {
 type Handler struct {
 	cfg     P2PConfig
 	host    string // serverHost：派生默认 mqtt/stun 服务器地址
-	credsFn func() (SignalCredentials, error) // 信令凭据拉取（nil = 匿名，公共/自定义 broker 场景）
+	credsFn func(ctx context.Context) (SignalCredentials, error) // 信令凭据拉取（nil = 匿名，公共/自定义 broker 场景）
 
 	mu        sync.Mutex
 	sess      session.Session
@@ -46,7 +46,7 @@ type Handler struct {
 }
 
 // NewHandler 构造 Handler（Start 前不产生任何 goroutine）
-func NewHandler(cfg P2PConfig, serverHost string, credsFn func() (SignalCredentials, error)) *Handler {
+func NewHandler(cfg P2PConfig, serverHost string, credsFn func(ctx context.Context) (SignalCredentials, error)) *Handler {
 	return &Handler{cfg: cfg, host: serverHost, credsFn: credsFn, stopped: make(chan struct{})}
 }
 
@@ -68,6 +68,7 @@ func (h *Handler) Start(parent context.Context) {
 	h.cancel = cancel
 	go func() {
 		defer close(h.stopped)
+		defer h.closeCurrentSession() // 复审 F6：Run 退出后补关竞态窗口内新建的会话
 		_ = h.Run(ctx)
 	}()
 }
@@ -78,19 +79,32 @@ func (h *Handler) Close() {
 	h.closeOnce.Do(func() {
 		h.mu.Lock()
 		cancel := h.cancel
-		sess := h.sess
 		h.mu.Unlock()
 		if cancel != nil {
 			cancel()
 		}
-		if sess != nil {
-			for _, ti := range sess.ListTunnels() {
-				_ = sess.CloseTunnel(ti.ID)
-			}
-			_ = sess.Close()
-		}
+		h.closeCurrentSession()
 		<-h.stopped
+		// 复审 F6：connectFn 返回与 setSession 之间的竞态窗口可能新建会话，
+		// 其 Run 不响应 ctx——等待退出后再补关一次
+		h.closeCurrentSession()
 	})
+}
+
+// closeCurrentSession 关闭当前会话（幂等；取出引用防重复关闭）
+func (h *Handler) closeCurrentSession() {
+	h.mu.Lock()
+	sess := h.sess
+	h.sess = nil
+	h.mu.Unlock()
+	println("DBG closeCurrent sess_nil=", sess == nil)
+	if sess == nil {
+		return
+	}
+	for _, ti := range sess.ListTunnels() {
+		_ = sess.CloseTunnel(ti.ID)
+	}
+	_ = sess.Close()
 }
 
 // Run 是重连循环：逐 mode 尝试，失败退避重连（5/10/20/40/60s，防 conntrack 爆表）；
@@ -145,9 +159,12 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 		// 控制面不可达时按匿名继续（server broker 会拒，下一轮退避后重拉）
 		creds := SignalCredentials{}
 		if h.credsFn != nil {
-			c, err := h.credsFn()
+			c, err := h.credsFn(ctx)
 			if err != nil {
 				h.setFailure("signal creds: " + err.Error())
+				// 复审 F3：显式回退匿名——沿用他隧道残留在包级全局的凭据，
+				// 可能把 token/secret 发给第三方 broker
+				engine.SetSignalCredentials("", "")
 			} else {
 				creds = c
 				// 写入 easyp2p 包级注入点（同节点多 token 对 broker 等价，见 fork 说明）
@@ -158,6 +175,14 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 		if err != nil {
 			h.setFailure(modeName + " failed: " + err.Error())
 			continue
+		}
+		// 停机竞态守卫（复审 F6）：connectFn 返回与 setSession 之间若已停机，
+		// 必须就地关闭刚建立的会话——session.Run 不响应 ctx，遗弃会留 35s 幽灵
+		// 连接，且 Handler.Close 的补关看到的是 nil 引用
+		if ctx.Err() != nil {
+			println("DBG ctx-guard closing fresh session")
+			_ = sess.Close()
+			return false
 		}
 		h.setSession(sess)
 
@@ -173,7 +198,7 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 			h.restoreTunnel(ctx, sess)
 		}
 		<-runDone
-		h.clearSession(sess)
+		h.endSession(sess)
 		return true
 	}
 	return false
@@ -233,12 +258,20 @@ func (h *Handler) setSession(sess session.Session) {
 	h.mu.Unlock()
 }
 
-func (h *Handler) clearSession(sess session.Session) {
+// endSession 会话生命周期终结（对端断开/本端停机）：关闭其全部隧道与会话本体，
+// 并清除 Handler 引用。幂等——session.Close 与 NegotiatedConn.Close 均可重入
+//（fork 硬约束 §3.2.6）。此前的 clearSession 只清引用不关闭，会话关闭完全
+// 依赖 h.Close 的快照，异步拆除下会泄漏（复审 F6 根因）。
+func (h *Handler) endSession(sess session.Session) {
 	h.mu.Lock()
 	if h.sess == sess {
 		h.sess = nil
 	}
 	h.mu.Unlock()
+	for _, ti := range sess.ListTunnels() {
+		_ = sess.CloseTunnel(ti.ID)
+	}
+	_ = sess.Close()
 }
 
 func (h *Handler) setFailure(msg string) {
