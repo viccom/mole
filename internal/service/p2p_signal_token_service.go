@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"moleAgent_Serv/internal/auth"
@@ -26,6 +28,10 @@ const p2pSignalTokenTTL = 24 * time.Hour
 type P2PSignalTokenService struct {
 	repo core.P2PSignalTokenRepo
 	now  func() time.Time // 测试注入
+	// issueMu 串行化签发：FindByOwner→Upsert 必须原子，否则并发签发会让
+	// owner 索引指向新 tokenID 而旧 token 的记录+secret 索引残留为
+	// 吊销不到的孤儿凭据（审查 #4）。签发低频，互斥无性能影响。
+	issueMu sync.Mutex
 }
 
 // NewP2PSignalTokenService 创建签发服务
@@ -36,6 +42,9 @@ func NewP2PSignalTokenService(repo core.P2PSignalTokenRepo) *P2PSignalTokenServi
 // IssueP2PSignalToken 按 (nodeID, tunnelName) 签发：已有记录则复用 tokenID、
 // 轮换 secret；返回 (username, password, expiresAtUnix, error)。
 func (s *P2PSignalTokenService) IssueP2PSignalToken(nodeID, tunnelName string) (string, string, int64, error) {
+	s.issueMu.Lock()
+	defer s.issueMu.Unlock()
+
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return "", "", 0, fmt.Errorf("generate p2p signal secret: %w", err)
@@ -50,7 +59,13 @@ func (s *P2PSignalTokenService) IssueP2PSignalToken(nodeID, tunnelName string) (
 		ExpiresAt:  now.Add(p2pSignalTokenTTL),
 		CreatedAt:  now,
 	}
-	if existing, err := s.repo.FindByOwner(nodeID, tunnelName); err == nil && existing != nil {
+	existing, err := s.repo.FindByOwner(nodeID, tunnelName)
+	if err != nil && !errors.Is(err, core.ErrNotFound) {
+		// 真 DB 错误必须显式失败：当「无记录」继续签发会覆盖 owner 索引，
+		// 把旧 token 变成吊销不到的孤儿
+		return "", "", 0, fmt.Errorf("find existing p2p signal token: %w", err)
+	}
+	if err == nil && existing != nil {
 		tok.TokenID = existing.TokenID // username 稳定复用
 	}
 	if err := s.repo.Upsert(tok); err != nil {
@@ -76,11 +91,16 @@ func (s *P2PSignalTokenService) VerifyP2PSignalToken(tokenID, password string) b
 	return subtle.ConstantTimeCompare([]byte(tok.SecretHash), []byte(hex.EncodeToString(sum[:]))) == 1
 }
 
-// RevokeP2PSignalToken 删除对应 p2p tunnel 时吊销（不存在视为已吊销）
+// RevokeP2PSignalToken 删除对应 p2p tunnel 时吊销。
+// 不存在（ErrNotFound）视为已吊销；真 DB 错误必须透传——静默成功会让
+// 本应「删除即吊销」的凭据带病存活到 TTL（审查 #10）。
 func (s *P2PSignalTokenService) RevokeP2PSignalToken(nodeID, tunnelName string) error {
 	tok, err := s.repo.FindByOwner(nodeID, tunnelName)
-	if err != nil || tok == nil {
-		return nil
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("find p2p signal token for revoke: %w", err)
 	}
 	return s.repo.Delete(tok.TokenID)
 }

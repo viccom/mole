@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -68,7 +69,15 @@ func (r *p2pSignalTokenRepo) Upsert(tok *core.P2PSignalToken) error {
 
 func (r *p2pSignalTokenRepo) GetByID(id string) (*core.P2PSignalToken, error) {
 	val, err := r.db.Hash().Get(p2pTokenRecordHash, id)
-	if err != nil || val.String() == "" {
+	if err != nil {
+		// redka 对缺失 key 返回 ErrNotFound；其余才是真 DB 错误——
+		// 吊销路径靠这一区分避免把失败静默当成功
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrNotFound
+		}
+		return nil, fmt.Errorf("get p2p signal token %q: %w", id, err)
+	}
+	if val.String() == "" {
 		return nil, core.ErrNotFound
 	}
 	var tok core.P2PSignalToken
@@ -80,7 +89,13 @@ func (r *p2pSignalTokenRepo) GetByID(id string) (*core.P2PSignalToken, error) {
 
 func (r *p2pSignalTokenRepo) FindByOwner(nodeID, tunnelName string) (*core.P2PSignalToken, error) {
 	idVal, err := r.db.Hash().Get(p2pTokenOwnerIdx, p2pTokenOwnerKey(nodeID, tunnelName))
-	if err != nil || idVal.String() == "" {
+	if err != nil {
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrNotFound
+		}
+		return nil, fmt.Errorf("get p2p token owner index: %w", err)
+	}
+	if idVal.String() == "" {
 		return nil, core.ErrNotFound
 	}
 	return r.GetByID(idVal.String())
@@ -105,7 +120,10 @@ func (r *p2pSignalTokenRepo) ListAll() ([]*core.P2PSignalToken, error) {
 func (r *p2pSignalTokenRepo) Delete(id string) error {
 	tok, err := r.GetByID(id)
 	if err != nil {
-		return nil // 不存在视为已删除
+		if errors.Is(err, core.ErrNotFound) {
+			return nil // 不存在视为已删除
+		}
+		return fmt.Errorf("get p2p signal token for delete: %w", err)
 	}
 	if _, err := r.db.Hash().Delete(p2pTokenRecordHash, id); err != nil {
 		return fmt.Errorf("delete p2p signal token: %w", err)

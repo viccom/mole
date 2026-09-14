@@ -1,13 +1,16 @@
 package service
 
 import (
+	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/nalgeon/redka"
 	_ "modernc.org/sqlite"
 
+	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/storage"
 )
 
@@ -175,4 +178,100 @@ func TestP2PSignalTokenRepoRoundtrip(t *testing.T) {
 		t.Fatal("secret must be stored as hash, not plaintext")
 	}
 	_ = user
+}
+
+// ===== 审查 #10/#4：错误透传 + 签发原子性 =====
+
+// flakyFindRepo 只让 FindByOwner 失败（模拟瞬时 DB 错误），其余委托真实 repo。
+// 揭示 #4：签发路径把 FindByOwner 的真错误当「无记录」，照常生成新 tokenID 落库。
+type flakyFindRepo struct {
+	core.P2PSignalTokenRepo
+	findErr error
+}
+
+func (r *flakyFindRepo) FindByOwner(nodeID, tunnelName string) (*core.P2PSignalToken, error) {
+	return nil, r.findErr
+}
+
+// FindByOwner 的真 DB 错误必须让 Issue 显式失败，而不是当「无记录」继续签发
+// （否则覆盖 owner 索引后，旧 token 的记录+secret 索引残留为吊销不到的孤儿）
+func TestIssueFailsOnRepoReadError(t *testing.T) {
+	db := setupP2PTokenDB(t)
+	real := storage.NewP2PSignalTokenRepo(db)
+	// 先正常签发一条，制造「已有记录」背景
+	svc := NewP2PSignalTokenService(real)
+	if _, _, _, err := svc.IssueP2PSignalToken("Node0001", "p2p-a"); err != nil {
+		t.Fatalf("seed issue: %v", err)
+	}
+
+	flaky := &flakyFindRepo{P2PSignalTokenRepo: real, findErr: errors.New("sqlite disk I/O error")}
+	flakySvc := NewP2PSignalTokenService(flaky)
+	_, _, _, err := flakySvc.IssueP2PSignalToken("Node0001", "p2p-a")
+	if err == nil {
+		t.Fatal("Issue must fail loudly on repo read error, not issue a fresh orphan-capable token")
+	}
+}
+
+// 吊销遇到真 DB 错误必须报错，而不是当「不存在」静默成功（#10）
+func TestRevokeSurfacesDBError(t *testing.T) {
+	db := setupP2PTokenDB(t)
+	repo := storage.NewP2PSignalTokenRepo(db)
+	svc := NewP2PSignalTokenService(repo)
+	if _, _, _, err := svc.IssueP2PSignalToken("Node0001", "p2p-a"); err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	_ = db.Close() // 关库制造真 DB 错误
+	if err := svc.RevokeP2PSignalToken("Node0001", "p2p-a"); err == nil {
+		t.Fatal("revoke must surface the DB error, not report success")
+	}
+}
+
+// 从未签发过的 owner 吊销 = 无操作（幂等，不报错）
+func TestRevokeUnknownOwnerIsNoop(t *testing.T) {
+	svc, _ := newP2PTokenService(t)
+	if err := svc.RevokeP2PSignalToken("Node0009", "p2p-none"); err != nil {
+		t.Fatalf("revoke unknown owner must be noop, got %v", err)
+	}
+}
+
+// 并发签发同一 owner 必须收敛为单条记录、单一 tokenID（#4 的竞态面）
+func TestConcurrentIssueSameOwnerConverges(t *testing.T) {
+	db := setupP2PTokenDB(t)
+	repo := storage.NewP2PSignalTokenRepo(db)
+	svc := NewP2PSignalTokenService(repo)
+
+	const n = 8
+	var wg sync.WaitGroup
+	usernames := make([]string, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			u, _, _, err := svc.IssueP2PSignalToken("Node0001", "p2p-race")
+			if err != nil {
+				t.Errorf("issue %d: %v", i, err)
+				return
+			}
+			usernames[i] = u
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	toks, err := svc.repo.ListAll()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(toks) != 1 {
+		t.Fatalf("concurrent issue left %d records, want exactly 1 (orphaned token = unrevokable)", len(toks))
+	}
+	first := usernames[0]
+	for i, u := range usernames {
+		if u != first {
+			t.Fatalf("username drifted across concurrent issues: [%d]=%q vs %q", i, u, first)
+		}
+	}
 }
