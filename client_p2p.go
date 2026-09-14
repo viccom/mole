@@ -79,6 +79,9 @@ func (c *Client) usesDefaultP2PBroker(name string) bool {
 		if err != nil {
 			return false
 		}
+		if len(cfg.MQTTBrokers) == 0 {
+			return true // 空列表 = 默认 server broker（复审 F14 修复：此早退不可省）
+		}
 		// 归一化签名比较（复审 F14）：写法不同但指向相同 broker 的配置
 		// 不应被误判为自定义 broker 而匿名连接（会永久被 server broker 拒绝）
 		return p2p.MQTTBrokerSignature(cfg.MQTTBrokers) ==

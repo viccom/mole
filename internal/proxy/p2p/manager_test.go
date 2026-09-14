@@ -145,3 +145,16 @@ func TestLocalPortConflictSkipsNewer(t *testing.T) {
 		t.Fatalf("conflicting local_port must be skipped, err = %v", err)
 	}
 }
+
+// 复审 F14：归一化签名——等价写法同签名、空列表签名为空串（空列表的
+// 「默认 broker」语义由调用方 usesDefaultP2PBroker 的早退分支表达）
+func TestMQTTBrokerSignatureEquivalence(t *testing.T) {
+	a := MQTTBrokerSignature([]string{"tcp://VPN.Example.com:1883/"})
+	b := MQTTBrokerSignature([]string{"tcp://vpn.example.com:1883"})
+	if a == "" || a != b {
+		t.Fatalf("equivalent spellings must share signature: %q vs %q", a, b)
+	}
+	if MQTTBrokerSignature(nil) != "" {
+		t.Fatal("nil brokers must yield empty signature")
+	}
+}
