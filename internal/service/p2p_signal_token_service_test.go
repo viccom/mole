@@ -308,3 +308,56 @@ func TestRevokeNodeP2PTokens(t *testing.T) {
 		t.Fatalf("other node issue: %v", err)
 	}
 }
+
+// 复审 R5：吊销必须等待在途签发完成（互斥），否则可复活刚吊销的凭据
+func TestRevokeWaitsForInFlightIssue(t *testing.T) {
+	db := setupP2PTokenDB(t)
+	real := storage.NewP2PSignalTokenRepo(db)
+	blocking := &blockingFindRepo{P2PSignalTokenRepo: real, entered: make(chan struct{}), release: make(chan struct{})}
+	svc := NewP2PSignalTokenService(blocking)
+
+	issueDone := make(chan struct{})
+	go func() {
+		defer close(issueDone)
+		_, _, _, _ = svc.IssueP2PSignalToken("Node0001", "p2p-race")
+	}()
+	<-blocking.entered // Issue 已进入临界区（FindByOwner 阻塞中）
+
+	revokeDone := make(chan error, 1)
+	go func() { revokeDone <- svc.RevokeP2PSignalToken("Node0001", "p2p-race") }()
+
+	// Revoke 必须阻塞等待 Issue 完成，不得先行删除后被 Upsert 复活
+	select {
+	case <-revokeDone:
+		t.Fatal("Revoke must wait for the in-flight Issue (mutex)")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	<-issueDone
+	if err := <-revokeDone; err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	// 终态：吊销后无记录（无复活）
+	if _, err := real.FindByOwner("Node0001", "p2p-race"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("token must stay revoked after race, err = %v", err)
+	}
+}
+
+// blockingFindRepo 首次 FindByOwner 阻塞直到 release 关闭（制造确定性交错）
+type blockingFindRepo struct {
+	core.P2PSignalTokenRepo
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingFindRepo) FindByOwner(nodeID, tunnelName string) (*core.P2PSignalToken, error) {
+	first := false
+	r.once.Do(func() { first = true })
+	if first {
+		close(r.entered)
+		<-r.release
+	}
+	return r.P2PSignalTokenRepo.FindByOwner(nodeID, tunnelName)
+}

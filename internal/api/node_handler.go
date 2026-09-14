@@ -250,18 +250,31 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	id = strings.TrimRight(id, "/")
 	// 归属检查：先查内存，再查持久化；同时收集隧道列表供凭据级联吊销
-	var tunnels []core.Tunnel
+	// 归属检查（内存优先）并收集吊销列表：内存可能因推送失败分叉缺隧道、
+	// 持久层可能含内存没有的记录——求并集，两个真相源都不漏（复审 R1）
+	var memoryTunnels, persistedTunnels []core.Tunnel
 	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
 		if !checkNodeOwnership(w, r, node) {
 			return
 		}
-		tunnels = node.Tunnels
-	} else if h.nodeRepo != nil {
+		memoryTunnels = node.Tunnels
+	}
+	if h.nodeRepo != nil {
 		if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
 			if !checkNodeOwnership(w, r, persisted) {
 				return
 			}
-			tunnels = persisted.Tunnels
+			persistedTunnels = persisted.Tunnels
+		}
+	}
+	seen := make(map[string]bool, len(memoryTunnels)+len(persistedTunnels))
+	tunnels := make([]core.Tunnel, 0, len(memoryTunnels)+len(persistedTunnels))
+	for _, list := range [][]core.Tunnel{memoryTunnels, persistedTunnels} {
+		for _, t := range list {
+			if !seen[t.Name] {
+				seen[t.Name] = true
+				tunnels = append(tunnels, t)
+			}
 		}
 	}
 	h.nodeMgr.Disconnect(r.Context(), id)

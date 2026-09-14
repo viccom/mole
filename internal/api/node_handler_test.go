@@ -442,3 +442,44 @@ func TestNodeHandlerDelete_RevokesP2PTokens(t *testing.T) {
 		t.Fatalf("revoker must receive the node's p2p tunnels, got %+v", revoker.tunnels)
 	}
 }
+
+// 复审 R1：内存缺隧道（推送失败分叉）时，吊销列表必须并上持久层
+func TestNodeHandlerDelete_RevokesPersistedOnlyTunnels(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	// 内存：节点在线但无隧道（模拟推送失败历史）
+	if err := nodeMgr.Add(ctx, &core.Node{ID: "Node0001", Name: "n1", Status: core.NodeStatusOnline}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// 持久层：仍持有 p2p 隧道
+	repo := newTestNodeRepo()
+	if err := repo.Create(&core.Node{
+		ID:     "Node0001",
+		Name:   "n1",
+		Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{
+			{Name: "p2p-ghost", Type: core.TunnelTypeP2P},
+		},
+	}); err != nil {
+		t.Fatalf("repo.Create: %v", err)
+	}
+	handler := NewNodeHandler(nodeMgr, repo, &testTunnelConfigManager{}, nil)
+	revoker := &fakeP2PRevoker{}
+	handler.SetP2PTokenRevoker(revoker)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/Node0001", nil)
+	rec := httptest.NewRecorder()
+	handler.Delete(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d", rec.Code)
+	}
+	found := false
+	for _, tl := range revoker.tunnels {
+		if tl.Name == "p2p-ghost" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("revoker must receive persisted-only tunnels, got %+v", revoker.tunnels)
+	}
+}

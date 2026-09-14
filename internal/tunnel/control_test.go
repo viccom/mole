@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -163,7 +164,7 @@ func TestIsValidNodeID_ValidCases(t *testing.T) {
 
 func TestIsValidNodeID_InvalidCases(t *testing.T) {
 	tests := []struct {
-		id   string
+		id     string
 		reason string
 	}{
 		{"", "empty string"},
@@ -593,16 +594,19 @@ func TestHandleP2PSignalToken(t *testing.T) {
 // ===== 审查 #1/#8a：签发只认持久层真相源 + 禁用隧道不签发 =====
 
 // fakeControlNodeRepo 隔离内存态与持久层的桩：nodeMgr 里有的，repo 里可以没有
-//（复现 register 竞态：handleRegister 先写内存、SyncFromClient 拒绝后持久层为空）
-type fakeControlNodeRepo struct{ nodes map[string]*core.Node }
+// （复现 register 竞态：handleRegister 先写内存、SyncFromClient 拒绝后持久层为空）
+type fakeControlNodeRepo struct {
+	nodes  map[string]*core.Node
+	getErr error // 注入瞬时 DB 错误（复审 R3 测试）
+}
 
 func newFakeControlNodeRepo() *fakeControlNodeRepo {
 	return &fakeControlNodeRepo{nodes: map[string]*core.Node{}}
 }
 
-func (f *fakeControlNodeRepo) Create(n *core.Node) error       { f.nodes[n.ID] = n; return nil }
-func (f *fakeControlNodeRepo) Update(n *core.Node) error       { f.nodes[n.ID] = n; return nil }
-func (f *fakeControlNodeRepo) Delete(id string) error          { delete(f.nodes, id); return nil }
+func (f *fakeControlNodeRepo) Create(n *core.Node) error { f.nodes[n.ID] = n; return nil }
+func (f *fakeControlNodeRepo) Update(n *core.Node) error { f.nodes[n.ID] = n; return nil }
+func (f *fakeControlNodeRepo) Delete(id string) error    { delete(f.nodes, id); return nil }
 func (f *fakeControlNodeRepo) GetAll() ([]*core.Node, error) {
 	out := make([]*core.Node, 0, len(f.nodes))
 	for _, n := range f.nodes {
@@ -612,6 +616,9 @@ func (f *fakeControlNodeRepo) GetAll() ([]*core.Node, error) {
 }
 
 func (f *fakeControlNodeRepo) GetByID(id string) (*core.Node, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	n, ok := f.nodes[id]
 	if !ok {
 		return nil, core.ErrNodeNotFound
@@ -668,5 +675,37 @@ func TestHandleP2PSignalTokenTrustsPersistedTruthOnly(t *testing.T) {
 	// 持久层存在且启用：签发
 	if resp := run("p2p-ok"); !resp.OK {
 		t.Fatalf("enabled persisted tunnel must be issued, got %+v", resp)
+	}
+}
+
+// 复审 R3：持久层瞬时读错误必须与「隧道不存在」区分——向客户端返回可重试
+// 错误（客户端退避后重拉），而不是误判缺失
+func TestHandleP2PSignalTokenTransientErrorRetryable(t *testing.T) {
+	nodeMgr := node.NewShardedNodeManager(4)
+	_ = nodeMgr.Add(context.Background(), &core.Node{
+		ID: "Node0001", Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{{Name: "p2p-a", Type: core.TunnelTypeP2P}},
+	})
+	repo := newFakeControlNodeRepo()
+	repo.getErr = errors.New("sqlite busy")
+	_ = repo.Create(&core.Node{ID: "Node0001", Status: core.NodeStatusOnline,
+		Tunnels: []core.Tunnel{{Name: "p2p-a", Type: core.TunnelTypeP2P}}})
+
+	issuer := &fakeP2PIssuer{}
+	cs := &ControlServer{nodeMgr: nodeMgr, nodeRepo: repo, p2pIssuer: issuer}
+	state := &connState{}
+	state.set(&core.Node{ID: "Node0001"})
+
+	srv, cli := newP2PTokenTestStream(t)
+	go cs.handleP2PSignalToken(context.Background(), ControlCmd{Cmd: "p2p_signal_token", Name: "p2p-a"}, state, srv)
+	resp := readP2PTokenResp(t, cli)
+	if resp.OK {
+		t.Fatal("transient storage error must not issue")
+	}
+	if !strings.Contains(resp.Error, "temporary") {
+		t.Fatalf("error must signal retryable, got %q", resp.Error)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("issuer must not be called, calls=%d", issuer.calls)
 	}
 }

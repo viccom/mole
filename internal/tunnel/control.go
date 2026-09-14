@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -602,8 +603,18 @@ func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCm
 	// 审查 #1），凭据签发不能认它。nodeRepo 为 nil 时回退内存（测试场景）。
 	var tunnels []core.Tunnel
 	if cs.nodeRepo != nil {
-		if persisted, err := cs.nodeRepo.GetByID(node.ID); err == nil && persisted != nil {
+		persisted, err := cs.nodeRepo.GetByID(node.ID)
+		switch {
+		case err == nil && persisted != nil:
 			tunnels = persisted.Tunnels
+		case errors.Is(err, core.ErrNodeNotFound):
+			// 节点无持久记录：维持拒绝（审查 #1）。register 落库在应答前完成，
+			// 客户端每次连接尝试重拉凭据，罕见竞态下一轮自愈
+		default:
+			// 瞬时存储错误与「不存在」必须区分：误判缺失会让客户端拿不到凭据（复审 R3）
+			slog.Warn("p2p signal token: read persisted node failed", "node", node.ID, "error", err)
+			fail("temporary storage error, retry later")
+			return
 		}
 	} else if cur, ok := cs.nodeMgr.Get(ctx, node.ID); ok {
 		tunnels = cur.Tunnels
