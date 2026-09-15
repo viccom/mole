@@ -339,14 +339,15 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	}
 	slog.Debug("Challenge sent", "remote", remoteAddr, "transport", transportName)
 
-	// 预认证读取必须有长度上限：ReadString 遇 ErrBufferFull 会无限扩容，
-	// 无 \n 的字节洪泛可在超时窗口内（10s）灌入 ~GB 级内存造成 OOM
-	limitedConn := &io.LimitedReader{R: conn, N: maxAuthLineBytes}
-	reader := bufio.NewReader(limitedConn)
+	// 预认证读取必须有长度上限：ReadString 遇超长行会无限扩容（OOM）。
+	// 注意不能用 io.LimitedReader 包装连接——其 N 计数覆盖连接全生命周期，
+	// 认证完成后节点→服务端的所有流量继续扣减，累计 64KB 后全部读取返回
+	// EOF，整条节点连接死亡（生产事故根因）。用 readBoundedLine 只限制本行。
+	reader := bufio.NewReader(conn)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	authLine, err := reader.ReadString('\n')
+	authLine, err := readBoundedLine(reader, maxAuthLineBytes)
 	if err != nil {
-		if limitedConn.N <= 0 {
+		if errors.Is(err, errAuthLineTooLarge) {
 			slog.Warn("Node auth line too large", "remote", remoteAddr, "transport", transportName, "limit", maxAuthLineBytes)
 		} else {
 			slog.Warn("Node auth read failed", "remote", remoteAddr, "transport", transportName, "error", err)
@@ -492,6 +493,31 @@ const maxControlMsgSize = 1 << 20 // 1MB
 
 // maxAuthLineBytes 预认证 auth 行的长度上限（token JSON 远小于此值）
 const maxAuthLineBytes = 64 << 10
+
+// errAuthLineTooLarge 认证行超过长度上限
+var errAuthLineTooLarge = errors.New("auth line too large")
+
+// readBoundedLine 读取以 \n 定界的一行，累计长度超限即报错。
+// 修复 OOM 必须只限制"这一行"的长度：绝不能用 io.LimitedReader 包装连接——
+// 其 N 计数覆盖连接全生命周期，认证完成后节点→服务端的所有流量继续扣减，
+// 累计 64KB 后全部读取返回 EOF，整条节点连接死亡（生产事故根因）。
+func readBoundedLine(r *bufio.Reader, limit int) (string, error) {
+	var total int
+	for {
+		frag, err := r.ReadSlice('\n')
+		total += len(frag)
+		if total > limit {
+			return "", errAuthLineTooLarge
+		}
+		if err != nil {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				continue // 单个 bufio 缓冲无 \n，继续累计
+			}
+			return "", err
+		}
+		return string(frag), nil
+	}
+}
 
 // readControlMsg 从流中读取一条完整的 JSON 控制消息。
 // 每条流仅承载一条消息；新版写侧以 '\n' 结尾（writeJSONLine），

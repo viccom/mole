@@ -1,10 +1,12 @@
 package tunnel
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -707,5 +709,34 @@ func TestHandleP2PSignalTokenTransientErrorRetryable(t *testing.T) {
 	}
 	if issuer.calls != 0 {
 		t.Fatalf("issuer must not be called, calls=%d", issuer.calls)
+	}
+}
+
+// TestReadBoundedLine 固化生产事故（conn 级 LimitedReader 吞掉 64KB 配额）
+// 的回归守卫：长度限制必须只作用于认证行本身，连接后续流量不受任何限制。
+func TestReadBoundedLine(t *testing.T) {
+	// 正常行：返回含换行符，可被后续 json.Unmarshal 消费
+	r := bufio.NewReader(strings.NewReader("{\"token\":\"x\"}\nrest"))
+	line, err := readBoundedLine(r, maxAuthLineBytes)
+	if err != nil || line != "{\"token\":\"x\"}\n" {
+		t.Fatalf("normal line: got %q, %v", line, err)
+	}
+
+	// 超长行：拒绝（防 OOM），错误可识别
+	big := strings.Repeat("a", maxAuthLineBytes+4096) + "\n"
+	if _, err := readBoundedLine(bufio.NewReaderSize(strings.NewReader(big), 4096), maxAuthLineBytes); !errors.Is(err, errAuthLineTooLarge) {
+		t.Fatalf("oversized line: want errAuthLineTooLarge, got %v", err)
+	}
+
+	// 核心回归：读完一行后，同一 reader 上的后续大量数据必须完全可读——
+	// 事故版（io.LimitedReader 包装连接）在此处 64KB 后返回 EOF，整条连接死亡
+	const tail = 512 * 1024 // 远超 maxAuthLineBytes
+	r2 := bufio.NewReaderSize(strings.NewReader("auth\n"+strings.Repeat("y", tail)), 4096)
+	if _, err := readBoundedLine(r2, maxAuthLineBytes); err != nil {
+		t.Fatalf("line before tail: %v", err)
+	}
+	rest, err := io.ReadAll(r2)
+	if err != nil || len(rest) != tail {
+		t.Fatalf("post-line traffic must be unlimited: got %d bytes, err %v (want %d)", len(rest), err, tail)
 	}
 }
