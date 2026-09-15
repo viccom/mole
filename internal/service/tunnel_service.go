@@ -750,21 +750,29 @@ func (s *TunnelConfigService) persistUpdatedNode(ctx context.Context, nodeID str
 	if s.nodeRepo == nil {
 		return nil
 	}
-	node, ok := s.nodeMgr.Get(ctx, nodeID)
-	if !ok {
-		return core.ErrNodeNotFound
+	// 落库模板优先取内存节点（带最新归属/限速等字段）；节点已下线时
+	// nodeMgr 中无此记录（handleConnection 断开即 Remove），必须回退到持久层
+	// 记录，否则「持久层有、内存无」的离线节点整条写路径不可达——
+	// MoveTunnel 源侧基线已统一走持久层，此处失败会让离线节点迁移恒 500
+	// （复审 R11：读基线改持久层但写回仍依赖内存，两者不一致）
+	var persisted core.Node
+	if node, ok := s.nodeMgr.Get(ctx, nodeID); ok {
+		persisted = persistableNode(node)
+	} else {
+		existing, err := s.nodeRepo.GetByID(nodeID)
+		if err != nil {
+			if errors.Is(err, core.ErrNodeNotFound) {
+				return core.ErrNodeNotFound
+			}
+			return fmt.Errorf("read persisted node %s: %w", nodeID, err)
+		}
+		if existing == nil {
+			return core.ErrNodeNotFound
+		}
+		persisted = persistableNode(existing)
 	}
-
-	persisted := persistableNode(node)
 	persisted.Tunnels = append([]core.Tunnel(nil), tunnels...)
 
-	existing, err := s.nodeRepo.GetByID(nodeID)
-	if err != nil || existing == nil {
-		if err := s.nodeRepo.Create(&persisted); err != nil {
-			return err
-		}
-		return nil
-	}
 	return s.nodeRepo.Update(&persisted)
 }
 
