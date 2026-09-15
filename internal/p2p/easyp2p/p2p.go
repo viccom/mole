@@ -210,16 +210,19 @@ func MQTT_SecureExchangeWithSession[T any](ctx context.Context, signal *MQTTSign
 		var zero T
 		var remoteSecurePayload securePayload
 		verIncomp := "possible version incompatibility with the peer"
-		if err = json.Unmarshal([]byte(data), &remoteSecurePayload); err != nil {
-			return zero, fmt.Errorf("failed to unmarshal remote secure payload: %w (%s)", err, verIncomp)
+		// 必须用局部变量：本闭包会经 msgHandler 在 paho 路由 goroutine 上并发执行，
+		// 写外层命名返回值 err 与主 goroutine 的 decoder 调用构成数据竞争，
+		// 且迟到的写入可把成功结果腐蚀为失败（或反之）
+		if uerr := json.Unmarshal([]byte(data), &remoteSecurePayload); uerr != nil {
+			return zero, fmt.Errorf("failed to unmarshal remote secure payload: %w (%s)", uerr, verIncomp)
 		}
-		plain, err := decryptAES(myKey[:], &remoteSecurePayload)
-		if err != nil {
-			return zero, fmt.Errorf("failed to decrypt remote payload: %w (%s)", err, verIncomp)
+		plain, derr := decryptAES(myKey[:], &remoteSecurePayload)
+		if derr != nil {
+			return zero, fmt.Errorf("failed to decrypt remote payload: %w (%s)", derr, verIncomp)
 		}
 		var remotePayload T
-		if err = json.Unmarshal(plain, &remotePayload); err != nil {
-			return zero, fmt.Errorf("failed to unmarshal remote exchange payload: %w (%s)", err, verIncomp)
+		if uerr := json.Unmarshal(plain, &remotePayload); uerr != nil {
+			return zero, fmt.Errorf("failed to unmarshal remote exchange payload: %w (%s)", uerr, verIncomp)
 		}
 		return remotePayload, nil
 	}
@@ -933,6 +936,7 @@ func Easy_P2P_MP(ctx context.Context, network, bind, sessionUid string, multipat
 	}
 	// Do_autoP2PEx返回的p2pInfos是优先考虑建立TCP来排序的。
 	var p2pInfo *P2PAddressInfo
+	var candidateIdx int
 	var round int
 	var CorS []bool = []bool{false, true, false}
 	var role int = 0 // 0: unknown, 1: client, 2: server
@@ -942,14 +946,25 @@ func Easy_P2P_MP(ctx context.Context, network, bind, sessionUid string, multipat
 	var networksUsed []string
 	var maxRounds = 5
 
-	for _, p2pInfo = range p2pInfos {
+	for candidateIdx, p2pInfo = range p2pInfos {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		if sessCtx.RelayAvailable && relayModeAttempted == 0 && round+1 >= maxRounds {
-			// 在最后一轮前至少尝试一次 relay 模式，如果还没有尝试过，并且后续的候选里有 relay 的话
+			// 在最后一轮前优先尝试 relay 模式。仅当后续确实还有 relay 候选时
+			// 才跳过当前直连候选：否则 relay 实际不通时，被跳过的直连候选
+			// 永远失去尝试机会，本可成功的打洞变成整体失败
 			if p2pInfo.LocalNATType != "relay" && p2pInfo.RemoteNATType != "relay" {
-				continue
+				hasLaterRelay := false
+				for _, later := range p2pInfos[candidateIdx+1:] {
+					if later.LocalNATType == "relay" || later.RemoteNATType == "relay" {
+						hasLaterRelay = true
+						break
+					}
+				}
+				if hasLaterRelay {
+					continue
+				}
 			}
 		}
 
@@ -1207,7 +1222,9 @@ func Auto_P2P_UDP_NAT_Traversal(ctx context.Context, network, sessionUid string,
 				stopPunching()
 				pickOnce.Do(func() {
 					buconn.SetRemoteAddr(buconn.GetLastPacketRemoteAddr())
-					netx.SetUDPTTL(uconn, 64)
+					// 经 buconn 取当前连接：写协程可能已 Rebuild 换过源端口，
+					// 直接读局部变量 uconn 与写协程构成数据竞争
+					netx.SetUDPTTL(buconn.CurrentConn(), 64)
 					buconn.Write(punchPayload) //类似TCP三次握手收到SYN+ACK后，发送个ACK
 					if err := netx.WaitContext(ctxRound, 250*time.Millisecond); err != nil {
 						return

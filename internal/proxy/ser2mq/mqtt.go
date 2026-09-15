@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang"
@@ -52,6 +54,10 @@ type MQTTClient struct {
 	cfg      MQTTConfig
 	outTopic string
 	inTopic  string
+
+	mu          sync.Mutex
+	onReconnect func() // 重连成功后的补订阅回调
+	connected   atomic.Bool
 }
 
 // NewMQTTClient 创建并连接 MQTT 客户端
@@ -69,6 +75,12 @@ func NewMQTTClient(ctx context.Context, cfg MQTTConfig, nodeID, tunnel string) (
 	}
 
 	portName := SanitizePortName(tunnel)
+
+	m := &MQTTClient{
+		cfg:      cfg,
+		outTopic: fmt.Sprintf("/mole/%s/serial/%s/out", nodeID, portName),
+		inTopic:  fmt.Sprintf("/mole/%s/serial/%s/in", nodeID, portName),
+	}
 
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(fmt.Sprintf("tcp://%s", u.Host))
@@ -97,21 +109,41 @@ func NewMQTTClient(ctx context.Context, cfg MQTTConfig, nodeID, tunnel string) (
 		log.Printf("mqtt [%s] connection lost: %v", tunnel, err)
 	})
 
+	// CleanSession=true 下自动重连会丢失 broker 侧订阅，重连成功必须补订阅
+	opts.OnConnect = func(_ mqtt.Client) {
+		if !m.connected.Swap(true) {
+			return // 首连：由调用方显式订阅
+		}
+		m.mu.Lock()
+		fn := m.onReconnect
+		m.mu.Unlock()
+		if fn != nil {
+			go fn()
+		}
+	}
+
 	client := mqtt.NewClient(opts)
+	m.client = client
 	if token := client.Connect(); token.WaitTimeout(10 * time.Second) {
 		if token.Error() != nil {
+			client.Disconnect(100)
 			return nil, fmt.Errorf("mqtt connect: %w", token.Error())
 		}
 	} else {
+		// 超时必须终止半途的 client，否则 ConnectRetry 的重试循环永久残留，
+		// 且每次失败重试都会再泄漏一个
+		client.Disconnect(100)
 		return nil, fmt.Errorf("mqtt connect timeout")
 	}
 
-	return &MQTTClient{
-		client:   client,
-		cfg:      cfg,
-		outTopic: fmt.Sprintf("/mole/%s/serial/%s/out", nodeID, portName),
-		inTopic:  fmt.Sprintf("/mole/%s/serial/%s/in", nodeID, portName),
-	}, nil
+	return m, nil
+}
+
+// SetOnReconnect 注册重连成功后的回调（用于补订阅）
+func (m *MQTTClient) SetOnReconnect(fn func()) {
+	m.mu.Lock()
+	m.onReconnect = fn
+	m.mu.Unlock()
 }
 
 // Disconnect 断开连接

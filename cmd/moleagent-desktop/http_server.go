@@ -31,9 +31,10 @@ func (s builtinHTTPServer) close(ctx context.Context) error {
 }
 
 func (a *App) startBuiltinHTTPServer() error {
-	candidates := []string{a.builtinPort}
+	currentPort := a.builtinPortAddr()
+	candidates := []string{currentPort}
 	defaultAddr := "127.0.0.1:59870"
-	if defaultAddr != "" && defaultAddr != a.builtinPort {
+	if defaultAddr != "" && defaultAddr != currentPort {
 		candidates = append(candidates, defaultAddr)
 	}
 	candidates = append(candidates, "127.0.0.1:0")
@@ -48,8 +49,8 @@ func (a *App) startBuiltinHTTPServer() error {
 
 		a.serverMu.Lock()
 		a.apiServer = server
-		a.serverMu.Unlock()
 		a.builtinPort = actualAddr
+		a.serverMu.Unlock()
 
 		if a.nodeMgr != nil && candidate != "127.0.0.1:0" && actualAddr != a.nodeMgr.GetBuiltinHTTP() {
 			a.nodeMgr.SetBuiltinHTTP(actualAddr)
@@ -77,7 +78,7 @@ func (a *App) stopBuiltinHTTPServer(ctx context.Context) error {
 }
 
 func (a *App) restartBuiltinHTTPServer() error {
-	server, actualAddr, err := a.openBuiltinHTTPServer(a.builtinPort)
+	server, actualAddr, err := a.openBuiltinHTTPServer(a.builtinPortAddr())
 	if err != nil {
 		return err
 	}
@@ -85,14 +86,14 @@ func (a *App) restartBuiltinHTTPServer() error {
 	a.serverMu.Lock()
 	old := a.apiServer
 	a.apiServer = server
+	a.builtinPort = actualAddr
 	a.serverMu.Unlock()
 
-	a.builtinPort = actualAddr
 	return old.close(context.Background())
 }
 
 func (a *App) setBuiltinHTTPPort(port string) error {
-	if port == "" || port == a.builtinPort {
+	if port == "" || port == a.builtinPortAddr() {
 		return nil
 	}
 	server, actualAddr, err := a.openBuiltinHTTPServer(port)
@@ -103,15 +104,15 @@ func (a *App) setBuiltinHTTPPort(port string) error {
 	a.serverMu.Lock()
 	old := a.apiServer
 	a.apiServer = server
-	a.serverMu.Unlock()
-
 	oldPort := a.builtinPort
 	a.builtinPort = actualAddr
+	a.serverMu.Unlock()
+
 	if a.nodeMgr != nil {
 		a.nodeMgr.SetBuiltinHTTP(actualAddr)
 		if err := a.nodeMgr.Save(); err != nil {
-			a.builtinPort = oldPort
 			a.serverMu.Lock()
+			a.builtinPort = oldPort
 			a.apiServer = old
 			a.serverMu.Unlock()
 			_ = server.close(context.Background())

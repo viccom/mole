@@ -244,6 +244,7 @@ type lanMcast struct {
 	warned  map[string]struct{}
 	warnMu  sync.Mutex
 	enumErr error
+	bcastMu sync.Mutex // SetMulticastInterface→WriteTo 必须原子，否则并发广播会从错误网卡发出
 }
 
 type lanMcastIface struct {
@@ -306,6 +307,11 @@ func newLanMcastWithInterfaces(listInterfaces func() ([]net.Interface, error), l
 func (mc *lanMcast) Close() { mc.rawConn.Close() }
 
 func (mc *lanMcast) broadcast(data []byte) {
+	// initiator 与 responder 的广播/应答并发复用同一 conn，
+	// "SetMulticastInterface→WriteTo" 两步必须整体串行，否则包可能从别的网卡出去
+	mc.bcastMu.Lock()
+	defer mc.bcastMu.Unlock()
+
 	if mc.enumErr != nil {
 		mc.warnOnce("ifaces-enum", "interface enumeration failed: %v", mc.enumErr)
 	}

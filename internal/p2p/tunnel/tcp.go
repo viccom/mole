@@ -3,10 +3,12 @@
 package tunnel
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"time"
 )
 
 // StartTCPListener starts a TCP listener for the tunnel (initiator side).
@@ -42,9 +44,15 @@ func StartTCPListener(t *Tunnel, mux StreamOpener) error {
 				case <-t.done:
 					return
 				default:
-					log.Printf("[tunnel] %s accept: %v", t.StringID(), err)
+				}
+				if errors.Is(err, net.ErrClosed) {
 					return
 				}
+				// 瞬态错误（如 EMFILE）不能静默退出：否则 listener 已死
+				// 而 tunnel 状态仍 Active，端口无人监听且不会自愈
+				log.Printf("[tunnel] %s accept: %v", t.StringID(), err)
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 			go t.bridgeTCP(mux, localConn.(*net.TCPConn))
 		}

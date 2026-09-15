@@ -326,12 +326,16 @@ func (s *secureSession) Run(_ context.Context) error {
 				log.Printf("[session secure] accept stream: %v", e)
 				return
 			}
+			// 首 4 字节 magic 必须限时：同步 ReadFull 无 deadline 时，
+			// 一条只开不写的 stream 即可挂死整个 accept 循环（全部入站服务停摆）
+			st.SetReadDeadline(time.Now().Add(streamHeaderTimeout))
 			header := make([]byte, 4)
 			if _, e := io.ReadFull(st, header); e != nil {
 				log.Printf("[session secure] stream header: %v", e)
 				st.Close()
 				continue
 			}
+			st.SetReadDeadline(time.Time{})
 			magic := binary.BigEndian.Uint32(header)
 			switch magic {
 			case FileMagic:

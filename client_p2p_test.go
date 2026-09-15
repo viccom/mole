@@ -29,7 +29,7 @@ func TestP2PControllerNotifyFiltering(t *testing.T) {
 	disabled := false
 	enabled := true
 	p.Notify([]Tunnel{
-		{Name: "web", Type: TunnelTypeHTTP, Target: "http://127.0.0.1:80", Enabled: &enabled},
+		{Name: "web", Type: TunnelTypeHTTP, Target: "127.0.0.1:80", Enabled: &enabled},
 		{Name: "p2p-off", Type: TunnelTypeP2P, Enabled: &disabled, Para: []byte(`{"room":"roomok00001","protocol":"tcp"}`)},
 		{Name: "p2p-bad", Type: TunnelTypeP2P, Enabled: &enabled, Para: []byte(`not-json`)},
 	})

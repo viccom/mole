@@ -156,14 +156,34 @@ func (h *Handler) handleFileListReq(payload []byte, sw *mutexWriter) {
 		return entries[i].Name < entries[j].Name
 	})
 
-	resp, _ := json.Marshal(map[string]any{
-		"path":  path,
-		"home":  home,
-		"files": entries,
-	})
+	resp := sftpMarshalFileList(path, home, entries)
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	writeWebSSHMsg(sw.w, msgFileListResp, resp)
+}
+
+// maxSFTPListPayload 单条消息的 payload 上限（协议 [type 1B][len 2B BE]，len 为 uint16）
+const maxSFTPListPayload = 65535
+
+// sftpMarshalFileList 序列化目录列表；超过消息上限时按比例截断条目并标记 truncated。
+// 不截断会导致 writeWebSSHMsg 拒发整个响应，前端文件面板永久挂起。
+func sftpMarshalFileList(path, home string, entries []fileEntry) []byte {
+	build := func(files []fileEntry, truncated bool) ([]byte, error) {
+		m := map[string]any{"path": path, "home": home, "files": files}
+		if truncated {
+			m["truncated"] = true
+		}
+		return json.Marshal(m)
+	}
+	resp, err := build(entries, false)
+	for err == nil && len(resp) > maxSFTPListPayload && len(entries) > 1 {
+		entries = entries[:len(entries)*3/4]
+		resp, err = build(entries, true)
+	}
+	if err != nil {
+		return nil
+	}
+	return resp
 }
 
 // handleFileUploadReq 处理上传开始请求，返回打开的 SFTP 文件

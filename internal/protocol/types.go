@@ -19,7 +19,8 @@ type Tunnel struct {
 	Domain     string          `json:"domain,omitempty"`
 	ListenPort int             `json:"listen_port,omitempty"`
 	Enabled    *bool           `json:"enabled,omitempty"`
-	Para       json.RawMessage `json:"para,omitempty"` // 扩展配置（ser2mq/vpn-manager）
+	Para       json.RawMessage `json:"para,omitempty"`  // 扩展配置（ser2mq/vpn-manager）
+	RateLimit  json.RawMessage `json:"rate_limit,omitempty"` // 服务端专属限速配置，原样透传（tunnel_update 全量回传时防止服务端限速配置被清空）
 }
 
 // ControlCmd 控制命令

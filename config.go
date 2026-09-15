@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -46,6 +47,9 @@ type KCPConfig struct {
 	SendWindow   int    `json:"send_window"`
 	RecvWindow   int    `json:"recv_window"`
 }
+
+// minDuration 时间量配置下限：拦截负值与"秒数误写成纳秒"的配置错误
+const minDuration = 10 * time.Millisecond
 
 // LoadConfigFile 从 JSON 文件加载配置
 func LoadConfigFile(path string) (*Config, error) {
@@ -123,6 +127,26 @@ func (c *Config) Validate() error {
 
 	if c.Transport == "kcp" && c.UseTLS {
 		return fmt.Errorf("TLS is not applicable to KCP transport; use kcp.key for encryption instead")
+	}
+
+	// ws 传输的地址 scheme 必须与 tls 标志一致，否则行为与配置相悖：
+	// tls=true + ws:// 会静默退化为明文（TLS 配置被忽略）
+	if c.Transport == "ws" && strings.Contains(c.ServerAddr, "://") {
+		if c.UseTLS && strings.HasPrefix(c.ServerAddr, "ws://") {
+			return fmt.Errorf("transport ws: tls=true 但 server_addr 为 ws://（将退化为明文连接）；请改用 wss:// 或关闭 tls")
+		}
+	}
+
+	// 时间量在 JSON 中按纳秒解析（"heartbeat_interval": 10 即 10ns）：
+	// 过小的心跳/重连间隔会造成 ping 洪泛或热循环，负值使 time.NewTicker 直接 panic
+	for name, d := range map[string]time.Duration{
+		"heartbeat_interval": c.HeartbeatInterval,
+		"heartbeat_timeout":  c.HeartbeatTimeout,
+		"reconnect_interval": c.ReconnectInterval,
+	} {
+		if d < minDuration {
+			return fmt.Errorf("%s must be >= %v (json numbers are parsed as nanoseconds; did you mean seconds?)", name, minDuration)
+		}
 	}
 
 	if c.KCP.DataShards+c.KCP.ParityShards > 255 {

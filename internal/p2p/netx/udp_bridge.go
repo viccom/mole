@@ -28,8 +28,9 @@ type BridgeConn struct {
 	mu sync.RWMutex
 	C  net.Conn // external forwarder, replaceable
 
-	closed chan struct{}
-	ErrCh  chan error
+	closed    chan struct{}
+	closeOnce sync.Once // 并发 Close（读/写循环的致命错误路径）会二次 close panic
+	ErrCh     chan error
 }
 
 // NewBridge creates A and B as connected UDP conns bound to random local addresses.
@@ -232,21 +233,18 @@ func (bc *BridgeConn) loopAtoC() {
 
 // Close shuts down bridge and all conns
 func (bc *BridgeConn) Close() {
-	select {
-	case <-bc.closed:
-		return
-	default:
+	bc.closeOnce.Do(func() {
 		close(bc.closed)
-	}
 
-	bc.A.Close()
-	bc.B.Close()
+		bc.A.Close()
+		bc.B.Close()
 
-	bc.mu.Lock()
-	if bc.C != nil {
-		// 这里的 Close 会触发正在运行的 runSpecificCtoA 退出
-		bc.C.Close()
-		bc.C = nil
-	}
-	bc.mu.Unlock()
+		bc.mu.Lock()
+		if bc.C != nil {
+			// 这里的 Close 会触发正在运行的 runSpecificCtoA 退出
+			bc.C.Close()
+			bc.C = nil
+		}
+		bc.mu.Unlock()
+	})
 }

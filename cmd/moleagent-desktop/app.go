@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"moleAgent_client"
 	"moleAgent_client/cmd/moleagent-desktop/internal/node"
@@ -145,9 +146,38 @@ func (a *App) startClientWithNode(n *node.Node) error {
 	}
 
 	ctx := context.Background()
-	go newClient.Run(ctx)
+	go func() {
+		if err := newClient.Run(ctx); err != nil {
+			log.Printf("client run error: %v", err)
+		}
+		// 服务端远程 restart 的设计是"退出进程，由 supervisor 拉起"；
+		// 桌面端进程内没有 supervisor，必须自行重建客户端，否则节点静默掉线
+		if newClient.RestartRequested() {
+			// 所有权判定必须在 sleep 之后：延迟窗口内用户可能已切换节点，
+			// 仍按旧判定 relaunch 会关掉用户正在使用的新客户端
+			time.Sleep(time.Second)
+			a.clientMu.Lock()
+			still := a.client == newClient
+			a.clientMu.Unlock()
+			if still {
+				log.Printf("restart requested by server, relaunching client for node: %s", n.Name)
+				if err := a.startClientWithNode(n); err != nil {
+					log.Printf("relaunch client for node %s failed: %v", n.Name, err)
+				}
+			}
+		}
+	}()
 	log.Printf("client started for node: %s", n.Name)
 	return nil
+}
+
+// builtinPortAddr 读取内置 HTTP 端口。
+// a.builtinPort 被 HTTP 服务启停方法（写）与 Wails 绑定/状态查询（读）并发访问，
+// 裸读构成数据竞争（string 为双字，可能撕裂）。
+func (a *App) builtinPortAddr() string {
+	a.serverMu.Lock()
+	defer a.serverMu.Unlock()
+	return a.builtinPort
 }
 
 func (a *App) clientConfigForNode(n *node.Node) *moleAgent_client.Config {
@@ -162,7 +192,7 @@ func (a *App) clientConfigForNode(n *node.Node) *moleAgent_client.Config {
 		NodeName:          nodeName,
 		Transport:         n.Transport,
 		UseTLS:            n.TLS,
-		BuiltinHTTP:       a.builtinPort,
+		BuiltinHTTP:       a.builtinPortAddr(),
 		HeartbeatInterval: 10e9,
 		HeartbeatTimeout:  5e9,
 		ReconnectInterval: 5e9,
@@ -193,7 +223,7 @@ func (a *App) switchNode(nodeID string) error {
 		return errString("node not found")
 	}
 
-	if err := validateDesktopNode(n, a.builtinPort); err != nil {
+	if err := validateDesktopNode(n, a.builtinPortAddr()); err != nil {
 		return err
 	}
 	if err := a.startClientWithNode(n); err != nil {
@@ -338,11 +368,11 @@ func (a *App) GetSer2MQStatus(name string) string {
 }
 
 func (a *App) GetBuiltinHTTPPort() string {
-	return a.builtinPort
+	return a.builtinPortAddr()
 }
 
 func (a *App) GetBuiltinHTTPBaseURL() string {
-	return "http://" + a.builtinPort
+	return "http://" + a.builtinPortAddr()
 }
 
 func (a *App) GetShellInfo() string {
@@ -397,7 +427,7 @@ func (a *App) AddNode(nodeJSON string) string {
 	if n.Token == "" {
 		return errorJSON("token is required")
 	}
-	if err := validateDesktopNode(&n, a.builtinPort); err != nil {
+	if err := validateDesktopNode(&n, a.builtinPortAddr()); err != nil {
 		return errorJSON(err.Error())
 	}
 	if err := a.nodeMgr.Add(n); err != nil {
@@ -423,7 +453,7 @@ func (a *App) UpdateNode(id string, nodeJSON string) string {
 	if err := json.Unmarshal([]byte(nodeJSON), &n); err != nil {
 		return errorJSON("parse node: " + err.Error())
 	}
-	if err := validateDesktopNode(&n, a.builtinPort); err != nil {
+	if err := validateDesktopNode(&n, a.builtinPortAddr()); err != nil {
 		return errorJSON(err.Error())
 	}
 	if err := a.nodeMgr.Update(id, n); err != nil {

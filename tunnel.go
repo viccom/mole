@@ -3,6 +3,8 @@ package moleAgent_client
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"strings"
 
 	"moleAgent_client/internal/protocol"
 )
@@ -26,12 +28,13 @@ const (
 // Tunnel 隧道配置（统一类型，替代原 tunnelConfig 和 protocol.Tunnel 两套定义）
 type Tunnel struct {
 	Name       string          `json:"name"`
-	Type       TunnelType     `json:"type"`
+	Type       TunnelType      `json:"type"`
 	Target     string          `json:"target"`
 	Domain     string          `json:"domain,omitempty"`
-	ListenPort int            `json:"listen_port,omitempty"`
+	ListenPort int             `json:"listen_port,omitempty"`
 	Enabled    *bool           `json:"enabled,omitempty"` // 启用开关，nil/true=启用，false=禁用
 	Para       json.RawMessage `json:"para,omitempty"`    // 扩展配置（ser2mq/vpn-manager 等）
+	RateLimit  json.RawMessage `json:"rate_limit,omitempty"` // 服务端限速配置，原样透传（防止本地变更全量回传时清空服务端限速）
 }
 
 // IsEnabled 返回隧道是否启用。零值（nil）视为启用，兼容旧数据。
@@ -49,6 +52,11 @@ func (t Tunnel) Validate() error {
 	if t.Name == "" {
 		return fmt.Errorf("tunnel name is required")
 	}
+	// 名称会进入 TCP/UDP/WebSSH 代理头（\x00<name>\n，按首个 \n 定界），
+	// 含控制字符会使转发路由解析错位
+	if strings.ContainsAny(t.Name, "\x00\n\r") {
+		return fmt.Errorf("tunnel name must not contain \\x00, \\n or \\r")
+	}
 	switch t.Type {
 	case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP, TunnelTypeSer2MQ, TunnelTypeSer2TCP, TunnelTypeSer2UDP, TunnelTypeVPNMgr, TunnelTypeWebSSH, TunnelTypeP2P:
 	default:
@@ -57,6 +65,40 @@ func (t Tunnel) Validate() error {
 	// p2p 与 vpn-manager 同享空 Target 豁免：p2p 纯会话端无 Target（访问目标由发起端在 Para/OPEN 消息中指定）
 	if t.Target == "" && t.Type != TunnelTypeVPNMgr && t.Type != TunnelTypeP2P {
 		return fmt.Errorf("tunnel target is required")
+	}
+	// 标准四类 target 与服务端 validateTunnel 对齐（host:port，无 scheme）：
+	// 客户端接受的畸形形态不会被本地拦截，而是在 tunnel_update 时被服务端
+	// 整单拒绝——本次全部本地变更静默丢失。scheme 由 dispatchStream 缺省补齐
+	switch t.Type {
+	case TunnelTypeHTTP, TunnelTypeHTTPS:
+		if strings.Contains(t.Target, "://") {
+			return fmt.Errorf("http(s) tunnel target must be host:port without scheme (e.g. 127.0.0.1:8080), got %q", t.Target)
+		}
+		if _, _, err := net.SplitHostPort(t.Target); err != nil {
+			return fmt.Errorf("http(s) tunnel target must be host:port format, got %q", t.Target)
+		}
+	case TunnelTypeTCP, TunnelTypeUDP:
+		if _, _, err := net.SplitHostPort(t.Target); err != nil {
+			return fmt.Errorf("tcp/udp tunnel target must be host:port format, got %q", t.Target)
+		}
+	}
+	// rate_limit 形态校验（与服务端 validateRateLimit 对齐）：客户端侧是零校验的
+	// RawMessage，畸形值会让服务端对整条控制命令 JSON 反序列化失败——register 被
+	// 拒即节点永远无法注册；tunnel_update 被拒即整个快照丢失
+	if len(t.RateLimit) > 0 && string(t.RateLimit) != "null" {
+		var rl struct {
+			MaxConns     int   `json:"max_conns"`
+			MaxBandwidth int64 `json:"max_bandwidth"`
+		}
+		if err := json.Unmarshal(t.RateLimit, &rl); err != nil {
+			return fmt.Errorf("invalid rate_limit (must be an object with max_conns/max_bandwidth): %w", err)
+		}
+		if rl.MaxConns < 0 || rl.MaxConns > 100000 || rl.MaxBandwidth < 0 || rl.MaxBandwidth > 10737418240 {
+			return fmt.Errorf("rate_limit out of range: max_conns 0-100000, max_bandwidth 0-10737418240 bytes/sec")
+		}
+		if rl.MaxConns == 0 && rl.MaxBandwidth == 0 {
+			return fmt.Errorf("rate_limit must have at least one non-zero field (omit or null to clear)")
+		}
 	}
 	return nil
 }
@@ -71,6 +113,7 @@ func (t Tunnel) toProtocol() protocol.Tunnel {
 		ListenPort: t.ListenPort,
 		Enabled:    t.Enabled,
 		Para:       t.Para,
+		RateLimit:  t.RateLimit,
 	}
 }
 
@@ -93,6 +136,7 @@ func fromProtocol(t protocol.Tunnel) Tunnel {
 		ListenPort: t.ListenPort,
 		Enabled:    t.Enabled,
 		Para:       t.Para,
+		RateLimit:  t.RateLimit,
 	}
 }
 

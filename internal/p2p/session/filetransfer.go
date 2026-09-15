@@ -194,7 +194,9 @@ func HandleFileRX(st net.Conn, dir string, onComplete func(fileName, savePath st
 	start := time.Now()
 	written, copyErr := io.Copy(out, io.LimitReader(st, int64(fileSize)))
 	elapsed := time.Since(start)
-	if copyErr != nil {
+	// 对端提前关流时 io.Copy 以 EOF 正常结束（written < fileSize）：
+	// 截断文件与传输中断同样必须按失败处理，否则半截文件被当作完整接收
+	if copyErr != nil || written != int64(fileSize) {
 		// 网络/连接中断：删除残缺半成品，不触发 onComplete——失败不得上报为成功。
 		_ = os.Remove(saveName)
 		log.Printf("[RECV] %s FAILED: copy aborted at %s / %s: %v",

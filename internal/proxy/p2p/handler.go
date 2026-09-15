@@ -110,7 +110,6 @@ func (h *Handler) closeCurrentSession() {
 	sess := h.sess
 	h.sess = nil
 	h.mu.Unlock()
-	println("DBG closeCurrent sess_nil=", sess == nil)
 	if sess == nil {
 		return
 	}

@@ -52,7 +52,7 @@ func ModeV4Relay(ctx context.Context, deps Deps) (*session.Outcome, *[crypto.Key
 		tcpConn.Close()
 		return nil, nil, fmt.Errorf("v4-relay send token: %w", err)
 	}
-	line, err := readRelayReply(tcpConn, 130*time.Second)
+	line, err := readRelayReply(ctx, tcpConn, 130*time.Second)
 	if err != nil || !strings.HasPrefix(line, "RELAY_READY") {
 		tcpConn.Close()
 		return nil, nil, fmt.Errorf("v4-relay pair: %s (%v)", line, err)
@@ -78,13 +78,36 @@ func ModeV4Relay(ctx context.Context, deps Deps) (*session.Outcome, *[crypto.Key
 // readRelayReply 读 relay server 首行应答（RELAY_READY / ERROR），带超时。
 // 逐字节读以避免 bufio 预读吞掉后续字节：配对成功后 relay 立即 io.Copy 透传对端流量，
 // 用 bufio.NewReader 会把紧随 RELAY_READY 到达的 TLS ClientHello 字节缓存后丢弃，破坏握手。
-func readRelayReply(conn net.Conn, timeout time.Duration) (string, error) {
+// ctx 取消（看门狗 120s < socket deadline 130s）时提前解除读阻塞，避免 Close 被拖住。
+func readRelayReply(ctx context.Context, conn net.Conn, timeout time.Duration) (string, error) {
 	conn.SetReadDeadline(time.Now().Add(timeout))
-	defer conn.SetReadDeadline(time.Time{})
+
+	done := make(chan struct{})
+	wdDone := make(chan struct{})
+	go func() {
+		defer close(wdDone)
+		select {
+		case <-ctx.Done():
+			conn.SetReadDeadline(time.Now()) // 立刻打断阻塞中的 Read
+		case <-done:
+		}
+	}()
+	// 看门狗完全退出后再清 deadline：它可能在函数返回瞬间才执行
+	// SetReadDeadline(now)，清零被其覆盖会让连接带着过期 deadline
+	// 进入 secureUpgrade 的 TLS 握手（直接 i/o timeout）
+	defer func() {
+		close(done)
+		<-wdDone
+		conn.SetReadDeadline(time.Time{})
+	}()
+
 	var line []byte
 	one := make([]byte, 1)
 	for {
 		if _, err := conn.Read(one); err != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			return strings.TrimSpace(string(line)), err
 		}
 		if one[0] == '\n' {

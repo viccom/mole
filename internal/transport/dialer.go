@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -62,10 +63,14 @@ func DefaultDialer(tlsCfg *TLSConfig) DialFunc {
 }
 
 // SessionManager 管理 smux 会话生命周期
+// session/conn 由 Connect（重连循环）、Close（远程重启/SIGINT）并发读写，
+// 必须持 mu 访问；closed 防止 Close 之后在途的 Connect 发布"幽灵会话"
 type SessionManager struct {
-	dial    DialFunc
-	session *smux.Session
-	conn    net.Conn
+	mu           sync.Mutex
+	dial         DialFunc
+	session      *smux.Session
+	conn         net.Conn
+	closed       bool
 	smuxOverride *smux.Config
 }
 
@@ -75,11 +80,21 @@ func NewSessionManager(dial DialFunc) *SessionManager {
 }
 
 func (sm *SessionManager) SetSmuxOverride(cfg *smux.Config) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	sm.smuxOverride = cfg
 }
 
 // Connect 连接服务器、执行认证、建立 smux 会话
 func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error {
+	sm.mu.Lock()
+	if sm.closed {
+		sm.mu.Unlock()
+		return fmt.Errorf("session manager closed")
+	}
+	smuxOverride := sm.smuxOverride
+	sm.mu.Unlock()
+
 	conn, err := sm.dial(ctx, addr)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
@@ -105,8 +120,8 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 		MaxReceiveBuffer:  SmuxMaxReceiveBuffer,
 		MaxStreamBuffer:   SmuxMaxStreamBuffer,
 	}
-	if sm.smuxOverride != nil {
-		smuxCfg = sm.smuxOverride
+	if smuxOverride != nil {
+		smuxCfg = smuxOverride
 	}
 	session, err := smux.Client(sessionConn, smuxCfg)
 	if err != nil {
@@ -114,23 +129,57 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 		return fmt.Errorf("smux client: %w", err)
 	}
 
+	// 发布前复查：Close 可能发生在 dial/auth 握手期间（如桌面端切换节点），
+	// 此时必须丢弃新会话，否则旧客户端会以幽灵会话抢占节点注册
+	sm.mu.Lock()
+	if sm.closed {
+		sm.mu.Unlock()
+		session.Close()
+		conn.Close()
+		return fmt.Errorf("session manager closed during connect")
+	}
 	sm.conn = conn
 	sm.session = session
+	sm.mu.Unlock()
 	return nil
 }
 
 // Session 返回当前 smux 会话
 func (sm *SessionManager) Session() *smux.Session {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	return sm.session
 }
 
 // IsConnected 返回会话是否存活
 func (sm *SessionManager) IsConnected() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	return sm.session != nil && !sm.session.IsClosed()
 }
 
-// Close 关闭会话和底层连接
+// Close 终态关闭：锁存 closed，此后 Connect 永久拒绝（防止在途 Connect
+// 发布幽灵会话）。仅供 Client.Close()（进程级关停/节点切换）调用；
+// 重连循环的每周期断开必须走 Disconnect，否则断一次线就永久离线
 func (sm *SessionManager) Close() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.closed = true
+	if sm.session != nil {
+		sm.session.Close()
+		sm.session = nil
+	}
+	if sm.conn != nil {
+		sm.conn.Close()
+		sm.conn = nil
+	}
+}
+
+// Disconnect 关闭当前会话和底层连接，但不锁存关闭态：
+// 重连循环每周期断开后需要能再次 Connect
+func (sm *SessionManager) Disconnect() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	if sm.session != nil {
 		sm.session.Close()
 		sm.session = nil

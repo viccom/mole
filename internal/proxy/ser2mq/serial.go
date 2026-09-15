@@ -106,15 +106,20 @@ func OpenSerial(cfg SerialConfig) (SerialConn, error) {
 		return nil, err
 	}
 
+	// 存量 Para 可能缺 timeout 字段（零值）：go.bug.st 默认阻塞读（VMIN=1 无限期），
+	// 串口空闲时读循环永久卡死，Stop() 的 wg.Wait() 会在 serial.Close() 之前死锁。
+	// 与 ser2net 的 Validate 强制 timeout>0 同理，这里回退到默认值。
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = DefaultSerialConfig().Timeout
+	}
+
 	mode := cfg.toMode()
 	port, err := serial.Open(cfg.Port, mode)
 	if err != nil {
 		return nil, fmt.Errorf("open serial %s: %w", cfg.Port, err)
 	}
 
-	if cfg.Timeout > 0 {
-		port.SetReadTimeout(time.Duration(cfg.Timeout) * time.Millisecond)
-	}
+	port.SetReadTimeout(time.Duration(cfg.Timeout) * time.Millisecond)
 
 	return &serialConn{port: port, cfg: cfg}, nil
 }

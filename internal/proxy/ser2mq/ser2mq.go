@@ -125,13 +125,18 @@ func (h *Ser2MQHandler) Stop() {
 		cancel()
 	}
 
-	h.wg.Wait()
-
+	// 必须先关串口再等读循环：阻塞在 serial.Read 上的 goroutine
+	// 只有串口 Close（库内部 closeSignal）才能唤醒，Wait 在前会死锁
 	h.mu.Lock()
 	if h.serial != nil {
 		h.serial.Close()
 		h.serial = nil
 	}
+	h.mu.Unlock()
+
+	h.wg.Wait()
+
+	h.mu.Lock()
 	h.crypto = nil
 	h.mu.Unlock()
 
@@ -221,7 +226,13 @@ func (h *Ser2MQHandler) runSerialToMQTT() {
 		n, err := serial.Read(buf)
 		if err != nil || n == 0 {
 			if err != nil && !isTimeout(err) {
+				// 设备拔出等持续性错误会立即反复返回：退避防止日志刷屏+单核空转
 				log.Printf("ser2mq %s serial read error: %v", h.name, err)
+				select {
+				case <-h.ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
 			}
 			continue
 		}
@@ -268,11 +279,25 @@ func (h *Ser2MQHandler) runMQTTToSerial() {
 	topic := mqttCl.InTopic()
 	h.mu.RUnlock()
 
-	err := mqttCl.Subscribe(topic, func(payload []byte) {
-		h.handleMQTTMessage(crypto, serial, payload)
+	// paho 自动重连（CleanSession=true）后 broker 侧订阅已销毁，
+	// 必须在重连成功回调里补订阅，否则 MQTT→串口方向静默死亡。
+	// 回调注册必须先于首次 Subscribe：若 Subscribe 失败早退后再注册，
+	// 首连后立刻掉线的场景下重连回调拿到 nil fn，/in 方向永久静默
+	subscribeIn := func() error {
+		return mqttCl.Subscribe(topic, func(payload []byte) {
+			h.handleMQTTMessage(crypto, serial, payload)
+		})
+	}
+	mqttCl.SetOnReconnect(func() {
+		if err := subscribeIn(); err != nil {
+			log.Printf("ser2mq %s resubscribe error: %v", h.name, err)
+		}
 	})
-	if err != nil {
-		log.Printf("ser2mq %s subscribe error: %v", h.name, err)
+
+	if err := subscribeIn(); err != nil {
+		// 首次订阅失败不放弃：OnConnect 回调已注册，重连成功后会补订阅
+		log.Printf("ser2mq %s subscribe error (will retry on reconnect): %v", h.name, err)
+		<-h.ctx.Done()
 		return
 	}
 

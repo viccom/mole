@@ -219,8 +219,9 @@ func (r *RaceConn) Read(b []byte) (n int, err error) {
 		if res.err != nil {
 			return 0, res.err
 		}
-		copy(b, res.data)
-		return len(res.data), nil
+		// io.Reader 契约要求 n <= len(b)：数据报长于调用方缓冲时只能截断，
+		// 返回全长会让 pion/stun 等按 n 重切切片的调用方越界 panic
+		return copy(b, res.data), nil
 	case <-r.ctx.Done():
 		return 0, net.ErrClosed
 	}

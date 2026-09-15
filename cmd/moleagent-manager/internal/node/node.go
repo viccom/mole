@@ -32,9 +32,10 @@ const defaultNodePort = 59870
 
 // Manager 节点管理器
 type Manager struct {
-	mu      sync.RWMutex
-	config  *Config
-	cfgPath string
+	mu         sync.RWMutex
+	config     *Config
+	cfgPath    string
+	loadFailed bool // Load 失败时置位：防止 shutdown 用空配置覆盖原文件
 }
 
 // NewManager 创建节点管理器
@@ -70,11 +71,13 @@ func (m *Manager) Load() error {
 			m.config.CurrentNode = "本地"
 			return nil
 		}
+		m.loadFailed = true
 		return fmt.Errorf("read config: %w", err)
 	}
 
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
+		m.loadFailed = true
 		return fmt.Errorf("parse config: %w", err)
 	}
 	normalizeConfig(&cfg)
@@ -85,8 +88,14 @@ func (m *Manager) Load() error {
 
 // Save 保存配置到文件
 func (m *Manager) Save() error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// 写操作必须持写锁：RWMutex 只隔离 Save 与 mutator，不隔离 Save 与 Save
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.loadFailed {
+		// 配置加载失败时内存里是空默认值：落盘会把用户的节点表（含 token）永久覆盖掉
+		return fmt.Errorf("config %s failed to load, refusing to overwrite", m.cfgPath)
+	}
 
 	// 确保目录存在
 	dir := filepath.Dir(m.cfgPath)
@@ -99,8 +108,14 @@ func (m *Manager) Save() error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	if err := os.WriteFile(m.cfgPath, data, 0644); err != nil {
+	// 0600：配置含节点 token；临时文件+rename 原子替换，避免中途崩溃留下截断文件
+	tmp := m.cfgPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
+	}
+	if err := os.Rename(tmp, m.cfgPath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename config: %w", err)
 	}
 
 	return nil

@@ -22,8 +22,9 @@ var staticFS embed.FS
 
 // StartHTTPServer 启动内置 HTTP 服务（含隧道管理 API）
 func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
-	// 绑定所有网卡：localhost:18080 → 0.0.0.0:18080
-	if host, port, err := net.SplitHostPort(addr); err == nil && host != "" && host != "0.0.0.0" {
+	// 仅端口形式（":18080"）绑定所有网卡；显式指定的 host（如默认 127.0.0.1）
+	// 必须尊重——本服务无鉴权且隧道 Para 含凭据，静默改绑 0.0.0.0 会把凭据暴露给局域网
+	if host, port, err := net.SplitHostPort(addr); err == nil && host == "" {
 		addr = "0.0.0.0:" + port
 	}
 	log.Printf("Built-in HTTP server listening on %s", addr)
@@ -313,6 +314,8 @@ func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 	if t := r.URL.Query().Get("tail"); t != "" {
 		if v, e := strconv.Atoi(t); e != nil || v < 0 {
 			tail = 20
+		} else {
+			tail = v
 		}
 	}
 	if tail > 200 {

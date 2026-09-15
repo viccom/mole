@@ -74,6 +74,15 @@ func (b *BoundUDPConn) GetLastPacketRemoteAddr() string {
 	return b.lastPacketAddr
 }
 
+// CurrentConn 返回当前底层连接（Rebuild 换源端口后随之更新）。
+// 跨 goroutine 持有 conn 引用的场景（如打洞读协程设 TTL）必须经此读取，
+// 直接读 Rebuild 写入前的局部变量构成数据竞争。
+func (b *BoundUDPConn) CurrentConn() net.PacketConn {
+	b.connmu.Lock()
+	defer b.connmu.Unlock()
+	return b.conn
+}
+
 func (b *BoundUDPConn) SetSupportRebuild(support bool) {
 	b.supportRebuild = support
 }
@@ -174,7 +183,12 @@ func (b *BoundUDPConn) Write(p []byte) (int, error) {
 	if b.remoteAddr == nil {
 		return 0, fmt.Errorf("remote address not set")
 	}
-	return b.conn.WriteTo(p, b.remoteAddr)
+	// conn 必须经 connmu 读取：Rebuild（换源端口）在写协程并发替换该字段，
+	// 裸读与打洞读协程的本次写入构成数据竞争
+	b.connmu.Lock()
+	conn := b.conn
+	b.connmu.Unlock()
+	return conn.WriteTo(p, b.remoteAddr)
 }
 
 func (b *BoundUDPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -194,7 +208,10 @@ func (b *BoundUDPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		return 0, fmt.Errorf("cannot write to %s, only bound to %s", addr.String(), b.remoteAddr.String())
 	}
 
-	return b.conn.WriteTo(p, b.remoteAddr)
+	b.connmu.Lock()
+	conn := b.conn
+	b.connmu.Unlock()
+	return conn.WriteTo(p, b.remoteAddr)
 }
 
 // CloseWrite 半关闭（保持不变）

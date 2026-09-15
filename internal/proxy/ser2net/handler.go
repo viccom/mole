@@ -126,12 +126,16 @@ func (h *Handler) Stats() Stats {
 	}
 	clients := int(h.clients.Load())
 	running := h.running.Load()
+	// h.serial 由运行中 goroutine 的 cleanup 经 writeMu 置空，Stats 必须持锁读取
+	h.writeMu.Lock()
+	serialOpen := h.serial != nil
+	h.writeMu.Unlock()
 	return Stats{
 		Name:       h.name,
 		Type:       h.typ,
 		Mode:       h.cfg.Mode,
 		Running:    running,
-		SerialOpen: h.serial != nil,
+		SerialOpen: serialOpen,
 		SerialPort: h.cfg.Serial.Port,
 		Address:    h.cfg.Address,
 		Clients:    clients,

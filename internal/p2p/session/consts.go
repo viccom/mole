@@ -11,6 +11,10 @@ import (
 const (
 	HeartbeatFreq = 10 * time.Second
 	ReadTimeout   = 35 * time.Second
+
+	// streamHeaderTimeout 入站流首部（magic 4 字节）的读取上限：
+	// accept 循环同步读首部，无上限时一条只开不写的流即可挂死全部入站服务
+	streamHeaderTimeout = 30 * time.Second
 )
 
 // Outcome is what a successful connection mode produces; the session layer

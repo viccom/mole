@@ -200,15 +200,18 @@ func (h *Handler) HandleStream(stream io.ReadWriteCloser) {
 	slog.Info("webssh session closed", "name", h.name)
 }
 
+// sshKeepaliveTimeout 复用探测的上限：SendRequest 在对端静默丢包（DROP/掉电）
+// 时可阻塞数分钟，期间持有 sshMu 会冻结同隧道所有新会话，故必须限时
+const sshKeepaliveTimeout = 10 * time.Second
+
 // getSSHClient 获取或创建 SSH 连接（带连接池复用）
 func (h *Handler) getSSHClient() (*ssh.Client, error) {
 	h.sshMu.Lock()
 	defer h.sshMu.Unlock()
 
 	if h.sshClient != nil {
-		// 检查连接是否仍然存活
-		_, _, err := h.sshClient.SendRequest("keepalive@openssh.com", true, nil)
-		if err == nil {
+		// 检查连接是否仍然存活（限时探测）
+		if h.sshProbeAlive() {
 			return h.sshClient, nil
 		}
 		h.sshClient.Close()
@@ -221,6 +224,24 @@ func (h *Handler) getSSHClient() (*ssh.Client, error) {
 	}
 	h.sshClient = client
 	return client, nil
+}
+
+// sshProbeAlive 限时发送 keepalive 探测；超时视为连接已死。
+// 超时的真探测 goroutine 仍阻塞在 SendRequest 上，关闭连接将其解除。
+func (h *Handler) sshProbeAlive() bool {
+	client := h.sshClient
+	alive := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		alive <- err
+	}()
+	select {
+	case err := <-alive:
+		return err == nil
+	case <-time.After(sshKeepaliveTimeout):
+		go client.Close()
+		return false
+	}
 }
 
 // dialSSH 建立新的 SSH 连接

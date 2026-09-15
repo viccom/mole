@@ -50,6 +50,12 @@ type Client struct {
 	tunReqs chan tunnelReq // 隧道更新请求队列
 	cancel  context.CancelFunc
 
+	// closed 在 Run 退出 / Close 时关闭，用于唤醒阻塞在 requestTunnelMutation
+	// 等待应答的调用方（连接断开后 processTunnelUpdates 不再消费队列）。
+	// 本客户端为单次 Run 生命周期设计（复用场景请重新 New()）。
+	closed     chan struct{}
+	closedOnce sync.Once
+
 	restartRequested atomic.Bool // 服务端请求重启，Run() 不再重连
 
 	// ser2mq 隧道管理器
@@ -160,6 +166,7 @@ func New(cfg *Config) (*Client, error) {
 		events:     newEventBus(),
 		tunnels:    append([]Tunnel{}, cfg.Tunnels...),
 		tunReqs:    make(chan tunnelReq, 16),
+		closed:     make(chan struct{}),
 		ser2mqMgr:  ser2mqMgr,
 		ser2netMgr: ser2netMgr,
 		vpnMgr:     vpnMgr,
@@ -174,6 +181,7 @@ func New(cfg *Config) (*Client, error) {
 func (c *Client) Run(ctx context.Context) error {
 	ctx, c.cancel = context.WithCancel(ctx)
 	defer c.cancel()
+	defer c.closedOnce.Do(func() { close(c.closed) })
 
 	// 通知各管理器当前节点 ID（在隧道更新前就绪）
 	if c.ser2mqMgr != nil {
@@ -201,6 +209,9 @@ func (c *Client) Run(ctx context.Context) error {
 		if err := c.register(ctx); err != nil {
 			log.Printf("Register failed: %v, retrying in %s...", err, c.cfg.ReconnectInterval)
 			c.close()
+			// 注册窗口内入队的变更请求（Connected 已真、消费者未启动）必须排空，
+			// 否则滞留至重连后被迟滞应用，调用方却早已放弃
+			c.drainTunnelReqs()
 			c.sleep(ctx, c.cfg.ReconnectInterval)
 			continue
 		}
@@ -230,6 +241,10 @@ func (c *Client) Run(ctx context.Context) error {
 		c.close()
 		c.events.Emit(Event{Type: EventDisconnected})
 
+		// 排空未处理的隧道变更请求并回复错误：
+		// 否则滞留请求会在重连后被新 consumer 迟滞应用，且调用方早已超时放弃
+		c.drainTunnelReqs()
+
 		if c.restartRequested.Load() {
 			log.Println("Restart requested by server, exiting Run()")
 			return nil
@@ -244,7 +259,10 @@ func (c *Client) Close() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	c.close()
+	c.closedOnce.Do(func() { close(c.closed) })
+	// 终态关闭必须锁存（防在途 Connect 发布幽灵会话）；
+	// 不能走 c.close()——那是重连周期的非锁存断开
+	c.transport.Close()
 
 	// 关闭管理器
 	if c.ser2mqMgr != nil {
@@ -318,6 +336,9 @@ func (c *Client) RemoveTunnel(name string) error {
 
 // UpdateTunnels 替换全部隧道并同步到服务端
 func (c *Client) UpdateTunnels(tunnels []Tunnel) error {
+	if !c.Connected() {
+		return fmt.Errorf("not connected to server, tunnel operations require active connection")
+	}
 	for _, t := range tunnels {
 		if err := t.Validate(); err != nil {
 			return err
@@ -339,9 +360,31 @@ func (c *Client) requestTunnelMutation(mutation tunnelMutation) error {
 	}
 	select {
 	case c.tunReqs <- req:
-		return <-req.resp
+		// 等待应答时须同时监听关闭信号：Connected() 是 TOCTOU 检查，
+		// 入队后连接可能立刻断开，processTunnelUpdates 退出后无人应答
+		select {
+		case err := <-req.resp:
+			return err
+		case <-c.closed:
+			return fmt.Errorf("client is shutting down, tunnel update aborted")
+		}
 	default:
 		return fmt.Errorf("tunnel update queue full")
+	}
+}
+
+// drainTunnelReqs 排空未处理的隧道变更请求并回复错误。
+// processTunnelUpdates 不在运行的窗口（注册失败重连间隙、断连清理期）
+// 滞留的请求会在重连后被迟滞应用，而调用方早已放弃
+func (c *Client) drainTunnelReqs() {
+	for {
+		select {
+		case req := <-c.tunReqs:
+			req.resp <- fmt.Errorf("connection lost, tunnel update aborted")
+			continue
+		default:
+		}
+		break
 	}
 }
 
@@ -589,7 +632,8 @@ func (c *Client) heartbeat(ctx context.Context) {
 			if err := c.sendPing(); err != nil {
 				log.Printf("Heartbeat failed: %v", err)
 				c.events.Emit(Event{Type: EventHeartbeatFail, Data: map[string]any{"error": err.Error()}})
-				c.transport.Close()
+				// 非锁存断开：随后 Run 会走重连循环
+				c.transport.Disconnect()
 				return
 			}
 			c.events.Emit(Event{Type: EventHeartbeatOK})
@@ -842,15 +886,15 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 		if err == nil && len(line) > 1 {
 			tunnelName := string(line[1 : len(line)-1]) // 跳过 \x00 和 \n
 			stream.SetReadDeadline(time.Time{})
-			proxy.HandleRawStream(stream, br, func() string {
+			proxy.HandleRawStream(stream, br, func() (string, string) {
 				c.mu.RLock()
 				defer c.mu.RUnlock()
 				for _, t := range c.tunnels {
 					if t.Name == tunnelName && t.IsEnabled() && (t.Type == TunnelTypeTCP || t.Type == TunnelTypeUDP) {
-						return t.Target
+						return t.Target, string(t.Type)
 					}
 				}
-				return ""
+				return "", ""
 			}, tunnelName)
 			return
 		}
@@ -908,15 +952,15 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 
 	// fallback：TCP/UDP 原始转发（兼容旧服务端，匹配第一个 TCP/UDP 隧道）
 	stream.SetReadDeadline(time.Time{})
-	proxy.HandleRawStream(stream, br, func() string {
+	proxy.HandleRawStream(stream, br, func() (string, string) {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 		for _, t := range c.tunnels {
 			if t.IsEnabled() && (t.Type == TunnelTypeTCP || t.Type == TunnelTypeUDP) {
-				return t.Target
+				return t.Target, string(t.Type)
 			}
 		}
-		return ""
+		return "", ""
 	}, "")
 }
 
@@ -1111,9 +1155,10 @@ func (c *Client) handleRestart(stream *smux.Stream, delay int, reason string) {
 
 	go func() {
 		time.Sleep(time.Duration(delay) * time.Second)
-		// 中断主循环：transport 关闭 → acceptLoop 返回 → Run() 因 restartRequested 退出。
+		// 中断主循环：transport 断开 → acceptLoop 返回 → Run() 因 restartRequested 退出。
 		// main 检测到 Run 退出后执行 Close + os.Exit，由外部拉起。
-		c.transport.Close()
+		// 用非锁存断开：桌面端 relaunch 走全新 Client，锁存无意义且有害
+		c.transport.Disconnect()
 	}()
 }
 
@@ -1153,9 +1198,10 @@ func (c *Client) buildSer2NetConfigs() map[string]ser2net.TunnelConfig {
 	return configs
 }
 
-// close 关闭连接
+// close 关闭当前连接（非锁存断开：重连循环的每周期路径，
+// 终态关停必须走 Close → transport.Close）
 func (c *Client) close() {
-	c.transport.Close()
+	c.transport.Disconnect()
 }
 
 // sleep 可取消的休眠
@@ -1245,8 +1291,9 @@ type Stats struct {
 
 func (c *Client) Stats() Stats {
 	tunnelStats := proxy.TunnelTrafficStats()
-	tunnels := make([]proxy.TunnelTraffic, 0, len(c.tunnels))
-	for _, t := range c.Tunnels() {
+	current := c.Tunnels() // 统一走锁内快照，禁止绕过 c.mu 直接摸 c.tunnels
+	tunnels := make([]proxy.TunnelTraffic, 0, len(current))
+	for _, t := range current {
 		if ts, ok := tunnelStats[t.Name]; ok {
 			tunnels = append(tunnels, ts)
 		} else {

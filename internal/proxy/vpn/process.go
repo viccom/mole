@@ -43,6 +43,14 @@ type ProcessMgr struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// gen 启动代际：每次 Start 递增，用于淘汰上一代的后台探针
+	// （崩溃重启直接复用 Start，旧探针若不淘汰会永久泄漏）
+	gen int
+
+	// lifecycleMu 串行化「崩溃迟到的重启」与 Stop：running 检查与 Start
+	// 之间不再给 Stop 留插入窗口（否则产生无人持有的孤儿进程）
+	lifecycleMu sync.Mutex
 }
 
 // 全局进程管理器映射（用于互斥检查）
@@ -97,6 +105,14 @@ func NewProcessMgr(name string, cfg Config) (*ProcessMgr, error) {
 	return pm, nil
 }
 
+// 消费点默认值：服务端存储的 Para 可能缺省生命周期/日志字段（零值），
+// 直接使用会导致"开了重启却永不重启 / 0 宽限强杀 / 环形缓冲死循环"
+const (
+	defaultMaxRestarts    = 3
+	defaultQuitGrace      = 10
+	defaultLogBufferSize  = 64 << 10
+)
+
 // Start 启动进程
 func (pm *ProcessMgr) Start(ctx context.Context) error {
 	pm.mu.Lock()
@@ -105,6 +121,8 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 		return fmt.Errorf("process already running")
 	}
 	pm.ctx, pm.cancel = context.WithCancel(ctx)
+	pm.gen++
+	gen := pm.gen
 	pm.running = true
 	pm.clearError()
 	pm.mu.Unlock()
@@ -139,6 +157,14 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 	pm.cmd = cmd
 	pm.mu.Unlock()
 
+	// 日志管道必须在 Start() 之前创建：Start 之后调用恒报
+	// "exec: StdoutPipe after process started"，导致日志捕获整体失效
+	var stdoutPipe, stderrPipe io.ReadCloser
+	if pm.cfg.Log.Capture {
+		stdoutPipe, _ = cmd.StdoutPipe()
+		stderrPipe, _ = cmd.StderrPipe()
+	}
+
 	// 启动进程
 	log.Printf("vpn-manager: launching process for %s", pm.name)
 	if err := pm.cmd.Start(); err != nil {
@@ -162,17 +188,7 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 		pm.mu.Lock()
 		pm.vntClient = NewVNTClient(port)
 		pm.mu.Unlock()
-		go pm.healthProbe()
-	}
-
-	// 如果需要捕获输出
-	if pm.cfg.Log.Capture {
-		if stdout, err := pm.cmd.StdoutPipe(); err == nil {
-			go pm.copyOutput(stdout)
-		}
-		if stderr, err := pm.cmd.StderrPipe(); err == nil {
-			go pm.copyOutput(stderr)
-		}
+		go pm.healthProbe(pm.ctx, gen)
 	}
 
 	// 等待进程退出
@@ -183,15 +199,29 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 		pm.handleExit(err)
 	}()
 
-	log.Printf("vpn-manager %s started (pid: %d)", pm.name, pm.process.Pid)
+	// 输出复制在 Start 之后启动（管道在此之前没有写入端，Read 会阻塞）
+	if stdoutPipe != nil {
+		go pm.copyOutput(stdoutPipe)
+	}
+	if stderrPipe != nil {
+		go pm.copyOutput(stderrPipe)
+	}
+
+	log.Printf("vpn-manager %s started (pid: %d)", pm.name, cmd.Process.Pid)
 	return nil
 }
 
 // Stop 停止进程
 func (pm *ProcessMgr) Stop() {
+	// lifecycleMu 只护住 running 翻转这一小段（wg.Wait 绝不持它，
+	// 否则与等待本锁的 handleExit 互锁）：保证迟到的崩溃重启要么
+	// 在本翻转前完成（Stop 随后能拿到新进程引用并杀掉），要么被
+	// running 检查挡下
+	pm.lifecycleMu.Lock()
 	pm.mu.Lock()
 	if !pm.running {
 		pm.mu.Unlock()
+		pm.lifecycleMu.Unlock()
 		return
 	}
 	pm.running = false
@@ -199,13 +229,23 @@ func (pm *ProcessMgr) Stop() {
 		pm.cancel()
 	}
 	pm.mu.Unlock()
+	pm.lifecycleMu.Unlock()
 
 	// 尝试优雅退出
-	if pm.process != nil {
+	// pm.process 由 handleExit 重启路径持锁置 nil，必须持锁快照（与 Start 的写入同步）
+	pm.mu.Lock()
+	process := pm.process
+	quitGrace := pm.cfg.Watchdog.QuitGrace
+	if quitGrace <= 0 {
+		quitGrace = defaultQuitGrace // 0 宽限 = SIGTERM 后立即强杀
+	}
+	pm.mu.Unlock()
+
+	if process != nil {
 		// 使用平台相关的优雅停止方式
 		// Windows: 使用 Kill (由于 CREATE_NEW_PROCESS_GROUP)
 		// Unix/Linux/macOS: 使用 SIGTERM
-		if err := StopProcess(pm.process); err != nil {
+		if err := StopProcess(process); err != nil {
 			log.Printf("vpn-manager %s stop warning: %v", pm.name, err)
 		}
 
@@ -218,10 +258,10 @@ func (pm *ProcessMgr) Stop() {
 
 		select {
 		case <-done:
-		case <-time.After(time.Duration(pm.cfg.Watchdog.QuitGrace) * time.Second):
+		case <-time.After(time.Duration(quitGrace) * time.Second):
 			// 超时，强制 kill
 			log.Printf("vpn-manager %s timeout, force kill", pm.name)
-			pm.process.Kill()
+			process.Kill()
 		}
 	}
 
@@ -345,21 +385,24 @@ func (pm *ProcessMgr) clearError() {
 	pm.lastErrorTime = 0
 }
 
-// healthProbe 后台探针：检查 vnt-cli REST API 是否可达
-func (pm *ProcessMgr) healthProbe() {
+// healthProbe 后台探针：检查 vnt-cli REST API 是否可达。
+// ctx 为所属代际的 ctx；gen 与当前代际不符（已被新一轮 Start 取代）时退出，
+// 防止崩溃重启后旧探针永久泄漏
+func (pm *ProcessMgr) healthProbe(ctx context.Context, gen int) {
 	consecutiveOK := 0
 	for {
 		select {
-		case <-pm.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
 
 		pm.mu.RLock()
 		client := pm.vntClient
+		currentGen := pm.gen
 		pm.mu.RUnlock()
 
-		if client == nil {
+		if client == nil || currentGen != gen {
 			return
 		}
 
@@ -462,18 +505,33 @@ func (pm *ProcessMgr) handleExit(err error) {
 	log.Printf("vpn-manager %s crashed (exit: %d, signal: %v, crash #%d)",
 		pm.name, exitCode, sig, pm.crashCount)
 
-	// 检查是否需要自动重启
-	if pm.cfg.Lifecycle.RestartOnCrash && pm.crashCount <= pm.cfg.Lifecycle.MaxRestarts {
+	// 检查是否需要自动重启（Para 缺省 max_restarts 时为 0，
+	// 会让 restart_on_crash=true 一次都不重启，回退到默认值）
+	maxRestarts := pm.cfg.Lifecycle.MaxRestarts
+	if maxRestarts <= 0 {
+		maxRestarts = defaultMaxRestarts
+	}
+	if pm.cfg.Lifecycle.RestartOnCrash && pm.crashCount <= maxRestarts {
 		pm.mu.Unlock()
 		time.Sleep(time.Duration(pm.cfg.Lifecycle.RestartDelay) * time.Second)
+		// 迟到重启与 Stop 互斥：睡眠期间 Stop 翻转了 running 则放弃复活；
+		// 本检查与 Start 之间也不再给 Stop 留插入窗口
+		pm.lifecycleMu.Lock()
 		pm.mu.Lock()
+
+		if !pm.running {
+			pm.mu.Unlock()
+			pm.lifecycleMu.Unlock()
+			return
+		}
 
 		// 重新启动
 		pm.process = nil
 		pm.mu.Unlock()
 		pm.Start(pm.ctx)
+		pm.lifecycleMu.Unlock()
 		pm.mu.Lock()
-	} else if pm.crashCount > pm.cfg.Lifecycle.MaxRestarts {
+	} else if pm.crashCount > maxRestarts {
 		log.Printf("vpn-manager %s reached max restarts (%d), stopping",
 			pm.name, pm.cfg.Lifecycle.MaxRestarts)
 		pm.running = false
@@ -501,13 +559,18 @@ func (pm *ProcessMgr) copyOutput(r io.Reader) {
 
 // circularBuffer 环形缓冲区
 type circularBuffer struct {
-	buf    []byte
-	size   int
-	write  int
-	mu     sync.Mutex
+	buf   []byte
+	size  int
+	write int
+	full  bool // 是否已环绕（环绕后 write<size 不代表未写满）
+	mu    sync.Mutex
 }
 
 func newCircularBuffer(size int) *circularBuffer {
+	if size <= 0 {
+		// Para 缺省 max_size 时为 0：size=0 会让 Write 死循环（toWrite 恒为 0）
+		size = defaultLogBufferSize
+	}
 	return &circularBuffer{
 		buf:  make([]byte, size),
 		size: size,
@@ -523,6 +586,7 @@ func (cb *circularBuffer) Write(p []byte) (n int, err error) {
 		if remain == 0 {
 			cb.write = 0
 			remain = cb.size
+			cb.full = true
 		}
 		toWrite := len(p)
 		if toWrite > remain {
@@ -540,11 +604,12 @@ func (cb *circularBuffer) Bytes() []byte {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.write < cb.size {
+	if !cb.full {
 		return cb.buf[:cb.write]
 	}
-	// 返回最后 size 字节
-	result := make([]byte, cb.size)
-	copy(result, cb.buf[cb.write-cb.size:cb.write])
+	// 环绕后按逻辑顺序线性化：旧段 [write:] 在前，新段 [:write] 在后
+	result := make([]byte, 0, cb.size)
+	result = append(result, cb.buf[cb.write:]...)
+	result = append(result, cb.buf[:cb.write]...)
 	return result
 }

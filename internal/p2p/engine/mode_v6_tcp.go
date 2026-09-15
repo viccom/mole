@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -85,13 +86,20 @@ func ModeV6TCP(ctx context.Context, deps Deps) (*session.Outcome, *[crypto.KeyLe
 		return nil, nil, errors.New("v6-tcp: no valid peer IPv6 address")
 	}
 
-	tcpConn, _, err := tcpProbeV6Bidirectional(ctx, ln, peerAddrs, 15*time.Second)
+	// 角色在探测前确定，供双向探测配对使用（两端结果必须互补）：
+	// 地址序比较为主；地址集合完全相同（同机多实例互发现）时 `<` 两端同为
+	// false 不再互补，改用双方必然不同的 ECDHE 公钥序做非对称打破
+	isClient := strings.Join(sortedCopy(localAddrs), ",") < strings.Join(sortedCopy(remote.Addrs), ",")
+	if strings.Join(sortedCopy(localAddrs), ",") == strings.Join(sortedCopy(remote.Addrs), ",") {
+		isClient = bytes.Compare(myKey.PublicKeyBytes(), peerPubBytes) < 0
+	}
+
+	tcpConn, _, err := tcpProbeV6Bidirectional(ctx, ln, peerAddrs, 15*time.Second, isClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("v6-tcp connect: %w", err)
 	}
 	transport.TuneTCPConn(tcpConn)
 
-	isClient := strings.Join(sortedCopy(localAddrs), ",") < strings.Join(sortedCopy(remote.Addrs), ",")
 	mux, err := secureUpgrade(ctx, tcpConn, sharedKey, isClient, false, logWriter(deps))
 	if err != nil {
 		tcpConn.Close()
@@ -105,9 +113,12 @@ func ModeV6TCP(ctx context.Context, deps Deps) (*session.Outcome, *[crypto.KeyLe
 	}, sharedKey, nil
 }
 
-// tcpProbeV6Bidirectional runs accept (peer→me) and dial (me→peer) concurrently;
-// first successful connection wins. Robust against asymmetric IPv6 routing.
-func tcpProbeV6Bidirectional(ctx context.Context, ln net.Listener, peerAddrs []*net.TCPAddr, timeout time.Duration) (*net.TCPConn, string, error) {
+// tcpProbeV6Bidirectional runs accept (peer→me) and dial (me→peer) concurrently.
+// 非对称路由下只有单方向成功，天然配对；对称路由下两端可能各自持有不同物理连接，
+// first-result-wins 会配对错位（各自关掉对方保留连接的对端），
+// 因此成功方向齐全时必须按两端互补的确定性角色配对：
+// preferDial 一端保留自己拨出的连接，对端保留自己接受的连接——同一条物理连接。
+func tcpProbeV6Bidirectional(ctx context.Context, ln net.Listener, peerAddrs []*net.TCPAddr, timeout time.Duration, preferDial bool) (*net.TCPConn, string, error) {
 	type res struct {
 		conn *net.TCPConn
 		via  string
@@ -131,24 +142,33 @@ func tcpProbeV6Bidirectional(ctx context.Context, ln net.Listener, peerAddrs []*
 		ch <- res{c, "dial (me→peer)"}
 	}()
 
-	var winner *net.TCPConn
-	var via string
+	var dialRes, acceptRes *res
 	var errs []string
 	for i := 0; i < 2; i++ {
 		r := <-ch
 		if r.conn != nil {
-			if winner == nil {
-				winner = r.conn
-				via = r.via
-			} else {
-				r.conn.Close() // loser
+			switch {
+			case strings.HasPrefix(r.via, "dial"):
+				dialRes = &r
+			default:
+				acceptRes = &r
 			}
 		} else {
 			errs = append(errs, r.via)
 		}
 	}
-	if winner != nil {
-		return winner, via, nil
+	switch {
+	case dialRes != nil && acceptRes != nil:
+		if preferDial {
+			acceptRes.conn.Close() // loser
+			return dialRes.conn, dialRes.via, nil
+		}
+		dialRes.conn.Close() // loser
+		return acceptRes.conn, acceptRes.via, nil
+	case dialRes != nil:
+		return dialRes.conn, dialRes.via, nil
+	case acceptRes != nil:
+		return acceptRes.conn, acceptRes.via, nil
 	}
 	return nil, "", fmt.Errorf("both directions failed: %s", strings.Join(errs, "; "))
 }

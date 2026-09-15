@@ -197,7 +197,9 @@ func (s *MQTTSignalSession) connectBroker(brokerAddr string, qvals url.Values, i
 		SetClientID(s.clientID).
 		SetConnectTimeout(5 * time.Second).
 		SetAutoReconnect(true).
-		SetConnectRetry(true).
+		// 不开 ConnectRetry：开启后首连失败时 Connect token 永不 settle，
+		// fail 通道死代码化，broker 不可达时每个模式尝试都烧满 120s 看门狗。
+		// 首连快速失败由 fail 通道处理；建连后的重连仍由 AutoReconnect 负责。
 		SetConnectRetryInterval(3 * time.Second).
 		SetDialer(dialer)
 	if u, p := currentSignalCreds(); u != "" {
@@ -213,7 +215,9 @@ func (s *MQTTSignalSession) connectBroker(brokerAddr string, qvals url.Values, i
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: insecure,
 		}
-		if !insecure && net.ParseIP(qvals.Get("_host")) == nil {
+		// ServerName 留空 + 未跳过校验 = Go TLS 握手直接报错（既发不出 ClientHello）。
+		// IP 字面量同样可作 ServerName：Go 会按 IP SAN 校验证书
+		if !insecure {
 			tlsConfig.ServerName = qvals.Get("_host")
 		}
 		if serverName := qvals.Get("servername"); serverName != "" {
@@ -262,9 +266,11 @@ func (s *MQTTSignalSession) connectBroker(brokerAddr string, qvals url.Values, i
 		s.subscribeClient(s.ctx, client, index, topic, qos)
 	}
 
+	// 非阻塞发送：ready 容量 1 且 monitor 消费一次即退出，
+	// 多 broker 全部连上时后来的 send 会永久阻塞直到 session Close
 	select {
 	case ready <- struct{}{}:
-	case <-s.ctx.Done():
+	default:
 	}
 }
 
