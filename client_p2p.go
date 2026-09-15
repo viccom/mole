@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	"moleAgent_client/internal/protocol"
@@ -154,8 +155,17 @@ func (c *Client) tryLockCtrlMu(ctx context.Context) error {
 	}
 }
 
-// serverHostFromAddr 从 ServerAddr（host:port）提取 host
+// serverHostFromAddr 从 ServerAddr 提取 host。ws/wss 传输允许 URL 写法
+// （ws://host:port/path，见 config 校验与 ws dialer）：带 scheme 时直接
+// SplitHostPort 会因 host 段含 ":" 报错并原样返回整个 URL，进而派生出
+// tcp://[ws://host:port]:1883 这类非法 broker/STUN 地址，p2p 隧道永远建不起来
 func serverHostFromAddr(addr string) string {
+	if i := strings.Index(addr, "://"); i >= 0 {
+		addr = addr[i+3:]
+		if j := strings.IndexByte(addr, '/'); j >= 0 {
+			addr = addr[:j]
+		}
+	}
 	if host, _, err := net.SplitHostPort(addr); err == nil && host != "" {
 		return host
 	}

@@ -221,7 +221,11 @@ func (m *Manager) OnTunnelUpdate(tunnelTypes []string, tunnelConfigs map[string]
 			continue
 		}
 
+		// pm.cfg 与 startLocked 的读并发（Manager.Start 复用实例时会裸读），
+		// 写入必须在 pm.mu 下（startLocked/Status 均在该锁内取快照）
+		pm.mu.Lock()
 		pm.cfg = cfg
+		pm.mu.Unlock()
 	}
 
 	// 启动新增的进程（如果配置了 autostart）

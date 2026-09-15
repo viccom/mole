@@ -337,11 +337,37 @@ func (s *secureSession) Run(_ context.Context) error {
 			}
 			st.SetReadDeadline(time.Time{})
 			magic := binary.BigEndian.Uint32(header)
+			// dispatch 统一异步分发入站流：
+			//  1. streamWG 登记，Run 结尾等它们收尾；
+			//  2. 处理函数内部没有读 deadline，对端「写半截就停」会永久阻塞——
+			//     而 Run 结尾的 streamWG.Wait() 会因此永远等不到，Run 不返回，
+			//     上层 handler 的 <-runDone 卡死（该隧道从此不再重连）。会话 ctx
+			//     结束时用过期 deadline 打断这些阻塞读；
+			//  3. closeStream=true 的分支（文件/测速）收尾关流：接收侧只读不关
+			//     会让 yamux streams 表无界增长。隧道数据流不可在此关——其
+			//     HandleDataStream 内部另起 goroutine 后立即返回，流由 Manager 接管。
+			dispatch := func(st net.Conn, closeStream bool, handle func()) {
+				streamWG.Add(1)
+				go func() {
+					defer streamWG.Done()
+					if closeStream {
+						defer st.Close()
+					}
+					stopWatch := make(chan struct{})
+					defer close(stopWatch)
+					go func() {
+						select {
+						case <-s.ctx.Done():
+							_ = st.SetReadDeadline(time.Now())
+						case <-stopWatch:
+						}
+					}()
+					handle()
+				}()
+			}
 			switch magic {
 			case FileMagic:
-				streamWG.Add(1)
-				go func(st net.Conn) {
-					defer streamWG.Done()
+				dispatch(st, true, func() {
 					dir := ""
 					if s.fileDir != nil {
 						dir = s.fileDir() // 快照读，调用方 mu 保证并发安全（R11）
@@ -349,23 +375,17 @@ func (s *secureSession) Run(_ context.Context) error {
 					HandleFileRX(st, dir, func(name, savePath string, size int64, elapsed time.Duration) {
 						s.cb.fireFile(FileTransferResult{FileName: name, Path: savePath, Size: size, Elapsed: elapsed})
 					})
-				}(st)
+				})
 			case tunnel.TCPMagic, tunnel.UDPMagic:
 				// H-NEW-1：异步分发（与 File/Speedtest 一致），避免 HandleDataStream 同步读
 				// tunnelID 阻塞 accept loop（buggy peer 写一半停会挂死整个 session）
-				streamWG.Add(1)
-				go func(magic uint32, st net.Conn) {
-					defer streamWG.Done()
-					s.tm.HandleDataStream(magic, st)
-				}(magic, st)
+				dispatch(st, false, func() { s.tm.HandleDataStream(magic, st) })
 			default:
-				streamWG.Add(1)
-				go func(st net.Conn, init []byte) {
-					defer streamWG.Done()
-					HandleSpeedtestRX(st, init, func(r SpeedtestResult) {
+				dispatch(st, true, func() {
+					HandleSpeedtestRX(st, header, func(r SpeedtestResult) {
 						s.cb.fireSpeedtest(r)
 					})
-				}(st, header)
+				})
 			}
 		}
 	}()

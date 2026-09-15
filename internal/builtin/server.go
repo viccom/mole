@@ -20,6 +20,9 @@ import (
 //go:embed static
 var staticFS embed.FS
 
+// maxEchoBodyBytes /echo 请求体上限（1 MiB）：该端点只做回显，无业务需要大 body
+const maxEchoBodyBytes = 1 << 20
+
 // StartHTTPServer 启动内置 HTTP 服务（含隧道管理 API）
 func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
 	// 仅端口形式（":18080"）绑定所有网卡；显式指定的 host（如默认 127.0.0.1）
@@ -59,9 +62,10 @@ func NewHandler(clientProvider func() *moleAgent_client.Client) http.Handler {
 		})
 	})
 
-	// Echo 端点
+	// Echo 端点（请求体有上限：-http 支持纯端口写法并显式绑 0.0.0.0，
+	// 无上限的 ReadAll 可被单个大请求打爆内存）
 	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEchoBodyBytes))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"echo":      string(body),

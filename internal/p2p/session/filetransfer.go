@@ -198,6 +198,9 @@ func HandleFileRX(st net.Conn, dir string, onComplete func(fileName, savePath st
 	// 截断文件与传输中断同样必须按失败处理，否则半截文件被当作完整接收
 	if copyErr != nil || written != int64(fileSize) {
 		// 网络/连接中断：删除残缺半成品，不触发 onComplete——失败不得上报为成功。
+		// 必须先 Close 再 Remove：Windows 上打开中的文件不可删除（Go 的共享模式
+		// 不含 FILE_SHARE_DELETE），先删会让截断文件以原名静默留在接收目录
+		_ = out.Close()
 		_ = os.Remove(saveName)
 		log.Printf("[RECV] %s FAILED: copy aborted at %s / %s: %v",
 			saveName, netutil.FormatSize(written), netutil.FormatSize(int64(fileSize)), copyErr)

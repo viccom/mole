@@ -176,6 +176,10 @@ function showEditForm(t) {
   document.getElementById('sf-name').disabled = true;
   document.getElementById('sf-broker').value = t.target || '';
   document.getElementById('sf-enable').checked = t.enabled;
+  // 回填加密密钥（para 中为明文，与 ser2net/webssh 的 Para 存法一致）：
+  // 不回填则编辑保存时 payload 无 secret，整条隧道配置被替换成无密钥版本，
+  // 客户端重启该 handler 时 NewCrypto 直接失败（隧道静默失效）
+  document.getElementById('sf-secret').value = (t.para || {}).secret || '';
 
   const s = t.status || {};
   const p = t.para || {};
@@ -227,7 +231,13 @@ function saveForm() {
       qos: parseInt(document.getElementById('sf-qos').value) || 1
     }
   };
-  if (secret) payload.para.secret = secret;
+  if (secret) {
+    payload.para.secret = secret;
+  } else if (editingName) {
+    // 编辑时留空 = 保持原密钥（表单被清空也不至于把配置改坏）
+    const orig = tunnels.find(t => t.name === editingName);
+    if (orig && orig.para && orig.para.secret) payload.para.secret = orig.para.secret;
+  }
 
   api.addTunnel(payload)
     .then(() => { hideForm(); toast(editingName ? '隧道已更新' : '隧道已添加', 'success'); })

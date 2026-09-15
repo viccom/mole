@@ -235,10 +235,16 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 		tunnelOK := true
 		if h.cfg.TargetHost != "" && !h.restoreTunnel(ctx, sess) {
 			tunnelOK = false
+			// 会话虽活但本端监听不存在：就地拆掉走退避重试。否则控制流会一直
+			// 停在 <-runDone 等会话自然断开，期间永不重试、Status 还报 Connected
+			_ = sess.Close()
 		}
 
 		<-runDone
 		h.endSession(sess)
+		// 会话终结即释放 attemptCtx：父 ctx 的 children 表中每成功一轮都会
+		// 累积一个子 ctx，长期反复重连（网络抖动）会无界增长
+		cancel()
 
 		if !tunnelOK {
 			return false
@@ -278,7 +284,9 @@ func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) bool 
 func (h *Handler) Status() Runtime {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	rt := Runtime{Running: true, Error: h.lastErr}
+	// 断线窗口（sess==nil）沿用累计值：否则每轮心跳上报都会从 0 重来，
+	// 管理界面读数在 0 与累计值之间跳变（F15 的「跨重连不塌缩」失效）
+	rt := Runtime{Running: true, BytesIn: h.carriedIn, BytesOut: h.carriedOut, Error: h.lastErr}
 	if h.sess != nil {
 		rt.Connected = true
 		var in, out uint64

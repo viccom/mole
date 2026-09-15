@@ -120,6 +120,46 @@ func (pm *ProcessMgr) Start(ctx context.Context) error {
 	return pm.startLocked(ctx)
 }
 
+// rollbackStart 回滚启动失败：startLocked 持有 lifecycleMu，直接调 Stop 会
+// 二次加锁自死锁（sync.Mutex 不可重入）——此处做与 Stop 等价的收尾（进程没
+// 起来，无需杀进程/等 wg），并注销全局表，否则同名实例再也无法重建。
+func (pm *ProcessMgr) rollbackStart() {
+	pm.mu.Lock()
+	pm.running = false
+	if pm.cancel != nil {
+		pm.cancel()
+	}
+	logWriter := pm.logWriter
+	pm.logWriter = nil
+	pm.mu.Unlock()
+	if logWriter != nil {
+		logWriter.Close()
+	}
+	globalManagers.mu.Lock()
+	delete(globalManagers.procs, pm.name)
+	globalManagers.mu.Unlock()
+}
+
+// ensureLogWriter 重开被上次 Stop 关闭的日志文件：ProcessMgr 实例在 Manager
+// 的 procs 表中被复用（stop → start / tunnel_action: start），Stop 关闭文件时
+// 置 nil，重启路径据此重开，否则 copyOutput 一直写已关闭的 fd，文件日志静默失效。
+func (pm *ProcessMgr) ensureLogWriter(cfg Config) {
+	if !cfg.Log.Capture || cfg.Log.OutputPath == "" {
+		return
+	}
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if pm.logWriter != nil {
+		return
+	}
+	f, err := os.OpenFile(cfg.Log.OutputPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("vpn-manager: reopen log file for %s failed: %v", pm.name, err)
+		return
+	}
+	pm.logWriter = f
+}
+
 // startLocked 要求已持 lifecycleMu：handleExit 的迟到重启路径在本锁
 // 持有状态下调用，改走 Start 会自死锁（sync.Mutex 不可重入）
 func (pm *ProcessMgr) startLocked(ctx context.Context) error {
@@ -132,23 +172,27 @@ func (pm *ProcessMgr) startLocked(ctx context.Context) error {
 	pm.gen++
 	gen := pm.gen
 	pm.running = true
+	cfg := pm.cfg // 快照：OnTunnelUpdate 可能并发改写 pm.cfg（持 pm.mu 写入）
 	pm.clearError()
 	pm.mu.Unlock()
 
 	log.Printf("vpn-manager: starting %s", pm.name)
-	
+
+	// 重新打开被上次 Stop 关闭的日志文件（实例由 Manager 复用，详见 ensureLogWriter）
+	pm.ensureLogWriter(cfg)
+
 	// 查找程序路径
-	binPath, err := pm.findBinary()
+	binPath, err := pm.findBinary(cfg)
 	if err != nil {
 		log.Printf("vpn-manager: binary not found for %s: %v", pm.name, err)
 		pm.setError("binary", err.Error())
-		pm.Stop()
+		pm.rollbackStart()
 		return err
 	}
 	log.Printf("vpn-manager: found binary at %s", binPath)
 
 	// 构建命令参数
-	args := pm.cfg.BuildArgs()
+	args := cfg.BuildArgs()
 	log.Printf("vpn-manager: command: %s %v", binPath, args)
 	
 	// 创建命令
@@ -168,7 +212,7 @@ func (pm *ProcessMgr) startLocked(ctx context.Context) error {
 	// 日志管道必须在 Start() 之前创建：Start 之后调用恒报
 	// "exec: StdoutPipe after process started"，导致日志捕获整体失效
 	var stdoutPipe, stderrPipe io.ReadCloser
-	if pm.cfg.Log.Capture {
+	if cfg.Log.Capture {
 		stdoutPipe, _ = cmd.StdoutPipe()
 		stderrPipe, _ = cmd.StderrPipe()
 	}
@@ -178,7 +222,14 @@ func (pm *ProcessMgr) startLocked(ctx context.Context) error {
 	if err := pm.cmd.Start(); err != nil {
 		log.Printf("vpn-manager: failed to start process for %s: %v", pm.name, err)
 		pm.setError("startup", err.Error())
-		pm.Stop()
+		// 启动失败已建的管道无写入端，随回滚一并关闭（否则 fd 泄漏）
+		if stdoutPipe != nil {
+			stdoutPipe.Close()
+		}
+		if stderrPipe != nil {
+			stderrPipe.Close()
+		}
+		pm.rollbackStart()
 		return fmt.Errorf("start process: %w", err)
 	}
 
@@ -188,8 +239,8 @@ func (pm *ProcessMgr) startLocked(ctx context.Context) error {
 	pm.mu.Unlock()
 
 	// 初始化 vnt-cli REST 客户端
-	if pm.cfg.VNT != nil && pm.cfg.VNT.Enabled {
-		port := pm.cfg.VNT.RestPort
+	if cfg.VNT != nil && cfg.VNT.Enabled {
+		port := cfg.VNT.RestPort
 		if port <= 0 {
 			port = DefaultRestPort
 		}
@@ -273,9 +324,14 @@ func (pm *ProcessMgr) Stop() {
 		}
 	}
 
-	// 关闭日志文件
-	if pm.logWriter != nil {
-		pm.logWriter.Close()
+	// 关闭日志文件（同时置 nil：实例会被 Manager 复用重启，
+	// startLocked 的 ensureLogWriter 以 nil 为「需要重开」的信号）
+	pm.mu.Lock()
+	logWriter := pm.logWriter
+	pm.logWriter = nil
+	pm.mu.Unlock()
+	if logWriter != nil {
+		logWriter.Close()
 	}
 
 	// 从全局映射移除
@@ -336,17 +392,18 @@ func (pm *ProcessMgr) CrashLogs() []CrashLog {
 	return result
 }
 
-// findBinary 查找程序路径
-func (pm *ProcessMgr) findBinary() (string, error) {
-	binName := pm.cfg.Binary.Name
+// findBinary 查找程序路径（cfg 由调用方在 pm.mu 下快照后传入：
+// startLocked 执行期间 OnTunnelUpdate 可能并发改写 pm.cfg）
+func (pm *ProcessMgr) findBinary(cfg Config) (string, error) {
+	binName := cfg.Binary.Name
 	if binName == "" {
 		return "", fmt.Errorf("binary name is required")
 	}
 
 	// 1. 如果指定了绝对路径
-	if pm.cfg.Binary.Path != "" {
-		if _, err := os.Stat(pm.cfg.Binary.Path); err == nil {
-			return pm.cfg.Binary.Path, nil
+	if cfg.Binary.Path != "" {
+		if _, err := os.Stat(cfg.Binary.Path); err == nil {
+			return cfg.Binary.Path, nil
 		}
 	}
 
@@ -520,15 +577,17 @@ func (pm *ProcessMgr) handleExit(err error) {
 		maxRestarts = defaultMaxRestarts
 	}
 	if pm.cfg.Lifecycle.RestartOnCrash && pm.crashCount <= maxRestarts {
+		restartDelay := pm.cfg.Lifecycle.RestartDelay // 快照：解锁后不再裸读 pm.cfg
 		pm.mu.Unlock()
-		time.Sleep(time.Duration(pm.cfg.Lifecycle.RestartDelay) * time.Second)
+		time.Sleep(time.Duration(restartDelay) * time.Second)
 		// 迟到重启与 Stop 互斥：睡眠期间 Stop 翻转了 running 则放弃复活；
 		// 本检查与 Start 之间也不再给 Stop 留插入窗口
 		pm.lifecycleMu.Lock()
 		pm.mu.Lock()
 
 		if !pm.running {
-			pm.mu.Unlock()
+			// 只释放 lifecycleMu：pm.mu 由函数入口的 defer 解锁，
+			// 此处再显式解锁会触发 fatal error: unlock of unlocked mutex
 			pm.lifecycleMu.Unlock()
 			return
 		}
@@ -552,6 +611,11 @@ func (pm *ProcessMgr) handleExit(err error) {
 
 // copyOutput 复制进程输出到日志缓冲区
 func (pm *ProcessMgr) copyOutput(r io.Reader) {
+	// 启动时快照日志文件：Stop 会并发把字段置 nil 并关闭文件，
+	// 裸读字段与写入构成数据竞争（写已关闭 fd 由本函数忽略错误）
+	pm.mu.RLock()
+	logWriter := pm.logWriter
+	pm.mu.RUnlock()
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
@@ -559,8 +623,8 @@ func (pm *ProcessMgr) copyOutput(r io.Reader) {
 			if pm.logBuf != nil {
 				pm.logBuf.Write(buf[:n])
 			}
-			if pm.logWriter != nil {
-				pm.logWriter.Write(buf[:n])
+			if logWriter != nil {
+				logWriter.Write(buf[:n])
 			}
 		}
 		if err != nil {

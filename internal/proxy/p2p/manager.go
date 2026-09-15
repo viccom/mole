@@ -89,6 +89,12 @@ func (m *Manager) OnTunnelUpdate(configs map[string]P2PConfig) {
 			stopped = append(stopped, h)
 		}
 	}
+	// 本轮已无在跑的 handler：旧签名不再约束即将启动的隧道。必须在启动
+	// 循环之前复位——否则「改 mqtt_brokers」的隧道会被已下线实例的旧签名
+	// 拒绝，而配置不再变化时不会再有分发触发，隧道就此长期停摆（复审 F2）
+	if len(m.handlers) == 0 {
+		m.brokerSig = ""
+	}
 	// 起：新增的 + 变更重启的。按名排序保证确定性；发起端 local_port
 	// 全节点唯一——重复端口的败者会以 Connected 状态空转并不断重试绑定
 	//（复审 F11），配置期直接跳过并告警
@@ -120,9 +126,6 @@ func (m *Manager) OnTunnelUpdate(configs map[string]P2PConfig) {
 		m.startLocked(name, cfg)
 	}
 	m.configs = cloneConfigs(configs)
-	if len(m.handlers) == 0 {
-		m.brokerSig = "" // 全部下线后解除同质约束（复审 F2）
-	}
 	m.mu.Unlock()
 
 	// 阻塞的会话拆除在锁外执行（复审 F1：m.mu 不得跨越 h.Close）

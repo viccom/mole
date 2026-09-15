@@ -46,7 +46,23 @@ const (
 	lanMsgResponse = "R"
 	lanMsgConfirm  = "C"
 	lanMsgAck      = "A"
+
+	// workerJoinGrace 等待落败 worker 收尾的上限：cancel 后它们最迟在一个
+	// 突发重传周期内退出（sleepCtx 已 ctx 化），超时兜底避免拖死发现流程
+	workerJoinGrace = 2 * time.Second
 )
+
+// sleepCtx 可取消的等待：P2P 发现的突发重传（beacon/response/ack 多轮）若用
+// 裸 time.Sleep，会让 worker 在 ctx 取消后仍占用 multicast 连接与调用方
+// logWriter 数百毫秒——发现函数返回后仍在写（-race 可见的数据竞争）。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
 
 // ── 消息 ────────────────────────────────────────────────────
 
@@ -475,10 +491,26 @@ func runLANDiscoverWorkers(ctx context.Context, cancel context.CancelFunc, worke
 		}()
 	}
 
-	defer cancel()
+	// 退出前必须 cancel + 等齐落败的兄弟 worker：它们持有 multicast 连接并写
+	// 调用方的 logWriter，若不等就跑，会在本函数返回后继续写（-race 观测到的
+	// 数据竞争），而此时 mc 已被上层 Close。等待有界，避免个别 worker 卡住
+	// 拖死整个发现流程。
+	remaining := len(workers)
+	defer func() {
+		cancel()
+		for ; remaining > 0; remaining-- {
+			select {
+			case <-results:
+			case <-time.After(workerJoinGrace):
+				return
+			}
+		}
+	}()
+
 	for range workers {
 		select {
 		case outcome := <-results:
+			remaining--
 			if outcome.err != nil {
 				return nil, outcome.err
 			}
@@ -627,7 +659,9 @@ GotResponse:
 		// 立即发几轮
 		for i := 0; i < 3; i++ {
 			mc.broadcastAndSendTo(confirmData, respSrc)
-			time.Sleep(50 * time.Millisecond)
+			if !sleepCtx(ctx, 50*time.Millisecond) {
+				return nil, ctx.Err()
+			}
 		}
 
 		// 持续发 confirm + 等 ack
@@ -724,7 +758,9 @@ func lanResponder(
 		// 立即发几轮
 		for i := 0; i < 3; i++ {
 			mc.broadcastAndSendTo(respData, beaconSrc)
-			time.Sleep(50 * time.Millisecond)
+			if !sleepCtx(ctx, 50*time.Millisecond) {
+				return nil, ctx.Err()
+			}
 		}
 
 		// ── Phase 2: 持续发 Response + 从 confirmCh 等 Confirm ──
@@ -765,7 +801,9 @@ func lanResponder(
 			// 多发几轮, 确保 initiator 收到
 			for i := 0; i < 8; i++ {
 				mc.broadcastAndSendTo(ackData, confirmSrc)
-				time.Sleep(100 * time.Millisecond)
+				if !sleepCtx(ctx, 100*time.Millisecond) {
+					return nil, ctx.Err()
+				}
 			}
 
 			logger.Printf("Responder: sent ACK → discovery complete\n")
