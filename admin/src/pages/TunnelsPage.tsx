@@ -15,7 +15,7 @@ import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
 import { tunnelAccessUrl, formatBytes, formatBandwidth, formatTimeAgo, fetchDefaultDomain } from '../lib/utils'
 
-type TabKey = 'all' | 'web' | 'stream' | 'serial' | 'vpn' | 'webssh'
+type TabKey = 'all' | 'web' | 'stream' | 'serial' | 'vpn' | 'webssh' | 'p2p'
 type FilterKey = 'all' | 'enabled' | 'disabled' | 'active'
 
 const tabFilters: Record<TabKey, (t: Tunnel) => boolean> = {
@@ -25,6 +25,7 @@ const tabFilters: Record<TabKey, (t: Tunnel) => boolean> = {
   serial: (t: Tunnel) => ['ser2mq', 'ser2tcp', 'ser2udp'].includes(t.type),
   vpn: (t: Tunnel) => t.type === 'vpn-manager',
   webssh: (t: Tunnel) => t.type === 'webssh',
+  p2p: (t: Tunnel) => t.type === 'p2p',
 }
 
 const tabs: { key: TabKey; label: string }[] = [
@@ -34,6 +35,7 @@ const tabs: { key: TabKey; label: string }[] = [
   { key: 'serial', label: '串口' },
   { key: 'vpn', label: 'VPN' },
   { key: 'webssh', label: '远程终端' },
+  { key: 'p2p', label: 'P2P' },
 ]
 
 const filterOptions: { key: FilterKey; label: string }[] = [
@@ -63,6 +65,8 @@ export function tunnelMatchesKeyword(tunnel: Tunnel, keyword: string): boolean {
     tunnel.para?.binary?.name || '',
     tunnel.para?.address || '',
     tunnel.para?.mode || '',
+    // room 是 p2p 的唯一业务标识，搜 room 可定位配对的两条隧道
+    tunnel.para?.room || '',
   ].some(value => value.toLowerCase().includes(kw))
 }
 
@@ -136,13 +140,14 @@ export function TunnelsPage() {
   )
 
   const allTabCounts = useMemo(() => {
-    const counts: Record<TabKey, number> = { all: tunnels.length, web: 0, stream: 0, serial: 0, vpn: 0, webssh: 0 }
+    const counts: Record<TabKey, number> = { all: tunnels.length, web: 0, stream: 0, serial: 0, vpn: 0, webssh: 0, p2p: 0 }
     for (const t of tunnels) {
       if (t.type === 'http' || t.type === 'https') counts.web++
       if (t.type === 'tcp' || t.type === 'udp') counts.stream++
       if (['ser2mq', 'ser2tcp', 'ser2udp'].includes(t.type)) counts.serial++
       if (t.type === 'vpn-manager') counts.vpn++
       if (t.type === 'webssh') counts.webssh++
+      if (t.type === 'p2p') counts.p2p++
     }
     return counts
   }, [tunnels])
@@ -240,6 +245,7 @@ export function TunnelsPage() {
     if (type === 'ser2tcp') return 'cyan'
     if (type === 'ser2udp') return 'purple'
     if (type === 'webssh') return 'info'
+    if (type === 'p2p') return 'cyan'
     return 'warning'
   }
 
@@ -249,6 +255,7 @@ export function TunnelsPage() {
     if (type === 'ser2tcp') return 'Ser2TCP'
     if (type === 'ser2udp') return 'Ser2UDP'
     if (type === 'webssh') return 'WebSSH'
+    if (type === 'p2p') return 'P2P'
     return type.toUpperCase()
   }
 
@@ -270,7 +277,7 @@ export function TunnelsPage() {
               刷新
             </button>
             <button
-              onClick={() => setFormModal({ defaultType: activeTab === 'web' ? 'http' : activeTab === 'stream' ? 'tcp' : activeTab === 'serial' ? 'ser2mq' : activeTab === 'vpn' ? 'vpn-manager' : 'http' })}
+              onClick={() => setFormModal({ defaultType: activeTab === 'web' ? 'http' : activeTab === 'stream' ? 'tcp' : activeTab === 'serial' ? 'ser2mq' : activeTab === 'vpn' ? 'vpn-manager' : activeTab === 'p2p' ? 'p2p' : 'http' })}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark"
             >
               <Plus className="w-4 h-4" />

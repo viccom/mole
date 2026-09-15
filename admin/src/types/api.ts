@@ -86,7 +86,7 @@ export interface PersistedNode {
 
 export interface Tunnel {
   name: string
-  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp' | 'webssh'
+  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'vpn-manager' | 'ser2tcp' | 'ser2udp' | 'webssh' | 'p2p'
   target: string
   domain?: string
   listen_port?: number
@@ -123,6 +123,16 @@ export interface TunnelPara {
   auth_type?: 'password' | 'key'
   password?: string
   priv_key?: string
+  // p2p 配置（字段与服务端 core.ValidateP2PPara / 客户端 proxy/p2p.P2PConfig 一致）
+  room?: string
+  modes?: string[]
+  relay_server?: string
+  mqtt_brokers?: string[]
+  stun_servers?: string[]
+  protocol?: 'tcp' | 'udp'
+  local_port?: number
+  target_host?: string
+  target_port?: number
 }
 
 export interface SerialConfig {
@@ -185,7 +195,7 @@ export interface TunnelStats {
 
 export interface TunnelUsageItem {
   name: string
-  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'ser2tcp' | 'ser2udp' | 'vpn-manager' | 'webssh'
+  type: 'http' | 'https' | 'tcp' | 'udp' | 'ser2mq' | 'ser2tcp' | 'ser2udp' | 'vpn-manager' | 'webssh' | 'p2p'
   target: string
   domain?: string
   listen_port?: number

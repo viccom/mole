@@ -81,4 +81,20 @@ describe('tunnelMatchesKeyword', () => {
   it('支持搜索 ser2net 模式', () => {
     expect(tunnelMatchesKeyword(tunnel, 'server')).toBe(true)
   })
+
+  // p2p 隧道名两端可自由起名，room 才是配对的唯一标识，必须能搜到（大小写不敏感）
+  it('支持按 p2p room 搜索', () => {
+    const p2pTunnel: Tunnel = {
+      name: 'p2p-a',
+      type: 'p2p',
+      target: '127.0.0.1:8080',
+      enabled: true,
+      node_id: 'node-1',
+      para: { room: 'MyRoom_2026_x', protocol: 'tcp', local_port: 18080, target_host: '127.0.0.1', target_port: 8080 },
+    }
+
+    expect(tunnelMatchesKeyword(p2pTunnel, 'myroom_2026_x')).toBe(true)
+    expect(tunnelMatchesKeyword(p2pTunnel, 'p2p')).toBe(true)
+    expect(tunnelMatchesKeyword(p2pTunnel, 'other-room')).toBe(false)
+  })
 })
