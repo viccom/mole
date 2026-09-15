@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"fmt"
 	"context"
 	"io"
 	"log/slog"
@@ -20,6 +21,10 @@ func Init(cfg config.LoggingConfig) *slog.Logger {
 
 	if cfg.Console.Enabled {
 		consoleOpts := &slog.HandlerOptions{Level: level}
+		if cfg.Console.Color && cfg.Format == "json" {
+			// 静默配置陷阱显式化：color 优先级高于 format，json 对控制台实际不生效
+			fmt.Fprintf(os.Stderr, "[WARN] logging.console.color=true overrides logging.format=json; console output stays colored text\n")
+		}
 		if cfg.Console.Color {
 			handlers = append(handlers, newColorTextHandler(os.Stdout, consoleOpts))
 		} else if cfg.Format == "json" {

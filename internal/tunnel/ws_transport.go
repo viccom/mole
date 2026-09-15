@@ -44,13 +44,15 @@ type wsListener struct {
 	httpServer *http.Server
 	connCh     chan net.Conn
 	ln         net.Listener
-	once       sync.Once
+	closed     chan struct{} // 关闭信号：send 侧经 select 感知，避免向已关闭 channel 发送 panic
+	closeOnce  sync.Once
 }
 
 func newWSListener(ln net.Listener, tlsConfig *tls.Config) *wsListener {
 	wl := &wsListener{
 		connCh: make(chan net.Conn, 1000),
 		ln:     ln,
+		closed: make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -83,8 +85,13 @@ func (wl *wsListener) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("WS upgrade failed", "remote", r.RemoteAddr, "error", err)
 		return
 	}
+	// close(connCh) 与在途 upgrade 的 send 并发会 panic（send on closed channel）：
+	// 用 closed 信号让 send 侧在关闭后走拒绝分支
 	select {
 	case wl.connCh <- &wsConn{conn: conn}:
+	case <-wl.closed:
+		conn.Close()
+		slog.Warn("WS listener closed, connection rejected", "remote", conn.RemoteAddr())
 	default:
 		conn.Close()
 		slog.Warn("WS accept queue full, connection rejected", "remote", conn.RemoteAddr())
@@ -92,15 +99,18 @@ func (wl *wsListener) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (wl *wsListener) Accept() (net.Conn, error) {
-	conn, ok := <-wl.connCh
-	if !ok {
+	// connCh 永不 close（与在途 upgrade 的 send 竞争会 panic）：
+	// 关闭态经 closed 信号通知
+	select {
+	case conn := <-wl.connCh:
+		return conn, nil
+	case <-wl.closed:
 		return nil, net.ErrClosed
 	}
-	return conn, nil
 }
 
 func (wl *wsListener) Close() error {
-	wl.once.Do(func() { close(wl.connCh) })
+	wl.closeOnce.Do(func() { close(wl.closed) })
 	return wl.httpServer.Close()
 }
 

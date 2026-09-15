@@ -157,6 +157,9 @@ func main() {
 	}
 	if token == "" {
 		token = "default-node-token-change-me"
+		// 该默认值在公开仓库中可查：不配置即等于向所有能访问控制端口的人开放节点注册
+		fmt.Fprintf(os.Stderr, "[WARN] node access token not configured (-nodetoken / MA_NODE_TOKEN); using the well-known default token — anyone can register nodes!\n")
+		slog.Warn("Node access token is the well-known default; set -nodetoken or MA_NODE_TOKEN to secure the control port")
 	}
 	var tlsConfig *tls.Config
 	if cfg.Server.TLS.Enabled {
@@ -213,12 +216,6 @@ func main() {
 	controlSrv.SetOnNodeChange(func() {
 		gateway.RebuildIndex(context.Background())
 	})
-	go func() {
-		if err := controlSrv.Start(ctx); err != nil {
-			slog.Error("Control server error", "error", err)
-			cancel()
-		}
-	}()
 
 	// --- P2P 信令凭据签发（nat-exchange/* 专用，与用户体系隔离）---
 	p2pTokenSvc := service.NewP2PSignalTokenService(storage.NewP2PSignalTokenRepo(db))
@@ -235,19 +232,44 @@ func main() {
 	}
 	controlSrv.SetOnNodeDisconnect(disconnectHandler)
 
-	// --- 节点管理器 + 健康检查 ---
-	go node.StartHealthCheck(ctx, nodeMgr, disconnectHandler)
-
 	// --- 接入 Token 认证服务 ---
 	accessTokenRepo := storage.NewAccessTokenRepo(db)
 	nodeAccessAuth := service.NewAccessTokenAuthService(accessTokenRepo, token)
 	controlSrv.SetAuthenticator(nodeAccessAuth)
+
+	// 所有依赖注入完成后再启动监听：否则启动窗口内 authenticator/tunnelSvc
+	// 为 nil，连接会走明文 token 比对兜底、配置命令被静默丢弃
+	go func() {
+		if err := controlSrv.Start(ctx); err != nil {
+			slog.Error("Control server error", "error", err)
+			cancel()
+		}
+	}()
+
+	// --- 节点管理器 + 健康检查 ---
+	go node.StartHealthCheck(ctx, nodeMgr, disconnectHandler)
 
 	// --- MQTT Broker ---
 	var mqttBroker *mqtt.EmbeddedBroker
 	if cfg.MQTT.Enabled {
 		mqttBroker = mqtt.NewEmbeddedBroker(cfg.MQTT.TCPPort, cfg.MQTT.WSPort, authSvc, rbacEngine)
 		mqttBroker.SetP2PSignalTokenVerifier(p2pTokenSvc)
+		// 节点级 topic 归属仲裁：/mole/<nodeId>/... 只允许节点归属者
+		mqttBroker.SetTopicAuthorizer(func(userID, nodeID string) bool {
+			n, err := nodeRepo.GetByID(nodeID)
+			if err != nil || n == nil {
+				return false
+			}
+			if n.OwnerUserID == userID {
+				return true
+			}
+			if allowed, _ := rbacEngine.CheckPermission(userID, "*", "*"); allowed {
+				return true
+			}
+			return false
+		})
+		slog.Warn("MQTT listeners have no TLS support; broker credentials traverse the network in plaintext",
+			"tcpPort", cfg.MQTT.TCPPort, "wsPort", cfg.MQTT.WSPort)
 		go func() {
 			slog.Info("MQTT broker starting...")
 			if err := mqttBroker.Start(ctx); err != nil {
@@ -314,6 +336,11 @@ func main() {
 		}
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// API 请求体上限：多数端点裸读 JSON（仅 Restart/Action 有限制），
+		// 无上限的单请求解码可被用来耗尽内存。16MB 远超管理面合法载荷
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(nil, r.Body, maxAPIBodyBytes)
+		}
 		if strings.HasPrefix(r.URL.Path, "/admin") {
 			spaHandler(adminFS, distDir, indexPath).ServeHTTP(w, r)
 			return
@@ -325,8 +352,10 @@ func main() {
 		apiRouter.ServeHTTP(w, r)
 	})
 	apiSrv := &http.Server{
-		Addr:    cfg.Server.APIPort,
-		Handler: handler,
+		Addr:              cfg.Server.APIPort,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second, // slowloris 防护：头读取限时
+		IdleTimeout:       120 * time.Second,
 	}
 	go func() {
 		slog.Info("API server listening", "addr", cfg.Server.APIPort)
@@ -376,6 +405,10 @@ func main() {
 	slog.Info("moleAgent_Serv stopped gracefully")
 }
 
+// maxAPIBodyBytes API 请求体统一上限：多数端点裸读 JSON 且无任何
+// MaxBytesReader，单请求无界解码可被用来耗尽内存
+const maxAPIBodyBytes = 16 << 20 // 16MB
+
 func buildAPIRouter(
 	mw *auth.AuthMiddleware,
 	apiLimiter *ratelimit.APILimiter,
@@ -405,9 +438,12 @@ func buildAPIRouter(
 	// Handlers
 	authH := api.NewAuthHandler(authSvc)
 	userH := api.NewUserHandler(userRepo, rbacEngine, cfg.Auth.BcryptCost, nodeRepo, accessTokenRepo, nodeMgr)
+	userH.SetBindingRepos(feishuBindingRepo, dingtalkBindingRepo)
 	roleH := api.NewRoleHandler(roleRepo)
+	roleH.SetRBAC(rbacEngine)
 	nodeH := api.NewNodeHandler(nodeMgr, nodeRepo, tunnelSvc, controlSrv)
 	nodeH.SetP2PTokenRevoker(p2pTokens)
+	nodeH.SetEncryptor(tunnelEncryptor)
 	tunnelH := api.NewTunnelHandler(nodeMgr, tunnelSvc, gateway.Stats(), gatewayLimiter, tunnelEncryptor, controlSrv)
 	mqttH := api.NewMQTTHandler(mqttBroker)
 	sysH := api.NewSystemHandler(storage.DB(), cfg)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -17,11 +18,24 @@ type UserHandler struct {
 	nodeRepo       core.NodeRepo
 	accessTokenRepo core.AccessTokenRepo
 	nodeMgr        core.NodeManager // 运行态节点管理器（同步归属）
+	feishuBindings core.FeishuBindingRepo
+	dingtalkBindings core.DingTalkBindingRepo
 }
 
 func NewUserHandler(userRepo core.UserRepo, rbac *auth.RBACEngine, bcryptCost int, nodeRepo core.NodeRepo, accessTokenRepo core.AccessTokenRepo, nodeMgr core.NodeManager) *UserHandler {
 	return &UserHandler{userRepo: userRepo, rbac: rbac, bcryptCost: bcryptCost, nodeRepo: nodeRepo, accessTokenRepo: accessTokenRepo, nodeMgr: nodeMgr}
 }
+
+// SetBindingRepos 注入 SSO 绑定仓储（删除用户时级联解绑；nil 跳过）
+func (h *UserHandler) SetBindingRepos(feishu core.FeishuBindingRepo, dingtalk core.DingTalkBindingRepo) {
+	h.feishuBindings = feishu
+	h.dingtalkBindings = dingtalk
+}
+
+// reservedUserIDs 特权身份 ID 与真实用户共用同一命名空间：中间件对这些
+// UserID 有 RBAC 旁路（access_key）或归属语义（system），允许注册同名
+// 账号等于把旁路权限发给普通人
+var reservedUserIDs = map[string]bool{"access_key": true, "system": true}
 
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	users, err := h.userRepo.GetAll()
@@ -45,6 +59,10 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Username == "" || req.Password == "" {
 		ResponseError(w, http.StatusBadRequest, 400, "Username and password required")
+		return
+	}
+	if reservedUserIDs[req.Username] {
+		ResponseError(w, http.StatusConflict, 409, "Username is reserved")
 		return
 	}
 	if len(req.Password) < 8 {
@@ -81,6 +99,18 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 分配角色
+	// 授角能力等价于 users:admin（专用路由 POST /users/{id}/roles/{roleId} 即以此
+	// 权限注册）：Create 内嵌的 RoleIDs 不能成为绕过它的后门（users:write → 管理员）
+	if len(req.RoleIDs) > 0 {
+		claims := auth.GetClaims(r.Context())
+		if claims != nil && !IsAdmin(claims) {
+			allowed, perr := h.rbac.CheckPermission(claims.UserID, "users", "admin")
+			if perr != nil || !allowed {
+				ResponseError(w, http.StatusForbidden, 403, "Forbidden: assigning roles requires users:admin permission")
+				return
+			}
+		}
+	}
 	for _, roleID := range req.RoleIDs {
 		if err := h.rbac.AssignRole(user.ID, roleID); err != nil {
 			slog.Warn("Failed to assign role", "userId", user.ID, "roleId", roleID, "error", err)
@@ -143,19 +173,40 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username != "" {
+	if req.Username != "" && req.Username != user.Username {
+		// 改名必须有唯一性/保留字校验：usernames 索引是无条件覆盖语义，
+		// 重名会让 GetByUsername 解析到本用户（他人登录被打断、身份映射劫持）
+		if reservedUserIDs[req.Username] {
+			ResponseError(w, http.StatusConflict, 409, "Username is reserved")
+			return
+		}
+		if _, err := h.userRepo.GetByUsername(req.Username); err == nil {
+			ResponseError(w, http.StatusConflict, 409, "Username already exists")
+			return
+		} else if !errors.Is(err, core.ErrUserNotFound) {
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to check username")
+			return
+		}
 		user.Username = req.Username
 	}
 	if req.Status != "" {
 		user.Status = core.UserStatus(req.Status)
 	}
 	if req.Password != "" {
+		if len(req.Password) < 8 {
+			ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
+			return
+		}
 		hash, err := auth.HashPassword(req.Password, h.bcryptCost)
 		if err != nil {
 			ResponseError(w, http.StatusInternalServerError, 500, "Failed to hash password")
 			return
 		}
-		h.userRepo.SetPasswordHash(id, hash)
+		// SetPasswordHash 失败必须中止：静默继续会谎报改密成功而旧密码仍有效
+		if err := h.userRepo.SetPasswordHash(id, hash); err != nil {
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to set password")
+			return
+		}
 	}
 
 	if err := h.userRepo.Update(user); err != nil {
@@ -180,6 +231,19 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	id := strings.TrimRight(path, "/")
 
+	// 级联处理 SSO 绑定：不清理则用户名回收后，原飞书/钉钉身份的 SSO 回调
+	// 会命中残留绑定、直接给同名的重建账号签发 JWT（账号接管）
+	if h.feishuBindings != nil {
+		if err := h.feishuBindings.DeleteByUserID(id); err == nil {
+			slog.Info("Deleted feishu binding for deleted user", "userId", id)
+		}
+	}
+	if h.dingtalkBindings != nil {
+		if err := h.dingtalkBindings.DeleteByUserID(id); err == nil {
+			slog.Info("Deleted dingtalk binding for deleted user", "userId", id)
+		}
+	}
+
 	// 级联处理：禁用该用户的 AccessToken，节点归属改为 system
 	if h.accessTokenRepo != nil {
 		tokens, err := h.accessTokenRepo.ListByUser(id)
@@ -202,6 +266,10 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			for _, n := range nodes {
 				if n.OwnerUserID == id {
 					n.OwnerUserID = "system"
+					// 落库前清运行态字段：这些字段不属于持久化契约
+					n.SysInfo = nil
+					n.ClientStatuses = nil
+					n.RTT = 0
 					if updateErr := h.nodeRepo.Update(n); updateErr != nil {
 						slog.Warn("Failed to reassign node owner", "nodeId", n.ID, "error", updateErr)
 					} else {
@@ -303,6 +371,11 @@ func (h *UserHandler) resetPassword(w http.ResponseWriter, r *http.Request, user
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+	// 与 Create 对称的最小长度校验（1 位密码重置成功 = 弱口令入口）
+	if len(req.Password) < 8 {
+		ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
 		return
 	}
 	hash, err := auth.HashPassword(req.Password, h.bcryptCost)

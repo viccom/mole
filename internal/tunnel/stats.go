@@ -74,7 +74,14 @@ func (st *StatsTracker) ConnOpened(name string) {
 
 // ConnClosed 记录连接关闭
 func (st *StatsTracker) ConnClosed(name string) {
-	s := st.getOrCreate(name)
+	// 只在条目存在时递减：断连清理 Remove(sKey) 与在途连接的延迟关闭竞争时，
+	// getOrCreate 会复活条目并写出 ActiveConns=-1 的僵尸统计
+	st.mu.RLock()
+	s, ok := st.stats[name]
+	st.mu.RUnlock()
+	if !ok {
+		return
+	}
 	atomic.AddInt64(&s.ActiveConns, -1)
 }
 

@@ -194,7 +194,9 @@ func (g *gatewayLimiterImpl) RemoveNode(nodeID string) {
 	}
 	for sKey := range g.tunnelGens {
 		if strings.HasPrefix(sKey, nodeID+"/") {
-			delete(g.tunnelGens, sKey)
+			// 与 RemoveTunnel 语义一致必须自增而非删除：归零会让断开前以 gen=0
+			// 获取的迟到 Release 与重连后新纪元的 gen=0 碰撞，错误扣减新计数
+			g.tunnelGens[sKey]++
 		}
 	}
 	g.connMu.Unlock()

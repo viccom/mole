@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"time"
 )
 
 // NodeManager 节点管理器接口
@@ -30,6 +31,9 @@ type TunnelConfigManager interface {
 	ReplaceTunnels(ctx context.Context, nodeID string, tunnels []Tunnel) (TunnelChangeResult, error)
 	SyncFromClient(ctx context.Context, nodeID string, tunnels []Tunnel) error
 	LoadPersisted(ctx context.Context, nodeID string) ([]Tunnel, error)
+	// ActivateClientTunnels 仅激活客户端配置到运行态（不落库）：
+	// LoadPersisted 失败时注册流程的兜底，保证网关监听器不缺失
+	ActivateClientTunnels(ctx context.Context, nodeID string, tunnels []Tunnel) error
 	UpdateNodeRateLimit(ctx context.Context, nodeID string, rl *NodeRateLimit) error
 	BatchUpdateRateLimit(ctx context.Context, items []RateLimitItem) ([]TunnelChangeResult, error)
 }
@@ -118,6 +122,9 @@ type AccessTokenRepo interface {
 	ListByUser(userID string) ([]*AccessToken, error)
 	Update(token *AccessToken) error
 	Delete(id string) error
+	// TouchLastUsed 仅更新 last_used_at：必须重读最新记录后合并写入，
+	// 禁止用调用方持有的旧快照整记录回写（会把并发禁用/轮换无声回滚）
+	TouchLastUsed(id string, ts time.Time) error
 }
 
 // NodeAccessAuthenticator 节点接入认证接口

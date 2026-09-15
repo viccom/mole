@@ -230,10 +230,64 @@ func (s *TunnelConfigService) applyTunnelChangeLocked(ctx context.Context, nodeI
 	if err := s.validateP2PRoomPairing(nodeID, next); err != nil {
 		return nil, nil, err
 	}
+	if err := s.validateCrossNodeTunnelNames(ctx, nodeID, next); err != nil {
+		return nil, nil, err
+	}
 	if err := s.persistUpdatedNode(ctx, nodeID, next); err != nil {
 		return nil, nil, err
 	}
 	return base, next, nil
+}
+
+// validateCrossNodeTunnelNames 拒绝跨节点的同名启用 TCP/UDP 隧道。
+// 监听器注册表与路由索引以隧道名为全局键：不同节点的同名 TCP/UDP 隧道
+// 会互相杀掉对方监听器、并把外部流量路由到错误节点（跨租户串台）。
+// 在写路径统一入口拒绝，把「静默互杀」变成显式配置错误。
+func (s *TunnelConfigService) validateCrossNodeTunnelNames(ctx context.Context, nodeID string, next []core.Tunnel) error {
+	isRoutable := func(t core.Tunnel) bool {
+		return t.IsEnabled() && (t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP)
+	}
+	names := map[string]bool{}
+	for _, t := range next {
+		if isRoutable(t) {
+			names[t.Name] = true
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	conflict := func(other string, tunnels []core.Tunnel) error {
+		for _, t := range tunnels {
+			if names[t.Name] && isRoutable(t) {
+				return fmt.Errorf("%w: TCP/UDP tunnel name %q already exists on node %s (gateway routing is keyed by tunnel name; cross-node duplicate names are not supported)",
+					core.ErrTunnelInvalid, t.Name, other)
+			}
+		}
+		return nil
+	}
+	if s.nodeRepo != nil {
+		all, err := s.nodeRepo.GetAll()
+		if err != nil {
+			return fmt.Errorf("scan persisted nodes for tunnel name conflicts: %w", err)
+		}
+		for _, n := range all {
+			if n == nil || n.ID == nodeID {
+				continue
+			}
+			if err := conflict(n.ID, n.Tunnels); err != nil {
+				return err
+			}
+		}
+	}
+	for _, n := range s.nodeMgr.GetAll(ctx) {
+		if n == nil || n.ID == nodeID {
+			continue
+		}
+		if err := conflict(n.ID, n.Tunnels); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // preIssueP2PToken 预签发信令凭据：仅 p2p 且启用且已注入凭据服务时执行；
@@ -467,7 +521,9 @@ func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string,
 	if err := validateTunnels(tunnels); err != nil {
 		return err
 	}
-	oldTunnels, next, err := s.applyTunnelChange(ctx, nodeID, func([]core.Tunnel) []core.Tunnel { return tunnels })
+	oldTunnels, next, err := s.applyTunnelChange(ctx, nodeID, func(base []core.Tunnel) []core.Tunnel {
+		return s.prepareClientSnapshot(base, tunnels)
+	})
 	if err != nil {
 		return err
 	}
@@ -480,6 +536,84 @@ func (s *TunnelConfigService) SyncFromClient(ctx context.Context, nodeID string,
 	return nil
 }
 
+// prepareClientSnapshot 把客户端上报的隧道列表整形为可落库形态：
+//  1. rate_limit 是服务端管理的真相字段，客户端快照缺失时按同名隧道从持久层继承
+//     （旧版客户端根本不回传该字段，不合并则每次同步都会清空服务端限速配置；
+//     显式清除走 REST 入口）
+//  2. webssh 凭证落库必须保持密文：客户端持有的是服务端下发前解密的明文，
+//     全量回传若原样落库，静态加密会被无声击穿（明文密码/私钥进 SQLite）
+func (s *TunnelConfigService) prepareClientSnapshot(base, incoming []core.Tunnel) []core.Tunnel {
+	baseRL := make(map[string]*core.TunnelRateLimit, len(base))
+	for i := range base {
+		if base[i].RateLimit != nil {
+			baseRL[base[i].Name] = base[i].RateLimit
+		}
+	}
+	next := make([]core.Tunnel, len(incoming))
+	for i, t := range incoming {
+		if t.RateLimit == nil {
+			t.RateLimit = baseRL[t.Name]
+		}
+		if t.Type == core.TunnelTypeWebSSH && len(t.Para) > 0 && s.encryptor != nil {
+			t.Para = encryptWebSSHParaForStorage(t.Para, s.encryptor)
+		}
+		next[i] = t
+	}
+	return next
+}
+
+// encryptWebSSHParaForStorage 落库前对 webssh Para 的敏感字段做加密
+// （与 REST 入口 encryptWebSSHPara 语义一致，已加密字段原样保留）
+func encryptWebSSHParaForStorage(para json.RawMessage, enc *crypto.SecretEncryptor) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(para, &m); err != nil {
+		return para // 非 JSON 原样保留，交给校验/下发路径报错
+	}
+	if v, ok := m["password"].(string); ok && v != "" && !crypto.IsEncrypted(v) {
+		m["password"] = enc.Encrypt(v)
+	}
+	if v, ok := m["priv_key"].(string); ok && v != "" && !crypto.IsEncrypted(v) {
+		m["priv_key"] = enc.Encrypt(v)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return para
+	}
+	return out
+}
+
+// ActivateClientTunnels 仅把客户端上报配置激活到运行态（内存 tunnels +
+// 网关监听器/路由索引），不落库。用于注册时 LoadPersisted 失败的兜底：
+// 监听器立即可用，持久层保持不动，下次重连重试持久化加载。
+func (s *TunnelConfigService) ActivateClientTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
+	return s.applyRuntimeTunnels(ctx, nodeID, tunnels)
+}
+
+// IssueP2PTokenForTunnel 在持久层基线上校验 p2p 隧道存在后原子签发信令凭据。
+// 校验与签发同一临界区（pairingMu）：旧实现「检查在锁外、签发在锁内」，
+// 与 RemoveTunnel 的删除-吊销交错时可为已删除隧道产出孤儿凭据（R5 残余窗口）。
+func (s *TunnelConfigService) IssueP2PTokenForTunnel(nodeID, tunnelName string) (string, string, int64, error) {
+	s.pairingMu.Lock()
+	defer s.pairingMu.Unlock()
+
+	tunnels, err := s.persistedTunnels(context.Background(), nodeID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	found := false
+	for _, t := range tunnels {
+		// 禁用隧道不签发：「禁用即切断信令」
+		if t.Name == tunnelName && t.Type == core.TunnelTypeP2P && t.IsEnabled() {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", "", 0, core.ErrTunnelNotFound
+	}
+	return s.p2pTokens.IssueP2PSignalToken(nodeID, tunnelName)
+}
+
 // LoadPersisted 节点注册后加载持久化隧道。
 // 仅当客户端成功接受下发配置后，才切换服务端运行态到持久化配置。
 func (s *TunnelConfigService) LoadPersisted(ctx context.Context, nodeID string) ([]core.Tunnel, error) {
@@ -487,7 +621,15 @@ func (s *TunnelConfigService) LoadPersisted(ctx context.Context, nodeID string) 
 		return nil, nil
 	}
 	persisted, err := s.nodeRepo.GetByID(nodeID)
-	if err != nil || persisted == nil {
+	if err != nil {
+		if errors.Is(err, core.ErrNodeNotFound) {
+			return nil, nil // 从未落库：合法「空」，注册流程走 SyncFromClient
+		}
+		// 真 DB 错误必须上抛：吞掉会让注册路径以客户端列表整表覆盖持久层，
+		// 离线期间管理端新增的隧道被永久清除（R3 同类）
+		return nil, fmt.Errorf("load persisted node %s: %w", nodeID, err)
+	}
+	if persisted == nil {
 		return nil, nil
 	}
 	// Restore node-level rate limit from persisted config
@@ -613,7 +755,7 @@ func (s *TunnelConfigService) persistUpdatedNode(ctx context.Context, nodeID str
 		return core.ErrNodeNotFound
 	}
 
-	persisted := *node
+	persisted := persistableNode(node)
 	persisted.Tunnels = append([]core.Tunnel(nil), tunnels...)
 
 	existing, err := s.nodeRepo.GetByID(nodeID)
@@ -737,6 +879,13 @@ func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID st
 		if rbErr := s.applyRuntimeTunnels(ctx, fromNodeID, original); rbErr != nil {
 			slog.Error("MoveTunnel: rollback runtime failed", "nodeId", fromNodeID, "error", rbErr)
 		}
+		// 回滚必须回滚到客户端：源客户端已接受「移除」的 push，本地已删掉该隧道；
+		// 不回推则服务端路由仍指向它而客户端无隧道可转发，直到重连才自愈
+		if n, ok := s.nodeMgr.Get(ctx, fromNodeID); ok && n.Status == core.NodeStatusOnline && s.pusher != nil {
+			if pErr := s.pushToClient(ctx, fromNodeID, original); pErr != nil {
+				slog.Warn("MoveTunnel: rollback push to old node failed", "nodeId", fromNodeID, "error", pErr)
+			}
+		}
 		return
 	}
 	// 离线节点：直接回写持久层（复审 R9：此前 !oldOk 直接 return 会让
@@ -755,15 +904,31 @@ func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID st
 	}
 }
 
+// persistableNode 返回面向持久化的节点副本：仅运行态的字段清零，
+// 避免 sysinfo/客户端状态列表随每次落库写进 blob 持续膨胀、重启后
+// 离线节点带着陈旧运行态"复活"
+func persistableNode(n *core.Node) core.Node {
+	cp := *n
+	cp.SysInfo = nil
+	cp.ClientStatuses = nil
+	cp.RTT = 0
+	return cp
+}
+
 // UpdateNodeRateLimit 更新节点级限速配置
 func (s *TunnelConfigService) UpdateNodeRateLimit(ctx context.Context, nodeID string, rl *core.NodeRateLimit) error {
 	if err := validateNodeRateLimit(rl); err != nil {
 		return err
 	}
-	_, ok := s.nodeMgr.Get(ctx, nodeID)
-	if !ok {
+	if _, ok := s.nodeMgr.Get(ctx, nodeID); !ok {
 		return core.ErrNodeNotFound
 	}
+	// 持久化必须与隧道变更串行（pairingMu）且以持久层记录为基线：
+	// 直接把内存节点整体写回 repo，会把隧道列表回滚成陈旧内存快照
+	//（推送失败历史造成内存缺隧道），静默删除已落库隧道
+	s.pairingMu.Lock()
+	defer s.pairingMu.Unlock()
+
 	if err := s.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
 		n.RateLimit = rl
 	}); err != nil {
@@ -775,8 +940,23 @@ func (s *TunnelConfigService) UpdateNodeRateLimit(ctx context.Context, nodeID st
 		s.limiter.UpdateNodeConfig(nodeID, ratelimit.NodeRateConfig{})
 	}
 	if s.nodeRepo != nil {
-		if n, ok := s.nodeMgr.Get(ctx, nodeID); ok {
-			if err := s.nodeRepo.Update(n); err != nil {
+		persisted, err := s.nodeRepo.GetByID(nodeID)
+		switch {
+		case errors.Is(err, core.ErrNodeNotFound):
+			// 尚无持久记录（如在线节点从未落库）：以运行态骨架创建，隧道列表为空
+			if n, ok := s.nodeMgr.Get(ctx, nodeID); ok {
+				cp := persistableNode(n)
+				cp.Tunnels = nil
+				cp.RateLimit = rl
+				if err := s.nodeRepo.Create(&cp); err != nil {
+					slog.Warn("Failed to persist node rate limit (create)", "nodeId", nodeID, "error", err)
+				}
+			}
+		case err != nil:
+			slog.Warn("Failed to read persisted node for rate limit update", "nodeId", nodeID, "error", err)
+		case persisted != nil:
+			persisted.RateLimit = rl
+			if err := s.nodeRepo.Update(persisted); err != nil {
 				slog.Warn("Failed to persist node rate limit", "nodeId", nodeID, "error", err)
 			}
 		}
@@ -819,18 +999,36 @@ func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []
 	}
 	results := make([]core.TunnelChangeResult, len(items))
 	for nodeID, indices := range nodeItems {
-		node, _ := s.nodeMgr.Get(ctx, nodeID)
+		// 构建基线必须取持久层：以内存快照整表回写会把持久层里
+		// 内存缺失的隧道（推送失败历史）静默抹掉
+		base, err := s.persistedTunnels(ctx, nodeID)
+		if err != nil {
+			return nil, fmt.Errorf("node %s: %w", nodeID, err)
+		}
 		// Build rate limit overrides map for this node
 		overrides := make(map[string]*core.TunnelRateLimit, len(indices))
 		for _, idx := range indices {
 			overrides[items[idx].TunnelName] = items[idx].RateLimit
 		}
-		updated := make([]core.Tunnel, 0, len(node.Tunnels))
-		for _, t := range node.Tunnels {
+		updated := make([]core.Tunnel, 0, len(base))
+		seen := make(map[string]bool, len(base))
+		for _, t := range base {
 			if rl, ok := overrides[t.Name]; ok {
 				t.RateLimit = rl
 			}
+			seen[t.Name] = true
 			updated = append(updated, t)
+		}
+		// 持久层缺失但内存有、且本次要改限速的隧道：补入（避免改不到）
+		if node, ok := s.nodeMgr.Get(ctx, nodeID); ok {
+			for _, t := range node.Tunnels {
+				if !seen[t.Name] {
+					if rl, ok := overrides[t.Name]; ok {
+						t.RateLimit = rl
+					}
+					updated = append(updated, t)
+				}
+			}
 		}
 		if _, err := s.ReplaceTunnels(ctx, nodeID, updated); err != nil {
 			return nil, fmt.Errorf("node %s: %w", nodeID, err)

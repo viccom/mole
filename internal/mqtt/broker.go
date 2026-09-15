@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
@@ -20,10 +21,11 @@ type EmbeddedBroker struct {
 	server    *mqtt.Server
 	tcpAddr   string
 	wsAddr    string
-	authSvc   *auth.AuthService
-	rbac      *auth.RBACEngine
-	p2pTokens auth.P2PSignalTokenVerifier
-	stopOnce  sync.Once
+	authSvc    *auth.AuthService
+	rbac       *auth.RBACEngine
+	p2pTokens  auth.P2PSignalTokenVerifier
+	topicAuthz func(userID, nodeID string) bool
+	stopOnce   sync.Once
 }
 
 // NewEmbeddedBroker creates an embedded MQTT Broker
@@ -46,7 +48,7 @@ func NewEmbeddedBroker(tcpAddr, wsAddr string, authSvc *auth.AuthService, rbac *
 func (b *EmbeddedBroker) Start(ctx context.Context) error {
 	// Add Auth Hook
 	b.server.AddHook(&authHook{authSvc: b.authSvc, p2pTokens: b.p2pTokens}, nil)
-	b.server.AddHook(&aclHook{rbac: b.rbac, p2pTokens: b.p2pTokens}, nil)
+	b.server.AddHook(&aclHook{rbac: b.rbac, p2pTokens: b.p2pTokens, nodeAuthz: b.topicAuthz}, nil)
 
 	// TCP listener
 	if b.tcpAddr != "" {
@@ -163,11 +165,35 @@ func (b *EmbeddedBroker) SetP2PSignalTokenVerifier(v auth.P2PSignalTokenVerifier
 	b.p2pTokens = v
 }
 
+// SetTopicAuthorizer 注入节点级 topic 归属仲裁（Start 前调用）：
+// userID 是否可访问归属 nodeID 的 topic（/mole/<nodeId>/...）。
+// RBAC 只到 ("mqtt", action) 粒度，不看 topic；不注入 = 不做归属隔离。
+func (b *EmbeddedBroker) SetTopicAuthorizer(fn func(userID, nodeID string) bool) {
+	b.topicAuthz = fn
+}
+
+// mqttAuthFailureThreshold/Window/BlockDur 未认证 CONNECT 的失败节流：
+// 已知用户名 + 错误密码的每次 CONNECT 都触发一次 bcrypt（cost≥10，~百 ms 级 CPU），
+// 无节流时公网攻击者可用极低成本打满服务端 CPU
+const (
+	mqttAuthFailureThreshold = 5
+	mqttAuthFailureWindow    = time.Minute
+	mqttAuthFailureBlock     = 5 * time.Minute
+)
+
+type authFailEntry struct {
+	count    int
+	firstAt  time.Time
+	blockedUntil time.Time
+}
+
 // authHook mochi-mqtt authentication Hook
 type authHook struct {
 	mqtt.HookBase
 	authSvc   *auth.AuthService
 	p2pTokens auth.P2PSignalTokenVerifier
+	failMu    sync.Mutex
+	failures  map[string]*authFailEntry // username → 失败计数（按用户名节流：攻击者固定用已知用户名；合法用户在受攻击期间 MQTT 暂不可用属可接受代价，Web 登录不受影响）
 }
 
 func (h *authHook) ID() string {
@@ -200,8 +226,14 @@ func (h *authHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 		return false
 	}
 
+	if h.authThrottled(username) {
+		slog.Warn("MQTT auth throttled (too many failures)", "clientId", cl.ID, "username", username)
+		return false
+	}
+
 	userID, ok := h.authSvc.VerifyMQTTCredentials(username, password)
 	if ok {
+		h.recordAuthResult(username, true)
 		// 将 userID 存入 client.Properties.Username 供 ACL 使用
 		cl.Properties.Username = []byte(userID)
 		// 保留原始 username 到 Props.UserProperties 供管理接口展示
@@ -210,9 +242,45 @@ func (h *authHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 		})
 		slog.Info("MQTT client authenticated", "clientId", cl.ID, "username", username, "userID", userID)
 	} else {
+		h.recordAuthResult(username, false)
 		slog.Warn("MQTT auth failed", "clientId", cl.ID, "username", username)
 	}
 	return ok
+}
+
+// authThrottled 该用户名近期失败过多，处于封禁窗口
+func (h *authHook) authThrottled(username string) bool {
+	h.failMu.Lock()
+	defer h.failMu.Unlock()
+	e, ok := h.failures[username]
+	if !ok {
+		return false
+	}
+	return time.Now().Before(e.blockedUntil)
+}
+
+// recordAuthResult 记录认证成败，滑动窗口内失败达到阈值则进入封禁
+func (h *authHook) recordAuthResult(username string, success bool) {
+	h.failMu.Lock()
+	defer h.failMu.Unlock()
+	if h.failures == nil {
+		h.failures = make(map[string]*authFailEntry)
+	}
+	now := time.Now()
+	if success {
+		delete(h.failures, username)
+		return
+	}
+	e, ok := h.failures[username]
+	if !ok || now.Sub(e.firstAt) > mqttAuthFailureWindow {
+		h.failures[username] = &authFailEntry{count: 1, firstAt: now}
+		return
+	}
+	e.count++
+	if e.count >= mqttAuthFailureThreshold {
+		e.blockedUntil = now.Add(mqttAuthFailureBlock)
+		slog.Warn("MQTT auth failures exceeded threshold, blocking username", "username", username, "until", e.blockedUntil)
+	}
 }
 
 // aclHook ACL Hook with RBAC integration
@@ -220,6 +288,23 @@ type aclHook struct {
 	mqtt.HookBase
 	rbac      *auth.RBACEngine
 	p2pTokens auth.P2PSignalTokenVerifier
+	nodeAuthz func(userID, nodeID string) bool
+}
+
+// nodeTopicID 从 topic 提取节点级作用域 ID：/mole/<nodeId>/... → nodeId
+func nodeTopicID(topic string) (string, bool) {
+	const prefix = "/mole/"
+	if !strings.HasPrefix(topic, prefix) {
+		return "", false
+	}
+	rest := topic[len(prefix):]
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		rest = rest[:idx]
+	}
+	if rest == "" {
+		return "", false
+	}
+	return rest, true
 }
 
 func (h *aclHook) ID() string {
@@ -259,6 +344,26 @@ func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 
 	if h.rbac == nil {
 		return true // fallback: allow if no RBAC engine
+	}
+
+	// 管理员（*/* 权限）不受 topic 级约束
+	if admin, err := h.rbac.CheckPermission(userID, "*", "*"); err == nil && admin {
+		return true
+	}
+
+	// 通配符拒绝：#/+ 全域订阅可跨租户窃听所有节点的串口流量与 p2p 信令
+	// （p2p 哨兵分支早有同样防御，普通用户分支此前完全未设防）
+	if strings.ContainsAny(topic, "+#") {
+		slog.Warn("MQTT ACL denied (wildcard)", "clientId", cl.ID, "userID", userID, "topic", topic)
+		return false
+	}
+
+	// 节点归属：/mole/<nodeId>/... 只允许节点归属者（或未注入仲裁器时维持旧行为）
+	if nodeID, ok := nodeTopicID(topic); ok && h.nodeAuthz != nil {
+		if !h.nodeAuthz(userID, nodeID) {
+			slog.Warn("MQTT ACL denied (node ownership)", "clientId", cl.ID, "userID", userID, "topic", topic)
+			return false
+		}
 	}
 
 	allowed, err := h.rbac.CheckPermission(userID, "mqtt", action)

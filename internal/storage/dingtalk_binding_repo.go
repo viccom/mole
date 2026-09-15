@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 
@@ -35,7 +36,10 @@ func (r *dingtalkBindingRepo) Create(binding *core.DingTalkBinding) error {
 func (r *dingtalkBindingRepo) GetByUnionID(unionID string) (*core.DingTalkBinding, error) {
 	val, err := r.db.Hash().Get("dingtalk_bindings", unionID)
 	if err != nil {
-		return nil, core.ErrNotFound
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrNotFound
+		}
+		return nil, fmt.Errorf("read dingtalk binding %s: %w", unionID, err)
 	}
 	if val.String() == "" {
 		return nil, core.ErrNotFound

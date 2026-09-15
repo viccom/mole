@@ -99,14 +99,24 @@ func (h *DingTalkHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	binding, err := h.bindingRepo.GetByUnionID(userInfo.UnionID)
 	if err == nil && binding != nil {
+		// 已绑定分支必须校验用户状态（与密码登录/Bind 对称）：禁用账号凭残留
+		// 绑定仍可换取 JWT；用户已删除则绑定残留必须拒绝
+		userObj, uerr := h.userRepo.GetByID(binding.UserID)
+		if uerr != nil {
+			slog.Warn("DingTalk SSO login rejected: bound user no longer exists", "union_id", userInfo.UnionID, "userId", binding.UserID)
+			ResponseError(w, http.StatusUnauthorized, 401, "Bound account no longer exists")
+			return
+		}
+		if userObj.Status == core.UserStatusDisabled {
+			slog.Warn("DingTalk SSO login rejected: user disabled", "union_id", userInfo.UnionID, "userId", binding.UserID)
+			ResponseError(w, http.StatusUnauthorized, 401, "Account is disabled")
+			return
+		}
+
 		claims := &core.Claims{
 			UserID:   binding.UserID,
-			Username: binding.UserID,
+			Username: userObj.Username,
 			Roles:    h.getRoleNames(binding.UserID),
-		}
-		userObj, uerr := h.userRepo.GetByID(binding.UserID)
-		if uerr == nil {
-			claims.Username = userObj.Username
 		}
 
 		token, exp, err := h.jwtMgr.GenerateToken(claims)
@@ -193,6 +203,13 @@ func (h *DingTalkHandler) Bind(w http.ResponseWriter, r *http.Request) {
 	existing, _ := h.bindingRepo.GetByUserID(user.ID)
 	if existing != nil {
 		ResponseError(w, http.StatusConflict, 409, "Account already bound to another DingTalk identity")
+		return
+	}
+
+	// 身份侧唯一性检查（与 feishu Bind 对称）：repo 是双索引 upsert，
+	// 不查 union_id 侧则同一钉钉身份可被先后绑到两个账号
+	if identityBound, _ := h.bindingRepo.GetByUnionID(bindData.UnionID); identityBound != nil {
+		ResponseError(w, http.StatusConflict, 409, "This DingTalk identity is already bound to another account")
 		return
 	}
 

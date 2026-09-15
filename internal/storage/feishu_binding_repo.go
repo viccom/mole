@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 
@@ -35,7 +36,10 @@ func (r *feishuBindingRepo) Create(binding *core.FeishuBinding) error {
 func (r *feishuBindingRepo) GetByOpenID(openID string) (*core.FeishuBinding, error) {
 	val, err := r.db.Hash().Get("feishu_bindings", openID)
 	if err != nil {
-		return nil, core.ErrNotFound
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrNotFound
+		}
+		return nil, fmt.Errorf("read feishu binding %s: %w", openID, err)
 	}
 	if val.String() == "" {
 		return nil, core.ErrNotFound

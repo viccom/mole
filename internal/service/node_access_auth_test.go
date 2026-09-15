@@ -79,6 +79,16 @@ func (m *mockAccessTokenRepo) Delete(id string) error {
 	return nil
 }
 
+func (m *mockAccessTokenRepo) TouchLastUsed(id string, ts time.Time) error {
+	t, ok := m.tokens[id]
+	if !ok {
+		return core.ErrNotFound
+	}
+	t.LastUsedAt = &ts
+	m.updates = append(m.updates, t)
+	return nil
+}
+
 // mockRepoWithUpdateError wraps mockAccessTokenRepo but returns error on Update.
 type mockRepoWithUpdateError struct {
 	*mockAccessTokenRepo

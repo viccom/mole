@@ -46,6 +46,13 @@ func (m *mockAccessTokenRepo) GetByID(id string) (*core.AccessToken, error) {
 	return &c, nil
 }
 
+func (m *mockAccessTokenRepo) TouchLastUsed(id string, ts time.Time) error {
+	if t, ok := m.tokens[id]; ok {
+		t.LastUsedAt = &ts
+	}
+	return nil
+}
+
 func (m *mockAccessTokenRepo) GetByHash(hash string) (*core.AccessToken, error) {
 	id, ok := m.hashIdx[hash]
 	if !ok {

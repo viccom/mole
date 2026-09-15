@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -73,7 +74,7 @@ func (am *AuthMiddleware) RequirePermission(resource, action string) func(http.H
 func (am *AuthMiddleware) authenticate(r *http.Request) (*core.Claims, bool) {
 	// 1. AccessKey
 	if key := r.Header.Get("W-Access-Key"); key != "" {
-		if am.accessKey() != "" && key == am.accessKey() {
+		if ak := am.accessKey(); ak != "" && subtle.ConstantTimeCompare([]byte(key), []byte(ak)) == 1 {
 			return &core.Claims{UserID: "access_key", Username: "access_key"}, true
 		}
 	}

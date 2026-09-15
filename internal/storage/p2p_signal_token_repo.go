@@ -34,7 +34,12 @@ func p2pTokenOwnerKey(nodeID, tunnelName string) string {
 }
 
 func (r *p2pSignalTokenRepo) Upsert(tok *core.P2PSignalToken) error {
-	old, _ := r.GetByID(tok.TokenID) // nil = 新建
+	// 真 DB 错误必须区分于「不存在」：误判为新建会让 rollbackRecord 在后续
+	// 索引写失败时把现存记录整体删光
+	old, err := r.GetByID(tok.TokenID)
+	if err != nil && !errors.Is(err, core.ErrNotFound) {
+		return fmt.Errorf("read p2p signal token %s: %w", tok.TokenID, err)
+	}
 
 	data, err := json.Marshal(tok)
 	if err != nil {

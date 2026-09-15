@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"fmt"
+	"errors"
 	"encoding/json"
 
 	"github.com/nalgeon/redka"
@@ -29,7 +31,10 @@ func (r *roleRepo) Create(role *core.Role) error {
 func (r *roleRepo) GetByID(id string) (*core.Role, error) {
 	val, err := r.db.Hash().Get("roles", id)
 	if err != nil {
-		return nil, core.ErrRoleNotFound
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrRoleNotFound
+		}
+		return nil, fmt.Errorf("read role %s: %w", id, err)
 	}
 	var role core.Role
 	if err := json.Unmarshal([]byte(val.String()), &role); err != nil {

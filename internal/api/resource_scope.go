@@ -11,6 +11,11 @@ func IsAdmin(claims *core.Claims) bool {
 	if claims == nil {
 		return false
 	}
+	// AccessKey 是中间件明文声明的 RBAC 全量旁路身份；资源归属层必须认识它，
+	// 否则该身份过了 RBAC 却被归属过滤挡成"什么都看不见、什么都改不了"
+	if claims.UserID == "access_key" {
+		return true
+	}
 	for _, role := range claims.Roles {
 		if role == "admin" {
 			return true

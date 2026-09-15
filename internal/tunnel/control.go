@@ -287,6 +287,8 @@ func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connCh
 				return
 			default:
 				slog.Error("Accept connection failed", "transport", transportName, "error", err)
+				// EMFILE 等瞬时/持续性错误立即重试会紧转烧 CPU，退避一下
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 		}
@@ -337,11 +339,18 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	}
 	slog.Debug("Challenge sent", "remote", remoteAddr, "transport", transportName)
 
-	reader := bufio.NewReader(conn)
+	// 预认证读取必须有长度上限：ReadString 遇 ErrBufferFull 会无限扩容，
+	// 无 \n 的字节洪泛可在超时窗口内（10s）灌入 ~GB 级内存造成 OOM
+	limitedConn := &io.LimitedReader{R: conn, N: maxAuthLineBytes}
+	reader := bufio.NewReader(limitedConn)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	authLine, err := reader.ReadString('\n')
 	if err != nil {
-		slog.Warn("Node auth read failed", "remote", remoteAddr, "transport", transportName, "error", err)
+		if limitedConn.N <= 0 {
+			slog.Warn("Node auth line too large", "remote", remoteAddr, "transport", transportName, "limit", maxAuthLineBytes)
+		} else {
+			slog.Warn("Node auth read failed", "remote", remoteAddr, "transport", transportName, "error", err)
+		}
 		conn.Close()
 		return
 	}
@@ -428,11 +437,16 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 				// Guard: if another connection displaced us (same nodeID,
 				// different session), skip cleanup to avoid removing the
 				// newly registered node.
+				// 判定必须是「当前会话仍是我」才清理，其余一律让位：
+				//  - 节点已不在管理器：置换流程已 Remove，重复清理会误停新节点监听器
+				//  - GetSession 失败（Add→AddSession 窗口）：新连接正在注册途中
+				//  - 会话指针不同：新连接已接管
+				// 旧实现把「无会话」当未置换，TOCTOU 下会整体删除刚注册的新节点
 				displaced := false
-				if _, ok := cs.nodeMgr.Get(ctx, node.ID); ok {
-					if currentSess, err := cs.nodeMgr.GetSession(ctx, node.ID); err == nil && currentSess != session {
-						displaced = true
-					}
+				if _, ok := cs.nodeMgr.Get(ctx, node.ID); !ok {
+					displaced = true
+				} else if currentSess, err := cs.nodeMgr.GetSession(ctx, node.ID); err != nil || currentSess != session {
+					displaced = true
 				}
 
 				if displaced {
@@ -475,6 +489,9 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 
 // maxControlMsgSize 单条控制消息的大小上限，防止异常客户端耗尽服务端内存
 const maxControlMsgSize = 1 << 20 // 1MB
+
+// maxAuthLineBytes 预认证 auth 行的长度上限（token JSON 远小于此值）
+const maxAuthLineBytes = 64 << 10
 
 // readControlMsg 从流中读取一条完整的 JSON 控制消息。
 // 每条流仅承载一条消息；新版写侧以 '\n' 结尾（writeJSONLine），
@@ -598,6 +615,33 @@ func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCm
 		fail("name is required")
 		return
 	}
+	// 原子快路径：隧道存在性校验与签发同一临界区（pairingMu），
+	// 消除「检查在锁外、签发在锁内」与 RemoveTunnel 删除-吊销交错的竞态
+	// （R5 残余窗口：可为已删除隧道产出永不吊销的孤儿凭据）
+	if cs.nodeRepo != nil && cs.tunnelSvc != nil {
+		if issuer, ok := cs.tunnelSvc.(interface {
+			IssueP2PTokenForTunnel(nodeID, tunnelName string) (string, string, int64, error)
+		}); ok {
+			username, password, expiresAt, err := issuer.IssueP2PTokenForTunnel(node.ID, cmd.Name)
+			if err != nil {
+				if errors.Is(err, core.ErrTunnelNotFound) {
+					fail("p2p tunnel not found on node")
+				} else {
+					slog.Error("issue p2p signal token failed", "node", node.ID, "tunnel", cmd.Name, "error", err)
+					fail("temporary storage error, retry later")
+				}
+				return
+			}
+			if err := writeJSONLine(stream, p2pSignalTokenResp{
+				Cmd: "p2p_signal_token", OK: true,
+				Username: username, Password: password, ExpiresAt: expiresAt,
+			}); err != nil {
+				slog.Debug("write p2p_signal_token response failed", "error", err)
+			}
+			return
+		}
+	}
+
 	// 发现检查以持久层真相源为准：nodeMgr 内存可能包含注册竞态产物
 	// （handleRegister 先写内存、SyncFromClient 配对拒绝后仅记警告不回滚，
 	// 审查 #1），凭据签发不能认它。nodeRepo 为 nil 时回退内存（测试场景）。
@@ -677,6 +721,15 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		node.AccessTokenID = grant.AccessTokenID
 	}
 
+	// 恢复节点级限速配置：register 命令不携带该字段，内存态留 nil 的话，
+	// 之后任何整节点落库（ApplyTunnel/SyncFromClient 经 persistUpdatedNode）
+	// 都会把持久层已存的节点级 rate_limit 抹掉，重启后 LoadPersisted 也无从恢复
+	if cs.nodeRepo != nil {
+		if persisted, err := cs.nodeRepo.GetByID(cmd.NodeID); err == nil && persisted != nil && persisted.RateLimit != nil {
+			node.RateLimit = persisted.RateLimit
+		}
+	}
+
 	if err := cs.nodeMgr.Add(ctx, node); err != nil {
 		if err == core.ErrNodeExists {
 			// 同一节点重连：先探测旧 session 是否真活
@@ -727,7 +780,15 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 	if cs.tunnelSvc != nil {
 		loaded, err := cs.tunnelSvc.LoadPersisted(ctx, cmd.NodeID)
 		if err != nil {
-			slog.Warn("Failed to load persisted tunnels", "nodeId", cmd.NodeID, "error", err)
+			// 持久化加载失败不能只 Warn 后放弃：applyRuntimeTunnels 不会执行，
+			// TCP/UDP 监听器缺失直到下次自愈（表现为网关端口 connection refused）。
+			// 回退为「仅运行态激活客户端配置」：监听器立即可用，持久层保持不动，
+			// 下次重连重试持久化加载（不落库，避免覆盖管理端配置）。
+			slog.Warn("Failed to load persisted tunnels; activating client config for runtime only",
+				"nodeId", cmd.NodeID, "error", err)
+			if actErr := cs.tunnelSvc.ActivateClientTunnels(ctx, cmd.NodeID, cmd.Tunnels); actErr != nil {
+				slog.Warn("Failed to activate client tunnels as fallback", "nodeId", cmd.NodeID, "error", actErr)
+			}
 		} else if len(loaded) == 0 {
 			if err := cs.tunnelSvc.SyncFromClient(ctx, cmd.NodeID, cmd.Tunnels); err != nil {
 				slog.Warn("Failed to persist initial node tunnels", "nodeId", cmd.NodeID, "error", err)
@@ -820,9 +881,13 @@ func (cs *ControlServer) sendToNode(ctx context.Context, nodeID string, cmd Cont
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
+	// 写侧同样需要 deadline：对端冻结（SIGSTOP/零窗口）时无界写会挂住
+	// 调用方（REST 请求）直到 smux keepalive 判死（TCP 最长约 90s）
+	stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if _, err := stream.Write(append(data, '\n')); err != nil {
 		return nil, fmt.Errorf("send: %w", err)
 	}
+	stream.SetWriteDeadline(time.Time{})
 
 	stream.SetReadDeadline(time.Now().Add(timeout))
 	scanner := bufio.NewScanner(io.LimitReader(stream, 1<<20)) // 1MB max response
@@ -909,6 +974,7 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 				cs.persistNode(n)
 			}
 		}
+		slog.Warn("tunnel_update received but TunnelConfigManager not configured; change only persisted from registration snapshot", "nodeId", nodeID)
 	}
 
 	writeControlResp(stream, "ok", "tunnels updated")
@@ -919,13 +985,19 @@ func (cs *ControlServer) persistNode(n *core.Node) {
 	if cs.nodeRepo == nil || n == nil {
 		return
 	}
+	// 运行态字段不属于持久化契约：清除后再落库，避免 sysinfo/状态列表随每次
+	// 持久化写入 blob 持续膨胀、重启后离线节点带陈旧运行态"复活"
+	cp := *n
+	cp.SysInfo = nil
+	cp.ClientStatuses = nil
+	cp.RTT = 0
 	// Create or Update：先尝试 GetByID 判断是否已存在
 	if existing, err := cs.nodeRepo.GetByID(n.ID); err != nil || existing == nil {
-		if err := cs.nodeRepo.Create(n); err != nil {
+		if err := cs.nodeRepo.Create(&cp); err != nil {
 			slog.Debug("Failed to persist node (create)", "nodeId", n.ID, "error", err)
 		}
 	} else {
-		if err := cs.nodeRepo.Update(n); err != nil {
+		if err := cs.nodeRepo.Update(&cp); err != nil {
 			slog.Debug("Failed to persist node (update)", "nodeId", n.ID, "error", err)
 		}
 	}
@@ -952,9 +1024,11 @@ func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tu
 	if err != nil {
 		return fmt.Errorf("marshal tunnel_push: %w", err)
 	}
+	stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if _, err := stream.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("send tunnel_push: %w", err)
 	}
+	stream.SetWriteDeadline(time.Time{})
 
 	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
 	raw, err := readControlMsg(stream, maxControlMsgSize)

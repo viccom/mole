@@ -15,13 +15,14 @@ const udpSessionTimeout = 60 * time.Second
 
 // udpSession tracks a UDP source address session
 type udpSession struct {
-	srcAddr  *net.UDPAddr
-	stream   net.Conn
-	lastSeen time.Time
-	cancel   context.CancelFunc
-	sKey     string // stats composite key (nodeID/tunnelName)
-	nodeID   string // nodeID for connection limiter release
-	gen      uint64 // generation token for ReleaseConn validation
+	srcAddr   *net.UDPAddr
+	stream    net.Conn
+	lastSeen  time.Time
+	cancel    context.CancelFunc
+	sKey      string // stats composite key (nodeID/tunnelName)
+	nodeID    string // nodeID for connection limiter release
+	gen       uint64 // generation token for ReleaseConn validation
+	destroyed bool   // 幂等销毁标记（mu 保护）：流死亡/过期/隧道停止只回收一次
 }
 
 // StartUDP 启动 UDP 隧道监听（异步，与 StartTCP 行为一致）
@@ -55,6 +56,25 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 		sessions := make(map[string]*udpSession)
 		var mu sync.Mutex
 
+		// destroySession 销毁单个 UDP 会话（幂等）：节点侧流死亡也必须触发
+		// 回收，否则死会话以黑洞状态占用连接配额直到过期清理
+		destroySession := func(key string, s *udpSession) {
+			mu.Lock()
+			if s.destroyed {
+				mu.Unlock()
+				return
+			}
+			s.destroyed = true
+			if cur, ok := sessions[key]; ok && cur == s {
+				delete(sessions, key)
+			}
+			mu.Unlock()
+			s.cancel()
+			s.stream.Close()
+			tg.stats.ConnClosed(s.sKey)
+			tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
+		}
+
 		// 会话清理协程
 		cleanupDone := make(chan struct{})
 		go func() {
@@ -70,12 +90,10 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					now := time.Now()
 					for key, s := range sessions {
 						if now.Sub(s.lastSeen) > udpSessionTimeout {
-							s.cancel()
-							s.stream.Close()
-							tg.stats.ConnClosed(s.sKey)
-						tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
-							delete(sessions, key)
+							mu.Unlock()
+							destroySession(key, s)
 							slog.Debug("UDP session expired", "tunnel", tunnel.Name, "src", key)
+							mu.Lock()
 						}
 					}
 					mu.Unlock()
@@ -190,6 +208,8 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 							if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 								continue
 							}
+							// 节点侧流死亡：销毁会话回收配额，否则黑洞到过期清理
+							destroySession(key, sess)
 							return
 						}
 						if bwLimiter := tg.limiter.BWLimiterFor(newSKey); bwLimiter != nil {
@@ -225,6 +245,10 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			if fwdStream != nil {
 				if _, err := fwdStream.Write(buf[:n]); err != nil {
 					slog.Debug("UDP write to stream failed", "tunnel", tunnel.Name, "error", err)
+					// 流写死（节点侧异常）：销毁会话回收配额，后续包走新建会话路径
+					if sess != nil {
+						destroySession(key, sess)
+					}
 					continue
 				}
 			}
@@ -234,10 +258,14 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 		// 清理所有会话
 		mu.Lock()
 		for _, s := range sessions {
+			if s.destroyed {
+				continue // 已被 destroySession 回收，避免二次释放
+			}
+			s.destroyed = true
 			s.cancel()
 			s.stream.Close()
 			tg.stats.ConnClosed(s.sKey)
-				tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
+			tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
 		}
 		sessions = make(map[string]*udpSession)
 		mu.Unlock()

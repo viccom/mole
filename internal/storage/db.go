@@ -156,6 +156,24 @@ func seedData() error {
 		db.Hash().Set("usernames", adminUser, adminUser)
 	}
 
+	// 修复首启部分写入：种子三步（记录/密码/角色）非原子，中途崩溃后
+	// Exists 只看 users 记录会跳过全部种子 → admin 有记录无密码，永久锁死
+	if exists {
+		adminUser, adminPass := config.AdminUser()
+		if _, err := db.Hash().Get("passwords", adminUser); err != nil {
+			if err := setPasswordHash(adminUser, adminPass); err != nil {
+				return err
+			}
+			slog.Warn("Repaired admin password hash after partial seed", "username", adminUser)
+		}
+		if _, err := db.Hash().Get("user_roles", adminUser); err != nil {
+			if _, err := db.Hash().Set("user_roles", adminUser, `["admin"]`); err != nil {
+				return err
+			}
+			slog.Warn("Repaired admin role after partial seed", "username", adminUser)
+		}
+	}
+
 	// 迁移：为已有用户建立 username → userID 索引（幂等，仅补缺失的）
 	items, err := db.Hash().Items("users")
 	if err != nil {

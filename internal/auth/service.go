@@ -98,6 +98,15 @@ func (s *AuthService) RefreshToken(tokenStr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// 必须复查用户当前状态：禁用/删除的用户若凭未过期 JWT 无限续期，
+	// "禁用账号" 形同虚设（服务端无会话吊销机制，refresh 是唯一收口点）
+	user, err := s.userRepo.GetByID(claims.UserID)
+	if err != nil {
+		return "", core.ErrUserNotFound
+	}
+	if user.Status == core.UserStatusDisabled {
+		return "", core.ErrUserDisabled
+	}
 	token, _, err := s.jwtMgr.GenerateToken(claims)
 	return token, err
 }

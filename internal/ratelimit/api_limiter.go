@@ -124,6 +124,13 @@ func (l *APILimiter) extractIdentity(r *http.Request) (userID, ip string) {
 				return uid, l.remoteIP(r)
 			}
 		}
+		// 认证中间件同样接受 ?token=（WebSocket 场景），限流判据必须一致，
+		// 否则同一用户可借 query 携带方式分流绕过 per-user 配额
+		if t := r.URL.Query().Get("token"); t != "" {
+			if uid, ok := l.jwt.VerifyToken(t); ok {
+				return uid, l.remoteIP(r)
+			}
+		}
 	}
 	return "", l.remoteIP(r)
 }

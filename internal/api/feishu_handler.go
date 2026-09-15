@@ -93,15 +93,24 @@ func (h *FeishuHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	binding, err := h.bindingRepo.GetByOpenID(userInfo.OpenID)
 	if err == nil && binding != nil {
-		claims := &core.Claims{
-			UserID:   binding.UserID,
-			Username: binding.UserID,
-			Roles:    h.getRoleNames(binding.UserID),
+		// 已绑定分支必须与密码登录/Bind 分支对称地校验用户状态：
+		// 被禁用账号凭残留绑定仍可换取 24h JWT；用户已被删除则绑定残留必须拒绝
+		userObj, uerr := h.userRepo.GetByID(binding.UserID)
+		if uerr != nil {
+			slog.Warn("Feishu SSO login rejected: bound user no longer exists", "open_id", userInfo.OpenID, "userId", binding.UserID)
+			ResponseError(w, http.StatusUnauthorized, 401, "Bound account no longer exists")
+			return
+		}
+		if userObj.Status == core.UserStatusDisabled {
+			slog.Warn("Feishu SSO login rejected: user disabled", "open_id", userInfo.OpenID, "userId", binding.UserID)
+			ResponseError(w, http.StatusUnauthorized, 401, "Account is disabled")
+			return
 		}
 
-		userObj, uerr := h.userRepo.GetByID(binding.UserID)
-		if uerr == nil {
-			claims.Username = userObj.Username
+		claims := &core.Claims{
+			UserID:   binding.UserID,
+			Username: userObj.Username,
+			Roles:    h.getRoleNames(binding.UserID),
 		}
 
 		token, exp, err := h.jwtMgr.GenerateToken(claims)
@@ -121,12 +130,13 @@ func (h *FeishuHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bindToken, err := h.generateBindToken(userInfo)
-	slog.Info("Feishu bind token generated", "token_prefix", bindToken[:8], "open_id", userInfo.OpenID)
 	if err != nil {
+		// err 检查必须在切片前：DB 写失败返回空串，bindToken[:8] 直接 panic
 		slog.Error("Failed to generate bind token", "error", err)
 		ResponseError(w, http.StatusInternalServerError, 500, "Internal error")
 		return
 	}
+	slog.Info("Feishu bind token generated", "token_prefix", bindToken[:8], "open_id", userInfo.OpenID)
 
 	ResponseOK(w, feishuCallbackResponse{
 		NeedBind:    true,
@@ -188,6 +198,13 @@ func (h *FeishuHandler) Bind(w http.ResponseWriter, r *http.Request) {
 	existing, _ := h.bindingRepo.GetByUserID(user.ID)
 	if existing != nil {
 		ResponseError(w, http.StatusConflict, 409, "Account already bound to another Feishu identity")
+		return
+	}
+
+	// 身份侧唯一性检查：绑定 repo 是双索引 upsert，不查 open_id 侧则同一飞书
+	// 身份可被先后绑到两个账号（后者覆盖前者，违反一 open_id 一账户约束）
+	if identityBound, _ := h.bindingRepo.GetByOpenID(bindData.OpenID); identityBound != nil {
+		ResponseError(w, http.StatusConflict, 409, "This Feishu identity is already bound to another account")
 		return
 	}
 

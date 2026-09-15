@@ -1,11 +1,13 @@
 package storage
 
 import (
+	"errors"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/nalgeon/redka"
@@ -14,7 +16,22 @@ import (
 )
 
 type accessTokenRepo struct {
-	db *redka.DB
+	db  *redka.DB
+	mu  sync.Mutex // 串行化整记录读改写：并发 Update/TouchLastUsed 交错会复活已禁用/已轮换的 token
+}
+
+func (r *accessTokenRepo) TouchLastUsed(id string, ts time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 重读最新记录后只改 last_used_at：绝不能用调用方旧快照整记录回写，
+	// 否则与并发禁用/轮换交错时会把 Status/TokenHash 回滚到旧值（吊销旁路）
+	fresh, err := r.GetByID(id)
+	if err != nil {
+		return err
+	}
+	fresh.LastUsedAt = &ts
+	return r.updateLocked(fresh)
 }
 
 func (r *accessTokenRepo) saveTokenRecord(token *core.AccessToken) error {
@@ -34,6 +51,8 @@ func NewAccessTokenRepo(db *redka.DB) core.AccessTokenRepo {
 }
 
 func (r *accessTokenRepo) Create(token *core.AccessToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := r.saveTokenRecord(token); err != nil {
 		return err
 	}
@@ -53,7 +72,10 @@ func (r *accessTokenRepo) Create(token *core.AccessToken) error {
 func (r *accessTokenRepo) GetByID(id string) (*core.AccessToken, error) {
 	val, err := r.db.Hash().Get("access_tokens", id)
 	if err != nil {
-		return nil, core.ErrNotFound
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrNotFound
+		}
+		return nil, fmt.Errorf("read access token %s: %w", id, err)
 	}
 	if val.String() == "" {
 		return nil, core.ErrNotFound
@@ -68,7 +90,10 @@ func (r *accessTokenRepo) GetByID(id string) (*core.AccessToken, error) {
 func (r *accessTokenRepo) GetByHash(hash string) (*core.AccessToken, error) {
 	tokenIDVal, err := r.db.Hash().Get("access_token_hash_index", hash)
 	if err != nil {
-		return nil, core.ErrNotFound
+		if errors.Is(err, redka.ErrNotFound) {
+			return nil, core.ErrNotFound
+		}
+		return nil, fmt.Errorf("read access token hash index: %w", err)
 	}
 	tokenID := tokenIDVal.String()
 	if tokenID == "" {
@@ -96,6 +121,13 @@ func (r *accessTokenRepo) ListByUser(userID string) ([]*core.AccessToken, error)
 }
 
 func (r *accessTokenRepo) Update(token *core.AccessToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.updateLocked(token)
+}
+
+// updateLocked 要求已持 r.mu：Update 与 TouchLastUsed 的整记录读改写必须互斥
+func (r *accessTokenRepo) updateLocked(token *core.AccessToken) error {
 	oldToken, err := r.GetByID(token.ID)
 	if err != nil {
 		return err
@@ -139,6 +171,8 @@ func (r *accessTokenRepo) Update(token *core.AccessToken) error {
 }
 
 func (r *accessTokenRepo) Delete(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	// 先获取 token 以便清理 hash 索引
 	token, err := r.GetByID(id)
 	if err == nil && token.TokenHash != "" {

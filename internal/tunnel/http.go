@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"moleAgent_Serv/internal/core"
 )
@@ -90,7 +91,11 @@ func (tg *TunnelGateway) findNodeTunnel(ctx context.Context, nodeID, mappingName
 		return nil, ""
 	}
 	for _, t := range node.Tunnels {
-		if t.Name == mappingName && t.IsEnabled() {
+		// 仅匹配 HTTP 类型：不设类型限制时，同名 TCP/UDP/webssh 隧道会把
+		// 裸 HTTP 请求写进非 HTTP 流，客户端解析失败后 fallback 到随机
+		// HTTP 隧道后端（信息泄露面）。与域名索引/兜底匹配的类型约束对齐
+		if t.Name == mappingName && t.IsEnabled() &&
+			(t.Type == core.TunnelTypeHTTP || t.Type == core.TunnelTypeHTTPS) {
 			return node, t.Name
 		}
 	}
@@ -262,6 +267,10 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// 上游无响应不能无限阻塞：限时读响应头；body 阶段观察客户端断开
+	//（r.Context 取消时以过期 deadline 解除读阻塞）。裸 smux 流读无
+	// deadline 时，挂死后端会让 goroutine/limiter 配额滞留到节点断开
+	stream.SetReadDeadline(time.Now().Add(60 * time.Second))
 	br := bufio.NewReader(trackedStream)
 	resp, err := http.ReadResponse(br, r)
 	if err != nil {
@@ -269,7 +278,18 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "Bad gateway", http.StatusBadGateway)
 		return
 	}
+	stream.SetReadDeadline(time.Time{})
 	defer resp.Body.Close()
+
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-r.Context().Done():
+			trackedStream.SetReadDeadline(time.Now())
+		case <-stopWatch:
+		}
+	}()
 
 	for key, values := range resp.Header {
 		w.Header()[key] = values
@@ -350,6 +370,17 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 	defer clientConn.Close()
 
 	resp.Write(clientConn)
+	// 回放 bufio 预读的后端数据：101 后内网服务立即发送的首批 WS 帧可能已
+	// 被 ReadResponse 预读进 br 缓冲，hijack 后直接 biCopy 裸流会把这批
+	// 字节永久丢失（WS 帧序列错位，同 golang/go#26479）
+	if n := br.Buffered(); n > 0 {
+		buffered := make([]byte, n)
+		if _, err := io.ReadFull(br, buffered); err == nil {
+			if _, err := clientConn.Write(buffered); err != nil {
+				slog.Debug("Failed to replay buffered WS data", "tunnel", tunnelName, "error", err)
+			}
+		}
+	}
 	slog.Debug("WebSocket connected", "tunnel", tunnelName, "nodeId", node.ID)
 
 	trackedConn := &countingConn{

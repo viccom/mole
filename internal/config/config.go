@@ -1,6 +1,7 @@
 package config
 
 import (
+	"time"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -283,6 +284,18 @@ func (c *Config) validate() error {
 
 	if c.Auth.BcryptCost < 4 || c.Auth.BcryptCost > 31 {
 		return fmt.Errorf("bcrypt_cost must be between 4 and 31")
+	}
+
+	// jwt_expiry 是唯一不做格式校验的时间配置：parseExpiry 的静默 24h 兜底
+	// 会让 "30d"/"86400" 这类写法无声生效为默认值，签发策略与预期不符。
+	// 这里显式校验，把解析失败变成启动错误
+	if c.Auth.JWTExpiry != "" {
+		if _, err := time.ParseDuration(c.Auth.JWTExpiry); err != nil {
+			return fmt.Errorf("invalid auth.jwt_expiry %q: must be a Go duration (e.g. 24h, 30m), not %q-style values", c.Auth.JWTExpiry, c.Auth.JWTExpiry)
+		}
+		if d, _ := time.ParseDuration(c.Auth.JWTExpiry); d <= 0 {
+			return fmt.Errorf("auth.jwt_expiry must be positive")
+		}
 	}
 
 	if c.Server.TLS.Enabled {

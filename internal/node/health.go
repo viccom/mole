@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/xtaci/smux"
+
 	"moleAgent_Serv/internal/core"
 )
 
@@ -38,6 +40,7 @@ func cleanupDeadNodes(ctx context.Context, mgr *ShardedNodeManager, onDisconnect
 		type deadNodeInfo struct {
 			id      string
 			tunnels []core.Tunnel
+			sess    *smux.Session
 		}
 		var deadNodes []deadNodeInfo
 
@@ -47,12 +50,24 @@ func cleanupDeadNodes(ctx context.Context, mgr *ShardedNodeManager, onDisconnect
 			if node.Status == core.NodeStatusOnline &&
 				node.LastHeartbeat != nil &&
 				now.Sub(*node.LastHeartbeat) > heartbeatTimeout {
-				deadNodes = append(deadNodes, deadNodeInfo{id: id, tunnels: append([]core.Tunnel(nil), node.Tunnels...)})
+				dn := deadNodeInfo{id: id, tunnels: append([]core.Tunnel(nil), node.Tunnels...)}
+				if sess, ok := shard.sessions[id]; ok {
+					dn.sess = sess
+				}
+				deadNodes = append(deadNodes, dn)
 			}
 		}
 		shard.mu.RUnlock()
 
 		for _, dn := range deadNodes {
+			// 清理前复查会话代际：快照与 Disconnect 之间节点可能已完成重连置换
+			//（probeOldSession → Remove → Add → AddSession），当前会话已是新会话。
+			// 不加复查会把刚注册成功的新节点连同新会话一起清掉，客户端自认在线
+			// 而路由全断。会话缺失（临时无表项）维持原语义继续清理
+			if cur, err := mgr.GetSession(ctx, dn.id); err == nil && cur != dn.sess {
+				slog.Debug("Skip dead node cleanup: session replaced", "nodeId", dn.id)
+				continue
+			}
 			if err := mgr.Disconnect(ctx, dn.id); err != nil {
 				slog.Warn("Failed to disconnect dead node", "nodeId", dn.id, "error", err)
 			} else {

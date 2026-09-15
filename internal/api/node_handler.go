@@ -9,6 +9,7 @@ import (
 
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
 	"moleAgent_Serv/internal/node"
 )
 
@@ -20,6 +21,13 @@ type NodeHandler struct {
 	// p2pRevoker 节点删除时级联吊销 p2p 信令凭据（main.go 注入 service 实现；
 	// nil = 跳过吊销）。独立小接口避免为窄关注点扩 core.TunnelConfigManager。
 	p2pRevoker P2PTokenRevoker
+	// encryptor webssh 凭证静态加密（与 TunnelHandler 同源注入；nil 跳过加密）
+	encryptor *crypto.SecretEncryptor
+}
+
+// SetEncryptor 注入 webssh 凭证加密器
+func (h *NodeHandler) SetEncryptor(enc *crypto.SecretEncryptor) {
+	h.encryptor = enc
 }
 
 type NodeControlServer interface {
@@ -143,6 +151,22 @@ func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		RateLimit: req.RateLimit,
 	}
 
+	// 内嵌隧道必须与 TunnelHandler.Create 同等校验+加密：这是唯一绕过
+	// TunnelConfigService 的落库入口，不设防则畸形 Para 与明文 SSH 凭证
+	// 直接进持久层（并在 List/Usage 回显）
+	for i := range node.Tunnels {
+		t := &node.Tunnels[i]
+		if t.Type == core.TunnelTypeWebSSH && len(t.Para) > 0 {
+			if err := validateWebSSHPara(t.Para); err != nil {
+				ResponseError(w, http.StatusBadRequest, 400, err.Error())
+				return
+			}
+			if h.encryptor != nil {
+				t.Para = encryptWebSSHPara(t.Para, h.encryptor)
+			}
+		}
+	}
+
 	// 绑定归属：管理员创建的节点归属 system，普通用户归属自己
 	claims := auth.GetClaims(r.Context())
 	if claims != nil {
@@ -191,7 +215,11 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if nameChanged {
 			n.Name = req.Name
 		}
-		n.RateLimit = req.RateLimit
+		// 部分更新语义与 Name 对齐：请求未携带时不覆盖，
+		// 否则仅改名也会清空运行态限速
+		if req.RateLimit != nil {
+			n.RateLimit = req.RateLimit
+		}
 	}); err != nil {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 		return
@@ -217,11 +245,34 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 隧道更新由 TunnelConfigService 负责持久化；仅在纯节点属性更新时直接持久化。
+	// 持久化以持久层记录为基线只改属性字段：把内存节点整体写回 repo 会把
+	// 隧道列表回滚成内存快照（推送失败历史造成内存缺隧道 → 已落库隧道被抹掉）
 	if req.Tunnels == nil && (nameChanged || req.RateLimit != nil) {
-		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-			if err := h.nodeRepo.Update(node); err != nil {
+		if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
+			if nameChanged {
+				persisted.Name = req.Name
+			}
+			if req.RateLimit != nil {
+				persisted.RateLimit = req.RateLimit
+			}
+			persisted.SysInfo = nil
+			persisted.ClientStatuses = nil
+			persisted.RTT = 0
+			if err := h.nodeRepo.Update(persisted); err != nil {
 				slog.Warn("Failed to persist node update", "error", err)
 			}
+		} else if existing, ok := h.nodeMgr.Get(r.Context(), id); ok {
+			// 尚无持久记录：以运行态骨架创建（隧道列表置空，等隧道路径落库）
+			cp := *existing
+			cp.Tunnels = nil
+			cp.SysInfo = nil
+			cp.ClientStatuses = nil
+			cp.RTT = 0
+			if err := h.nodeRepo.Create(&cp); err != nil {
+				slog.Warn("Failed to persist node create", "error", err)
+			}
+		}
+		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
 			ResponseOK(w, node)
 			return
 		}
@@ -243,6 +294,19 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(id, "/connection") {
 		id = strings.TrimSuffix(id, "/connection")
 		id = strings.TrimRight(id, "/")
+		// 归属校验：此分支与整节点删除共用入口和权限（nodes:delete），
+		// 缺失归属检查时可跨租户踢断任意在线节点（R 系列补 Delete 主路径时遗漏）
+		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+			if !checkNodeOwnership(w, r, node) {
+				return
+			}
+		} else if h.nodeRepo != nil {
+			if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
+				if !checkNodeOwnership(w, r, persisted) {
+					return
+				}
+			}
+		}
 		h.nodeMgr.Disconnect(r.Context(), id)
 		ResponseOK(w, "disconnected")
 		return
@@ -273,7 +337,12 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	tunnels = append(tunnels, memoryTunnels...)
 	tunnels = append(tunnels, persistedTunnels...)
 	h.nodeMgr.Disconnect(r.Context(), id)
-	h.nodeRepo.Delete(id)
+	if err := h.nodeRepo.Delete(id); err != nil {
+		// 删除失败仍回 "deleted" 会让节点在重启后复活，管理员毫无察觉
+		slog.Error("Failed to persist node delete", "nodeId", id, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete node")
+		return
+	}
 	// 节点删除后 (nodeID, tunnelName) 定位不到凭据，必须在此显式吊销（审查 #5）
 	if h.p2pRevoker != nil {
 		h.p2pRevoker.RevokeNodeP2PTokens(id, tunnels)

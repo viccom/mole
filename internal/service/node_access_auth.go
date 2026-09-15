@@ -38,10 +38,9 @@ func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawT
 				slog.Warn("Access token disabled", "tokenId", token.ID, "userId", token.UserID)
 				return nil, fmt.Errorf("access token disabled")
 			}
-			// 更新 last_used_at
-			now := time.Now().UTC()
-			token.LastUsedAt = &now
-			if updateErr := s.tokenRepo.Update(token); updateErr != nil {
+			// 更新 last_used_at：必须走 TouchLastUsed（重读最新记录只改该字段）。
+			// 用旧快照整记录回写会与并发禁用/轮换交错，把已吊销 token 无声复活
+			if updateErr := s.tokenRepo.TouchLastUsed(token.ID, time.Now().UTC()); updateErr != nil {
 				slog.Warn("Failed to update token last_used_at", "tokenId", token.ID, "error", updateErr)
 			}
 			slog.Info("Node authenticated via access token", "tokenId", token.ID, "userId", token.UserID)

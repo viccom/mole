@@ -79,13 +79,27 @@ func (m *ShardedNodeManager) Remove(_ context.Context, nodeID string) error {
 	return nil
 }
 
-// Get 获取节点
+// snapshotNode 返回节点快照副本：Tunnels/ClientStatuses 等切片字段由写方在
+// 分片锁内整体替换，锁释放后调用方持活指针裸读字段构成数据竞争
+//（API 序列化、RebuildIndex 遍历、断连清理拷贝均发生在锁外）
+func snapshotNode(n *core.Node) *core.Node {
+	cp := *n
+	cp.Tunnels = append([]core.Tunnel(nil), n.Tunnels...)
+	cp.ClientStatuses = append([]core.ClientTunnelStatus(nil), n.ClientStatuses...)
+	return &cp
+}
+
+// Get 获取节点（返回快照副本；写操作请走 Update）
 func (m *ShardedNodeManager) Get(_ context.Context, nodeID string) (*core.Node, bool) {
 	shard := m.getShard(nodeID)
 	shard.mu.RLock()
 	node, ok := shard.clients[nodeID]
 	shard.mu.RUnlock()
-	return node, ok
+	if !ok {
+		return nil, false
+	}
+	snap := snapshotNode(node)
+	return snap, true
 }
 
 // GetAll 返回所有节点快照（逐分片加锁读取）
@@ -94,7 +108,7 @@ func (m *ShardedNodeManager) GetAll(_ context.Context) []*core.Node {
 	for _, shard := range m.shards {
 		shard.mu.RLock()
 		for _, n := range shard.clients {
-			result = append(result, n)
+			result = append(result, snapshotNode(n))
 		}
 		shard.mu.RUnlock()
 	}

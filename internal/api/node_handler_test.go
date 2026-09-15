@@ -24,6 +24,10 @@ type testTunnelConfigManager struct {
 	replacedTuns []core.Tunnel
 }
 
+func (m *testTunnelConfigManager) ActivateClientTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
+	return nil
+}
+
 func newTestNodeRepo() *testNodeRepo {
 	return &testNodeRepo{nodes: make(map[string]*core.Node)}
 }
