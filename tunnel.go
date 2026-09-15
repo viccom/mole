@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"moleAgent_client/internal/protocol"
@@ -74,12 +75,12 @@ func (t Tunnel) Validate() error {
 		if strings.Contains(t.Target, "://") {
 			return fmt.Errorf("http(s) tunnel target must be host:port without scheme (e.g. 127.0.0.1:8080), got %q", t.Target)
 		}
-		if _, _, err := net.SplitHostPort(t.Target); err != nil {
-			return fmt.Errorf("http(s) tunnel target must be host:port format, got %q", t.Target)
+		if err := validateHostPort(t.Target); err != nil {
+			return err
 		}
 	case TunnelTypeTCP, TunnelTypeUDP:
-		if _, _, err := net.SplitHostPort(t.Target); err != nil {
-			return fmt.Errorf("tcp/udp tunnel target must be host:port format, got %q", t.Target)
+		if err := validateHostPort(t.Target); err != nil {
+			return err
 		}
 	}
 	// rate_limit 形态校验（与服务端 validateRateLimit 对齐）：客户端侧是零校验的
@@ -99,6 +100,24 @@ func (t Tunnel) Validate() error {
 		if rl.MaxConns == 0 && rl.MaxBandwidth == 0 {
 			return fmt.Errorf("rate_limit must have at least one non-zero field (omit or null to clear)")
 		}
+	}
+	return nil
+}
+
+// validateHostPort 与服务端 validateTunnel 的 target 校验完全对齐
+// （host 非空 + 端口 1-65535）：仅 SplitHostPort 会放行 "host:"、":port"、
+// "host:70000" 等畸形形态，穿透后被服务端整单拒绝
+func validateHostPort(target string) error {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return fmt.Errorf("tunnel target must be host:port format (e.g. 127.0.0.1:8080), got %q", target)
+	}
+	if host == "" {
+		return fmt.Errorf("tunnel target host is required, got %q", target)
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return fmt.Errorf("tunnel target port must be 1-65535, got %q", port)
 	}
 	return nil
 }

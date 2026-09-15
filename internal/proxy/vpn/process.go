@@ -113,8 +113,16 @@ const (
 	defaultLogBufferSize  = 64 << 10
 )
 
-// Start 启动进程
+// Start 启动进程（经 lifecycleMu 与 Stop/迟到重启串行化）
 func (pm *ProcessMgr) Start(ctx context.Context) error {
+	pm.lifecycleMu.Lock()
+	defer pm.lifecycleMu.Unlock()
+	return pm.startLocked(ctx)
+}
+
+// startLocked 要求已持 lifecycleMu：handleExit 的迟到重启路径在本锁
+// 持有状态下调用，改走 Start 会自死锁（sync.Mutex 不可重入）
+func (pm *ProcessMgr) startLocked(ctx context.Context) error {
 	pm.mu.Lock()
 	if pm.running {
 		pm.mu.Unlock()
@@ -525,10 +533,14 @@ func (pm *ProcessMgr) handleExit(err error) {
 			return
 		}
 
-		// 重新启动
+		// 复位 running：崩溃路径中 running 从未翻转，而 startLocked 的幂等
+		// 守卫会拒绝 running==true 的调用——不复位则自动重启 100% 静默失败
+		pm.running = false
 		pm.process = nil
 		pm.mu.Unlock()
-		pm.Start(pm.ctx)
+		if err := pm.startLocked(pm.ctx); err != nil {
+			log.Printf("vpn-manager: crash restart failed for %s: %v", pm.name, err)
+		}
 		pm.lifecycleMu.Unlock()
 		pm.mu.Lock()
 	} else if pm.crashCount > maxRestarts {

@@ -120,7 +120,9 @@ func handleHTTP(stream io.Writer, req *http.Request, target, tunnelName string) 
 
 	// nginx 风格转发头
 	proxyReq.Header.Set("X-Forwarded-Host", req.Host)
-	proxyReq.Header.Set("X-Forwarded-Proto", scheme(req))
+	// proto 取后端 target 的确定值：入站 X-Forwarded-Proto 外部可控，
+	// 以它推导等于把伪造值原样背书给后端
+	proxyReq.Header.Set("X-Forwarded-Proto", targetURL.Scheme)
 	proxyReq.Header.Set("Host", targetURL.Host)
 	proxyReq.Header.Set("Connection", "close")
 
@@ -371,9 +373,3 @@ func parseHost(rawURL string) (string, error) {
 	return u.Host, nil
 }
 
-func scheme(r *http.Request) string {
-	if r.URL.Scheme == "https" || r.Header.Get("X-Forwarded-Proto") == "https" {
-		return "https"
-	}
-	return "http"
-}

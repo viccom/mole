@@ -222,12 +222,14 @@ func (b *BoundUDPConn) CloseWrite() error {
 	return nil
 }
 
-// Close 全关闭（保持不变）
+// Close 全关闭
 func (b *BoundUDPConn) Close() error {
 	b.CloseWrite()
 	b.connCloseOnce.Do(func() {
 		if !b.keepOpen {
-			b.conn.Close()
+			// 经 connmu 读取：Rebuild 换上的新 socket 若被裸读旧值跳过，
+			// 将无人关闭（fd 泄漏）
+			b.CurrentConn().Close()
 		}
 	})
 	return nil
@@ -251,17 +253,29 @@ func (b *BoundUDPConn) RemoteAddr() net.Addr {
 
 // SetDeadline 设置读写超时
 func (b *BoundUDPConn) SetDeadline(t time.Time) error {
-	return b.conn.SetDeadline(t)
+	conn := b.CurrentConn()
+	if conn == nil {
+		return net.ErrClosed
+	}
+	return conn.SetDeadline(t)
 }
 
 // SetReadDeadline 设置读超时
 func (b *BoundUDPConn) SetReadDeadline(t time.Time) error {
-	return b.conn.SetReadDeadline(t)
+	conn := b.CurrentConn()
+	if conn == nil {
+		return net.ErrClosed
+	}
+	return conn.SetReadDeadline(t)
 }
 
 // SetWriteDeadline 设置写超时
 func (b *BoundUDPConn) SetWriteDeadline(t time.Time) error {
-	return b.conn.SetWriteDeadline(t)
+	conn := b.CurrentConn()
+	if conn == nil {
+		return net.ErrClosed
+	}
+	return conn.SetWriteDeadline(t)
 }
 
 type PacketConnWrapper struct {
