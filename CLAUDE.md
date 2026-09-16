@@ -30,7 +30,8 @@ internal/
   tunnel/               隧道核心 (control, http, tcp, udp, registry, stats, transport)
   node/                 分片节点管理器 + 健康检查
   service/              业务服务（接入 Token 认证、隧道配置）
-  mqtt/                 内嵌 MQTT Broker
+  mqtt/                 内嵌 MQTT Broker（含 p2p 信令 authHook）
+  stun/                 内嵌 STUN 服务 (:3478，p2p 打洞地址探测兜底)
   logging/              日志初始化
 configs/                配置文件模板
 admin/                  PC 前端 React SPA（构建产物部署在 admin/dist/）
@@ -219,8 +220,17 @@ config.Load() → logging.Init() → storage.Init()
 ### 隧道类型扩展
 
 - 标准类型 `http/https/tcp/udp`：REST API 和客户端注册均支持，服务端校验 target 格式为 `host:port`
-- 客户端本地类型 `ser2mq/vpn-manager/ser2tcp/ser2udp`：仅客户端注册时通过，服务端不校验 target 格式，配置在 `Tunnel.Para` (json.RawMessage) 中
+- 客户端本地类型 `ser2mq/vpn-manager/ser2tcp/ser2udp/webssh`：仅客户端注册时通过，服务端不校验 target 格式，配置在 `Tunnel.Para` (json.RawMessage) 中
+- `p2p`：服务端只做 para 校验与持久化，**不参与数据转发**（两端打洞直连）。REST API 同样接受（`tunnel_handler.go` 的 `clientLocalTypes` 含 `p2p`）
 - REST API (`TunnelHandler.Create`) 接受标准四种类型 + 客户端本地类型，客户端本地类型由节点自行注册
+
+### p2p 隧道（两层契约）
+
+- **Para 两层结构**（契约 §0.2，与客户端逐字一致）：连接参数（`room/modes/relay_server/mqtt_brokers/stun_servers`，两端对称）+ `mappings[]`（仅访问发起端配置，随 `TUNNEL:OPEN` 在线传对端）。校验在 `core/validate_para.go` 的 `ValidateP2PPara`（§0.3 规则，含同 para 内 local_port 去重；旧顶层单组映射字段已废弃）
+- **room 配对不变量**：`service/tunnel_service.go` 的 `validateP2PRoomPairing`——同 room 全局最多 2 条记录且分属 2 个不同节点（p2punch 假设 room 内恰两端，第三端持同 room 入场等于把流量隧穿给陌生节点，必须挡在落库前）
+- **信令凭据**：C→S 控制命令 `p2p_signal_token` → `P2PSignalTokenService` 签发（TTL 24h，仅存 hash）；内嵌 MQTT Broker 的 authHook 校验 `p2p-signal:<tokenID>` 用户名。客户端信令默认**公共 broker 优先（同 p2punch）+ 本服务端 broker 兜底**
+- **内嵌 STUN**：`:3478`（`stun/server.go`），作客户端打洞地址探测的兜底之一
+- **部署顺序（关键）**：para 契约变更必须 ①服务端二进制 → ②admin 前端 → ③客户端，顺序不可颠倒（先上前端而后端未换，用户建 p2p 隧道会 500）
 
 ### 隧道运行时统计
 
