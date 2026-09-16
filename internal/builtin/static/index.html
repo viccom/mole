@@ -31,6 +31,7 @@
         <button class="tab" data-tab="serial">串口</button>
         <button class="tab" data-tab="vpn">VPN</button>
         <button class="tab" data-tab="webssh">远程终端</button>
+        <button class="tab" data-tab="p2p">P2P</button>
       </nav>
       <div class="header-right">
         <span class="header-pill">自动刷新</span>
@@ -870,6 +871,167 @@
         <div class="form-actions">
           <button id="btn-save-webssh" class="btn btn-primary">保存</button>
           <button id="btn-cancel-webssh" class="btn">取消</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- P2P -->
+  <section id="panel-p2p" class="panel">
+    <div class="subnav">
+      <button class="subnav-item active" data-panel="p2p" data-target="p2p-overview">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 6h7v5H4zM13 6h7v8h-7zM4 13h7v5H4zM13 16h7v2h-7z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">总览</span>
+      </button>
+      <button class="subnav-item" data-panel="p2p" data-target="p2p-list-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M5 6h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9zm-4 5h2v2H5zm4 0h10v2H9z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">隧道列表</span>
+      </button>
+      <button class="subnav-item" data-panel="p2p" data-target="p2p-form-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M6 4h12v2H6zm0 4h12v12H6zm2 2v2h8v-2zm0 4v2h5v-2z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">配置表单</span>
+      </button>
+      <button class="subnav-item" data-panel="p2p" data-target="p2p-detail-view">
+        <span class="subnav-icon" aria-hidden="true">
+          <svg class="icon-svg" viewBox="0 0 24 24"><path d="M12 5c5 0 9 6 9 7s-4 7-9 7-9-6-9-7 4-7 9-7Zm0 3.5A3.5 3.5 0 1 0 12 15a3.5 3.5 0 0 0 0-7Z" fill="currentColor"/></svg>
+        </span>
+        <span class="subnav-text">运行详情</span>
+      </button>
+    </div>
+
+    <div id="p2p-overview" class="subview active" data-panel="p2p">
+      <div id="p2p-build-banner" class="p2p-banner" style="display:none">
+        当前构建未启用 P2P（需以 <code>-tags p2p</code> 编译）。以下配置仅保存与同步，不会在本节点运行。
+      </div>
+      <div class="card overview-card">
+        <div class="card-header">
+          <div>
+            <div class="section-kicker">P2P Overview</div>
+            <h2>P2P 打洞直连概览</h2>
+          </div>
+          <span class="section-note">同 Room 两端配对，流量不经服务端网关中转。</span>
+        </div>
+        <div class="overview-metrics">
+          <div class="metric-card"><span class="metric-label">隧道总数</span><span id="p2p-total" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">已连通</span><span id="p2p-online" class="metric-value">0</span></div>
+          <div class="metric-card"><span class="metric-label">映射在线</span><span id="p2p-mappings" class="metric-value">0/0</span></div>
+          <div class="metric-card"><span class="metric-label">累计重连</span><span id="p2p-reconnects" class="metric-value">0</span></div>
+        </div>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <div class="viz-title">连通状态</div>
+            <div id="p2p-state-chart" class="viz-list"></div>
+          </div>
+          <div class="viz-card viz-card-center">
+            <div class="viz-title">连通率</div>
+            <div id="p2p-health-ring" class="viz-ring">0%</div>
+            <div id="p2p-health-note" class="viz-note">等待 P2P 数据</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="p2p-list-view" class="subview" data-panel="p2p">
+      <div class="card">
+        <div class="card-header">
+          <h2>P2P 隧道</h2>
+          <div class="actions">
+            <button id="btn-refresh-p2p" class="btn">刷新</button>
+            <button id="btn-add-p2p" class="btn btn-primary">新增 P2P</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>名称</th><th>状态</th><th>模式</th><th>流入</th><th>流出</th><th>重连</th><th>操作</th>
+            </tr></thead>
+            <tbody id="p2p-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="p2p-form-view" class="subview" data-panel="p2p">
+      <div class="card helper-card">
+        <div class="card-header">
+          <h2>配置入口</h2>
+          <button id="btn-add-p2p-secondary" class="btn btn-primary">新增 P2P</button>
+        </div>
+        <p class="section-desc">P2P 隧道两端配对同一 Room；端口映射仅在访问发起端配置，对端零配置。变更保存后自动重打洞，无需重启节点。</p>
+      </div>
+
+      <div id="p2p-form" class="card form-shell" style="display:none">
+        <h2 id="p2p-form-title">新增 P2P 隧道</h2>
+        <div class="form-hint-box">两节点通过 MQTT 信令交换打洞参数后直连（仅 v4-relay 模式经中继），流量不经服务端网关中转。需客户端以 <code>-tags p2p</code> 构建。</div>
+        <div class="form-section-title">基本信息</div>
+        <div class="form-row">
+          <label>名称</label>
+          <input id="pf-name" type="text" placeholder="如: street-a-link" style="max-width:200px">
+        </div>
+        <div class="form-row">
+          <label>Room <span class="req">*</span></label>
+          <input id="pf-room" type="text" placeholder="如: myRoom_2026_x">
+          <span class="field-note">8-32 位字母/数字/下划线/中划线；两端一致才可配对</span>
+        </div>
+
+        <div class="form-section-title">端口映射（可选）</div>
+        <div class="form-hint-box">每条映射在本端监听 <code>local_port</code>，访问流量经 P2P 隧道由对端转发到 <code>target_host:target_port</code>。未添加映射 = 纯会话端（只建会话供对端打开映射，本机不监听端口）。</div>
+        <div class="pf-mappings-head">
+          <span>协议</span><span>本端监听端口</span><span>对端目标地址</span><span>对端目标端口</span><span></span>
+        </div>
+        <div id="pf-mappings-rows"></div>
+        <p id="pf-mappings-empty" class="section-desc">暂无映射——本端为纯会话端。</p>
+        <button id="btn-add-pf-mapping" class="btn" type="button">+ 添加映射</button>
+
+        <div class="form-section-title">打洞选项（可选）</div>
+        <div class="form-row">
+          <label>模式链</label>
+          <div id="pf-modes" class="pf-modes"></div>
+          <span class="field-note">默认链 lan → tcp-v6 → udp-v6 → udp-v4；v4-relay 仅作直连全败时的兜底，需填中继地址，流量经中继不再点对点</span>
+        </div>
+        <div class="form-row" id="pf-relay-row" style="display:none">
+          <label>中继服务器</label>
+          <input id="pf-relay-server" type="text" placeholder="host:port（选中 v4-relay 时必填）">
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>MQTT Broker</label><input id="pf-mqtt-brokers" type="text" placeholder="逗号分隔；留空 = 公共优先 + 服务端兜底"></div>
+          <div class="form-row"><label>STUN 服务器</label><input id="pf-stun-servers" type="text" placeholder="逗号分隔；留空 = 公共列表 + 服务端 :3478"></div>
+        </div>
+
+        <div class="form-check"><input type="checkbox" id="pf-enable" checked> 启用</div>
+        <div class="form-actions">
+          <button id="btn-save-p2p" class="btn btn-primary">保存</button>
+          <button id="btn-cancel-p2p" class="btn">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="p2p-detail-view" class="subview" data-panel="p2p">
+      <div id="p2p-detail-empty" class="card">
+        <div class="card-header"><h2>运行详情</h2></div>
+        <p class="section-desc">从隧道列表点击「详情」查看会话信息与逐映射状态。</p>
+      </div>
+
+      <div id="p2p-detail" class="card" style="display:none">
+        <div class="card-header">
+          <h2 id="p2p-detail-title">P2P 隧道详情</h2>
+          <button id="btn-close-p2p-detail" class="btn">关闭</button>
+        </div>
+        <div id="p2p-detail-info" class="info-grid"></div>
+        <div class="form-section-title">端口映射</div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>协议</th><th>本端端口</th><th>对端目标</th><th>来源</th><th>状态</th><th>会话流入</th><th>会话流出</th><th>错误</th>
+            </tr></thead>
+            <tbody id="p2p-detail-mappings"></tbody>
+          </table>
         </div>
       </div>
     </div>

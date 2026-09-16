@@ -59,8 +59,43 @@ func (p *p2pManagerController) StatusByName(name string) (P2PRuntime, error) {
 	if err != nil {
 		return P2PRuntime{}, err
 	}
-	// 字段一致的匿名结构体可直接转换（编译期校验两处定义不漂移）
-	return P2PRuntime(rt), nil
+	return toP2PRuntime(rt), nil
+}
+
+// toP2PRuntime 逐字段转换：Go 结构体直接转换不转换切片元素类型
+// （Runtime.Mappings 是 proxy/p2p.MappingStatus，P2PRuntime 需要无 tag 镜像类型），
+// 故手写；字段漂移由 TestP2PRuntimeConversionParity 以 JSON 比对兜底
+func toP2PRuntime(rt p2p.Runtime) P2PRuntime {
+	out := P2PRuntime{
+		Running:     rt.Running,
+		Connected:   rt.Connected,
+		Mode:        rt.Mode,
+		LocalAddr:   rt.LocalAddr,
+		RemoteAddr:  rt.RemoteAddr,
+		PunchMs:     rt.PunchMs,
+		ConnectedAt: rt.ConnectedAt,
+		Reconnects:  rt.Reconnects,
+		BytesIn:     rt.BytesIn,
+		BytesOut:    rt.BytesOut,
+		Error:       rt.Error,
+	}
+	if len(rt.Mappings) > 0 {
+		out.Mappings = make([]P2PMappingStatus, len(rt.Mappings))
+		for i, m := range rt.Mappings {
+			out.Mappings[i] = P2PMappingStatus{
+				Protocol:   m.Protocol,
+				LocalPort:  m.LocalPort,
+				TargetHost: m.TargetHost,
+				TargetPort: m.TargetPort,
+				BytesIn:    m.BytesIn,
+				BytesOut:   m.BytesOut,
+				Up:         m.Up,
+				Remote:     m.Remote,
+				Error:      m.Error,
+			}
+		}
+	}
+	return out
 }
 
 func (p *p2pManagerController) Close() {

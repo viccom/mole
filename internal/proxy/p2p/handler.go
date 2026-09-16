@@ -5,6 +5,8 @@ package p2p
 import (
 	"context"
 	"fmt"
+	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,14 +23,35 @@ type SignalCredentials struct {
 	Password string
 }
 
+// MappingStatus 单条端口映射的运行时状态。BytesIn/Out 为当前会话级计数
+// （fork TunnelInfo 语义，重连归零；跨重连累计仅外层 bytes_in/bytes_out 具备，F15）
+type MappingStatus struct {
+	Protocol   string `json:"protocol"`             // "tcp" / "udp"
+	LocalPort  int    `json:"local_port"`           // 本端监听端口（remote 行 = 发起端配置的端口）
+	TargetHost string `json:"target_host"`          // 对端解析的目标地址
+	TargetPort int    `json:"target_port"`
+	BytesIn    uint64 `json:"bytes_in"`
+	BytesOut   uint64 `json:"bytes_out"`
+	Up         bool   `json:"up"`                   // 会话内存在对应隧道（cfg 行）/ 远程映射处于活跃
+	Remote     bool   `json:"remote,omitempty"`     // 对端发起、本端 AcceptRemote 被动接受的映射
+	Error      string `json:"error,omitempty"`      // restoreTunnel 记录的逐条失败原因
+}
+
 // Runtime 是 Handler 的运行时快照（两处状态收集共用：tunnel_status 上报 + 本地 REST）。
 // json tag 与其它隧道类型的状态子结构一致（snake_case，复审 F10）
 type Runtime struct {
-	Running   bool   `json:"running"`
-	Connected bool   `json:"connected"`
-	BytesIn   uint64 `json:"bytes_in"`
-	BytesOut  uint64 `json:"bytes_out"`
-	Error     string `json:"error,omitempty"`
+	Running     bool            `json:"running"`
+	Connected   bool            `json:"connected"`
+	Mode        string          `json:"mode,omitempty"`         // 当前/最近一次成功建立会话的 mode；空 = 尚未成功过
+	LocalAddr   string          `json:"local_addr,omitempty"`   // 本端地址（打洞后协商连接的 Local，ip:port）
+	RemoteAddr  string          `json:"remote_addr,omitempty"`  // 对端地址（打洞后协商连接的 Remote，ip:port）
+	PunchMs     int64           `json:"punch_ms,omitempty"`     // 最近一次成功建连的打洞耗时 ms（信令+NAT+secure 协商）
+	ConnectedAt int64           `json:"connected_at,omitempty"` // 最近一次会话建立时间 unix ms；0 = 从未连上
+	Reconnects  int             `json:"reconnects"`             // 首次成功之后的会话重建次数（Handler 重建时归零）
+	BytesIn     uint64          `json:"bytes_in"`               // 跨重连累计（F15）
+	BytesOut    uint64          `json:"bytes_out"`
+	Error       string          `json:"error,omitempty"`
+	Mappings    []MappingStatus `json:"mappings,omitempty"` // cfg 行在前，对端远程映射（remote=true）追加在后
 }
 
 // Handler 单条 p2p 隧道的连接编排：吸收 p2punch cmd/cli/connection.go 的 glue——
@@ -46,6 +69,15 @@ type Handler struct {
 	cancel    context.CancelFunc
 	stopped   chan struct{}
 
+	// 会话元信息（Status 快照展示；断线窗口保留最近值，与 lastErr 同待遇）
+	mode        string // 最近一次成功建立会话的 mode
+	localAddr   string // 本端地址（打洞后协商连接的 Local，ip:port）
+	remoteAddr  string // 对端地址（打洞后协商连接的 Remote，ip:port）
+	punchMs     int64  // 最近一次成功建连的打洞耗时 ms
+	connectedAt int64  // 最近一次会话建立时间 unix ms；0 = 从未连上
+	reconnects  int    // 首次成功之后的会话重建次数
+	mapErrs     map[int]string // restoreTunnel 逐条失败记录（key = cfg.Mappings 的 LocalPort）
+
 	// modeAttemptTimeout 单次连接尝试（打洞+信令+会话建立）的上限：
 	// paho ConnectRetry(true) 在 broker 持续拒绝时永不返回，无上限会把
 	// Handler 永久楔死在 connectFn 里（复审 F4）
@@ -61,7 +93,16 @@ type Handler struct {
 
 // NewHandler 构造 Handler（Start 前不产生任何 goroutine）
 func NewHandler(cfg P2PConfig, serverHost string, credsFn func(ctx context.Context) (SignalCredentials, error)) *Handler {
-	return &Handler{cfg: cfg, host: serverHost, credsFn: credsFn, stopped: make(chan struct{}), modeAttemptTimeout: 120 * time.Second}
+	return &Handler{cfg: cfg, host: serverHost, credsFn: credsFn, stopped: make(chan struct{}), modeAttemptTimeout: 120 * time.Second, mapErrs: make(map[int]string)}
+}
+
+// connectResult 一次成功建连的产物：session + 连接层元信息（fork 的 Session 接口
+// 不暴露底层 conn，地址与打洞耗时只能在 Outcome 层截取）
+type connectResult struct {
+	sess      session.Session
+	localAddr net.Addr
+	remoteAddr net.Addr
+	punchMs   int64 // 打洞耗时（信令交换 + NAT 打洞 + secure 协商）
 }
 
 // connectFn / backoffFn 是测试注入点（同包测试替换，生产用默认实现）
@@ -191,7 +232,7 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 			h.setFailure(modeName + " attempt timeout")
 			cancel()
 		})
-		sess, err := connectFn(attemptCtx, modeName, h.cfg, h.host, creds)
+		res, err := connectFn(attemptCtx, modeName, h.cfg, h.host, creds)
 		timerFired := !timer.Stop()
 
 		if err != nil {
@@ -209,22 +250,23 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 		// 连接，且 Handler.Close 的补关看到的是 nil 引用
 		if ctx.Err() != nil {
 			cancel()
-			_ = sess.Close()
+			_ = res.sess.Close()
 			return false
 		}
 		if timerFired || attemptCtx.Err() != nil {
 			// 尝试超时被打断（复审 F4）：关闭半成品会话，进入退避
 			cancel()
-			_ = sess.Close()
+			_ = res.sess.Close()
 			h.setFailure(modeName + " attempt timeout")
 			continue
 		}
 		// 成功路径不 cancel attemptCtx（会话内部可能绑定该 ctx），
 		// 其生命周期随 handler ctx 终结统一回收
-		h.setSession(sess)
+		h.setSession(res, modeName)
 
 		// 先启动 session.Run（内部 reader/ticker），再建隧道：
 		// CreateTunnel 的 OPEN→OK 握手依赖 reader 处理 OK 并建本地 listener
+		sess := res.sess
 		runDone := make(chan struct{})
 		go func() {
 			_ = sess.Run(ctx)
@@ -258,8 +300,10 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 // restoreTunnel 发起端按 mappings 逐条建隧道（每条 mapping 一个独立 tunnel，
 // fork 的 tunnel.Manager 原生支持多隧道），每条 3 次重试（对齐上游
 // connection.go 重连自愈惯例）。逐条尽力 + 全部成功才算连通：任一条失败
-// 视同未连通走退避（F5 语义：本端监听不完整视同未连通），失败项汇总进 setFailure
+// 视同未连通走退避（F5 语义：本端监听不完整视同未连通），失败项汇总进 setFailure，
+// 另以 mapErrs 保留逐条原始错误（聚合文案不变，mapErrs 是额外通道）
 func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) bool {
+	h.clearMapErrs()
 	var failed []string
 	for _, m := range h.cfg.Mappings {
 		params := tunnel.Params{
@@ -285,6 +329,7 @@ func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) bool 
 		}
 		if !ok {
 			failed = append(failed, fmt.Sprintf(":%d (%v)", m.LocalPort, lastErr))
+			h.setMapErr(m.LocalPort, lastErr.Error())
 		}
 	}
 	if len(failed) > 0 {
@@ -294,20 +339,57 @@ func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) bool 
 	return true
 }
 
+// clearMapErrs / setMapErr mapErrs 的短临界区读写（对齐 setFailure 惯例，
+// 不得持 h.mu 跨 CreateTunnel I/O——复审 F1 锁边界）
+func (h *Handler) clearMapErrs() {
+	h.mu.Lock()
+	h.mapErrs = make(map[int]string, len(h.cfg.Mappings))
+	h.mu.Unlock()
+}
+
+func (h *Handler) setMapErr(port int, msg string) {
+	h.mu.Lock()
+	h.mapErrs[port] = msg
+	h.mu.Unlock()
+}
+
+// tunnelKey 隧道四元组标识：用四元组而非仅 LocalPort 做配置↔会话 join——
+// LocalPort 同值不保证同隧道（对端 AcceptRemote 的映射端口空间与本端配置无关）。
+// 两端配置完全相同四元组的对称场景下会多出一行 remote 重复行，展示无害
+type tunnelKey struct {
+	proto string
+	host  string
+	lport int
+	tport int
+}
+
+func tunnelKeyOfInfo(ti session.TunnelInfo) tunnelKey {
+	return tunnelKey{proto: ti.Protocol, host: ti.TargetHost, lport: ti.LocalPort, tport: ti.TargetPort}
+}
+
+func tunnelKeyOfMapping(m Mapping) tunnelKey {
+	return tunnelKey{proto: m.Protocol, host: m.TargetHost, lport: m.LocalPort, tport: m.TargetPort}
+}
+
 // Status 运行时快照：Connected = session 已建立；字节聚合自 ListTunnels
-// （TunnelInfo 自带 BytesIn/Out，fork 内 atomic 对齐已处理 32 位平台）
+// （TunnelInfo 自带 BytesIn/Out，fork 内 atomic 对齐已处理 32 位平台）；
+// Mappings 为逐映射行（cfg 行 + 对端远程映射行）
 func (h *Handler) Status() Runtime {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	// 断线窗口（sess==nil）沿用累计值：否则每轮心跳上报都会从 0 重来，
 	// 管理界面读数在 0 与累计值之间跳变（F15 的「跨重连不塌缩」失效）
-	rt := Runtime{Running: true, BytesIn: h.carriedIn, BytesOut: h.carriedOut, Error: h.lastErr}
+	rt := Runtime{Running: true, Mode: h.mode, LocalAddr: h.localAddr, RemoteAddr: h.remoteAddr,
+		PunchMs: h.punchMs, ConnectedAt: h.connectedAt, Reconnects: h.reconnects,
+		BytesIn: h.carriedIn, BytesOut: h.carriedOut, Error: h.lastErr}
+	live := make(map[tunnelKey]session.TunnelInfo)
 	if h.sess != nil {
 		rt.Connected = true
 		var in, out uint64
 		for _, ti := range h.sess.ListTunnels() {
 			in += ti.BytesIn
 			out += ti.BytesOut
+			live[tunnelKeyOfInfo(ti)] = ti
 		}
 		// 会话计数器回退 = 发生了重连：旧会话读数并入累计值（复审 F15）
 		if in < h.lastIn || out < h.lastOut {
@@ -317,6 +399,33 @@ func (h *Handler) Status() Runtime {
 		h.lastIn, h.lastOut = in, out
 		rt.BytesIn = h.carriedIn + in
 		rt.BytesOut = h.carriedOut + out
+	}
+	// 行 1：cfg.Mappings 为基线，Up = 会话内存在同四元组隧道
+	rows := make([]MappingStatus, 0, len(h.cfg.Mappings))
+	for _, m := range h.cfg.Mappings {
+		row := MappingStatus{Protocol: m.Protocol, LocalPort: m.LocalPort,
+			TargetHost: m.TargetHost, TargetPort: m.TargetPort, Error: h.mapErrs[m.LocalPort]}
+		if ti, ok := live[tunnelKeyOfMapping(m)]; ok {
+			row.Up = true
+			row.BytesIn = ti.BytesIn
+			row.BytesOut = ti.BytesOut
+			delete(live, tunnelKeyOfMapping(m))
+		}
+		rows = append(rows, row)
+	}
+	// 行 2：剩余 = 对端远程开启（AcceptRemote）的映射，按 LocalPort 排序保证输出确定性
+	rem := make([]session.TunnelInfo, 0, len(live))
+	for _, ti := range live {
+		rem = append(rem, ti)
+	}
+	sort.Slice(rem, func(i, j int) bool { return rem[i].LocalPort < rem[j].LocalPort })
+	for _, ti := range rem {
+		rows = append(rows, MappingStatus{Protocol: ti.Protocol, LocalPort: ti.LocalPort,
+			TargetHost: ti.TargetHost, TargetPort: ti.TargetPort,
+			BytesIn: ti.BytesIn, BytesOut: ti.BytesOut, Up: true, Remote: true})
+	}
+	if len(rows) > 0 {
+		rt.Mappings = rows
 	}
 	return rt
 }
@@ -328,10 +437,27 @@ func (h *Handler) modes() []string {
 	return engine.DefaultModes
 }
 
-func (h *Handler) setSession(sess session.Session) {
+// setSession 记录新会话及其成功 mode / 连接地址 / 打洞耗时 / 建立时间；
+// 非首次成功计一次重连。元信息不随会话终结清除（endSession 只清 h.sess）——
+// 断线窗口展示最近会话信息
+func (h *Handler) setSession(res connectResult, modeName string) {
 	h.mu.Lock()
-	h.sess = sess
+	h.sess = res.sess
 	h.lastErr = ""
+	h.mode = modeName
+	if res.localAddr != nil {
+		h.localAddr = res.localAddr.String()
+	}
+	if res.remoteAddr != nil {
+		h.remoteAddr = res.remoteAddr.String()
+	}
+	if res.punchMs > 0 {
+		h.punchMs = res.punchMs
+	}
+	if h.connectedAt != 0 {
+		h.reconnects++
+	}
+	h.connectedAt = time.Now().UnixMilli()
 	h.mu.Unlock()
 }
 
@@ -379,10 +505,12 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 // defaultConnect 生产连接实现：engine mode → secure/yamux（engine 内部）→ session。
-func defaultConnect(ctx context.Context, modeName string, cfg P2PConfig, _ string, _ SignalCredentials) (session.Session, error) {
+// 返回的连接元信息取自 Outcome（打洞后协商连接的 Local/Remote，经 NAT 映射的地址）
+// 与本次 modeFn 调用的实测耗时（打洞耗时）
+func defaultConnect(ctx context.Context, modeName string, cfg P2PConfig, _ string, _ SignalCredentials) (connectResult, error) {
 	modeFn := engine.Registry[modeName]
 	if modeFn == nil {
-		return nil, fmt.Errorf("unknown p2p mode %q", modeName)
+		return connectResult{}, fmt.Errorf("unknown p2p mode %q", modeName)
 	}
 	deps := engine.Deps{
 		Room:        cfg.Room,
@@ -391,17 +519,19 @@ func defaultConnect(ctx context.Context, modeName string, cfg P2PConfig, _ strin
 		ListenPort:  0, // 打洞本地端口随机
 		Verbose:     false,
 	}
+	start := time.Now()
 	outcome, _, err := modeFn(ctx, deps)
 	if err != nil {
-		return nil, err
+		return connectResult{}, err
 	}
+	punchMs := time.Since(start).Milliseconds()
 	sess, err := session.NewSession(ctx, outcome)
 	if err != nil {
 		// 释放失败 Outcome 的底层 conn（Mux.Close 级联关闭 yamux + 打洞 socket）
 		outcome.Mux.Close()
-		return nil, err
+		return connectResult{}, err
 	}
-	return sess, nil
+	return connectResult{sess: sess, localAddr: outcome.Local, remoteAddr: outcome.Remote, punchMs: punchMs}, nil
 }
 
 // mergeServers 用户偏好服务器前置 + 默认兜底，去重（对齐上游 connection.go 同名函数）。

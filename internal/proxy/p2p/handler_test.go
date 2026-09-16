@@ -5,6 +5,7 @@ package p2p
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -154,17 +155,17 @@ func withFailingConnect(t *testing.T, failTimes int, backoffSpy *intSlice) *sess
 	attempts := 0
 	var mu sync.Mutex
 	origConnect := connectFn
-	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (connectResult, error) {
 		mu.Lock()
 		attempts++
 		n := attempts
 		mu.Unlock()
 		if n <= failTimes {
-			return nil, context.DeadlineExceeded // 模拟打洞失败
+			return connectResult{}, context.DeadlineExceeded // 模拟打洞失败
 		}
 		s := newMockSession()
 		rec.add(s)
-		return s, nil
+		return connectResult{sess: s}, nil
 	}
 	t.Cleanup(func() { connectFn = origConnect })
 	return rec
@@ -235,9 +236,9 @@ func TestHandlerPartialMappingFailureTriggersBackoff(t *testing.T) {
 
 	attempts := &intSlice{}
 	origConnect := connectFn
-	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (connectResult, error) {
 		attempts.add(0)
-		return &partialCreateSession{mockSession: newMockSession()}, nil
+		return connectResult{sess: &partialCreateSession{mockSession: newMockSession()}}, nil
 	}
 	t.Cleanup(func() { connectFn = origConnect })
 
@@ -388,19 +389,19 @@ func TestHandlerCredsInjection(t *testing.T) {
 	credCalls := 0
 	var sess *mockSession
 
-	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (connectResult, error) {
 		mu.Lock()
 		gotCreds = append(gotCreds, creds)
 		n := len(gotCreds)
 		mu.Unlock()
 		if n == 1 {
-			return nil, context.DeadlineExceeded
+			return connectResult{}, context.DeadlineExceeded
 		}
 		s := newMockSession()
 		mu.Lock()
 		sess = s
 		mu.Unlock()
-		return s, nil
+		return connectResult{sess: s}, nil
 	}
 	// 确定性时序：第 1 次拉取失败（匿名回落），之后成功
 	credsFn := func(ctx context.Context) (SignalCredentials, error) {
@@ -441,9 +442,9 @@ func TestHandlerCredsInjection(t *testing.T) {
 func TestModeAttemptTimeout(t *testing.T) {
 	sessions := &sessionRecorder{}
 	origConnect := connectFn
-	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (connectResult, error) {
 		<-ctx.Done() // 模拟 broker 拒绝后 ConnectRetry 永不返回
-		return nil, ctx.Err()
+		return connectResult{}, ctx.Err()
 	}
 	t.Cleanup(func() { connectFn = origConnect })
 
@@ -483,9 +484,9 @@ func TestModeAttemptTimeout(t *testing.T) {
 func TestTunnelCreationFailureTriggersBackoff(t *testing.T) {
 	spy := &intSlice{}
 	origConnect := connectFn
-	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (connectResult, error) {
 		spy.add(0)
-		return &failCreateSession{mockSession: newMockSession()}, nil
+		return connectResult{sess: &failCreateSession{mockSession: newMockSession()}}, nil
 	}
 	t.Cleanup(func() { connectFn = origConnect })
 
@@ -558,5 +559,167 @@ func TestStatusCountersSurviveReconnect(t *testing.T) {
 	rt3 := h.Status()
 	if rt3.BytesIn != 130 || rt3.BytesOut != 120 {
 		t.Fatalf("counters collapsed on empty session: %d/%d", rt3.BytesIn, rt3.BytesOut)
+	}
+}
+
+// ===== 逐映射状态与会话元信息 =====
+
+// Mappings 行 = cfg 基线 join 会话活隧道（四元组），未命中的会话隧道
+// （对端 AcceptRemote 远程映射）以 remote 行追加；总量聚合不回归
+func TestStatusMappingRowsJoinAndBytes(t *testing.T) {
+	sessions := withFailingConnect(t, 0, nil)
+	cfg := P2PConfig{Room: "roomOK123456", Modes: []string{"lan"}, Mappings: []Mapping{
+		{Protocol: "tcp", LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 80},
+		{Protocol: "udp", LocalPort: 18081, TargetHost: "10.0.0.2", TargetPort: 53},
+	}}
+	h := NewHandler(cfg, "127.0.0.1", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = h.Run(ctx) }()
+	t.Cleanup(cancel)
+
+	waitFor(t, func() bool { return sessions.len() > 0 }, 2*time.Second, "session not created")
+	s := sessions.at(0)
+	s.mu.Lock()
+	s.tunnels = []session.TunnelInfo{
+		{ID: 1, Protocol: "tcp", LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 80, BytesIn: 100, BytesOut: 40},
+		{ID: 2, Protocol: "tcp", LocalPort: 20000, TargetHost: "192.168.1.10", TargetPort: 8080, BytesIn: 7, BytesOut: 3},
+	}
+	s.mu.Unlock()
+
+	rt := h.Status()
+	if len(rt.Mappings) != 3 {
+		t.Fatalf("Mappings rows = %d, want 3 (2 cfg + 1 remote)", len(rt.Mappings))
+	}
+	m0, m1, m2 := rt.Mappings[0], rt.Mappings[1], rt.Mappings[2]
+	if !m0.Up || m0.Remote || m0.BytesIn != 100 || m0.BytesOut != 40 {
+		t.Fatalf("cfg row 0 = %+v, want Up with session bytes", m0)
+	}
+	if m1.Up || m1.Remote || m1.Error != "" {
+		t.Fatalf("cfg row 1 = %+v, want down without error", m1)
+	}
+	if !m2.Up || !m2.Remote || m2.LocalPort != 20000 || m2.BytesIn != 7 {
+		t.Fatalf("remote row = %+v, want Up+Remote with peer params", m2)
+	}
+	if rt.BytesIn != 107 || rt.BytesOut != 43 {
+		t.Fatalf("total bytes = %d/%d, want 107/43", rt.BytesIn, rt.BytesOut)
+	}
+}
+
+// 纯会话端（无 mappings 配置）：对端远程开启的映射也要出现在状态里
+func TestStatusPureSessionShowsRemoteMappings(t *testing.T) {
+	sessions := withFailingConnect(t, 0, nil)
+	h := NewHandler(P2PConfig{Room: "roomOK123456", Modes: []string{"lan"}}, "127.0.0.1", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = h.Run(ctx) }()
+	t.Cleanup(cancel)
+
+	waitFor(t, func() bool { return sessions.len() > 0 }, 2*time.Second, "session not created")
+	s := sessions.at(0)
+	s.mu.Lock()
+	s.tunnels = []session.TunnelInfo{
+		{ID: 1, Protocol: "tcp", LocalPort: 9820, TargetHost: "10.0.0.5", TargetPort: 80, BytesIn: 11, BytesOut: 22},
+	}
+	s.mu.Unlock()
+
+	rt := h.Status()
+	if !rt.Connected {
+		t.Fatal("pure session side must report Connected")
+	}
+	if len(rt.Mappings) != 1 {
+		t.Fatalf("Mappings rows = %d, want 1 remote row", len(rt.Mappings))
+	}
+	if m := rt.Mappings[0]; !m.Up || !m.Remote || m.LocalPort != 9820 || m.BytesOut != 22 {
+		t.Fatalf("remote row = %+v", m)
+	}
+}
+
+// 会话元信息：成功 mode、连接地址、打洞耗时与建立时间记录；二次建立计一次重连并刷新 mode
+func TestStatusSessionMetaAndReconnects(t *testing.T) {
+	sessions := withFailingConnect(t, 0, nil)
+	h := NewHandler(initiatorCfg(), "127.0.0.1", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = h.Run(ctx) }()
+	t.Cleanup(cancel)
+
+	waitFor(t, func() bool { return sessions.len() > 0 }, 2*time.Second, "session not created")
+	rt := h.Status()
+	if rt.Mode != "lan" {
+		t.Fatalf("Mode = %q, want lan", rt.Mode)
+	}
+	if rt.ConnectedAt <= 0 {
+		t.Fatalf("ConnectedAt = %d, want > 0", rt.ConnectedAt)
+	}
+	if rt.Reconnects != 0 {
+		t.Fatalf("Reconnects = %d, want 0 on first session", rt.Reconnects)
+	}
+
+	// 模拟重连：直接建立第二个会话（同包内可调未导出的 setSession），带连接元信息
+	peer := &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 51234}
+	local := &net.TCPAddr{IP: net.ParseIP("192.168.1.10"), Port: 43210}
+	h.setSession(connectResult{sess: newMockSession(), localAddr: local, remoteAddr: peer, punchMs: 1234}, "udp-v4")
+	rt = h.Status()
+	if rt.Mode != "udp-v4" {
+		t.Fatalf("Mode = %q after reconnect, want udp-v4", rt.Mode)
+	}
+	if rt.RemoteAddr != peer.String() {
+		t.Fatalf("RemoteAddr = %q, want %q", rt.RemoteAddr, peer.String())
+	}
+	if rt.LocalAddr != local.String() {
+		t.Fatalf("LocalAddr = %q, want %q", rt.LocalAddr, local.String())
+	}
+	if rt.PunchMs != 1234 {
+		t.Fatalf("PunchMs = %d, want 1234", rt.PunchMs)
+	}
+	if rt.Reconnects != 1 {
+		t.Fatalf("Reconnects = %d, want 1", rt.Reconnects)
+	}
+}
+
+// 逐条映射失败原因（mapErrs 通道）：聚合文案保留的同时，行级 Error 带原始错误
+func TestStatusMappingErrorSurfaced(t *testing.T) {
+	origDelay := tunnelRetryDelay
+	tunnelRetryDelay = time.Millisecond
+	t.Cleanup(func() { tunnelRetryDelay = origDelay })
+	origBackoff := backoffFn
+	backoffFn = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { backoffFn = origBackoff })
+
+	origConnect := connectFn
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (connectResult, error) {
+		return connectResult{sess: &partialCreateSession{mockSession: newMockSession()}}, nil
+	}
+	t.Cleanup(func() { connectFn = origConnect })
+
+	cfg := P2PConfig{Room: "roomOK123456", Modes: []string{"lan"}, Mappings: []Mapping{
+		{Protocol: "tcp", LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 80},
+		{Protocol: "tcp", LocalPort: 18081, TargetHost: "127.0.0.1", TargetPort: 81},
+	}}
+	h := NewHandler(cfg, "127.0.0.1", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { _ = h.Run(ctx); close(runDone) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	// 轮询复合条件：重连窗口存在 lastErr 空窗（setSession 清空后失败重写前）
+	waitFor(t, func() bool {
+		rt := h.Status()
+		if !strings.Contains(rt.Error, "FAILED") || len(rt.Mappings) != 2 {
+			return false
+		}
+		return strings.Contains(rt.Mappings[1].Error, "bind: address already in use")
+	}, 3*time.Second, "per-mapping failure must surface in row Error")
+
+	rt := h.Status()
+	if rt.Mappings[0].Error != "" {
+		t.Fatalf("mapping 18080 succeeded, row Error = %q", rt.Mappings[0].Error)
+	}
+	if rt.Mappings[1].Up {
+		t.Fatal("mapping 18081 failed all retries, row must be down")
 	}
 }

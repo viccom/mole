@@ -5,6 +5,7 @@ import { initSer2MQ } from './ser2mq.js';
 import { initSer2Net } from './ser2net.js';
 import { initVPN } from './vpn.js';
 import { initWebSSH } from './webssh.js';
+import { initP2P } from './p2p.js';
 
 // ===== 工具函数 =====
 export function fmtBytes(b) {
@@ -188,6 +189,8 @@ async function refreshData() {
       setText('info-version', `${v.version} (${v.git_hash})`);
       setText('info-build-date', v.build_date || '-');
       setText('info-binary-path', v.binary_path || '-');
+      // p2p 构建能力（tri-state：旧二进制无该键 → undefined，不误报）
+      window.__p2pBuild = v.p2p;
     }).catch(() => {});
 
     // 传递 nodeID 给 ser2mq 模块
@@ -201,6 +204,7 @@ async function refreshData() {
     if (window.__ser2netRefresh) window.__ser2netRefresh(tunnelList);
     if (window.__vpnRefresh) window.__vpnRefresh(tunnelList);
     if (window.__websshRefresh) window.__websshRefresh(tunnelList);
+    if (window.__p2pRefresh) window.__p2pRefresh(tunnelList);
 
     setText('refresh-info', '最近刷新: ' + new Date().toLocaleTimeString('zh-CN'));
   } catch (e) {
@@ -234,6 +238,7 @@ initSer2MQ();
 initSer2Net();
 initVPN();
 initWebSSH();
+initP2P();
 refreshData().then(scheduleRefresh);
 
 // ===== 版本更新检测 =====

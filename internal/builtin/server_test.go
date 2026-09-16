@@ -150,6 +150,26 @@ func TestNewHandlerTunnelsAPIIncludesCORSHeaders(t *testing.T) {
 	}
 }
 
+// /api/version 携带 p2p 构建能力标志（值随构建标签变化，断言键存在且为布尔）
+func TestVersionAPIIncludesP2PCapability(t *testing.T) {
+	client := newTestClient(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	rec := httptest.NewRecorder()
+
+	NewHandler(func() *moleAgent_client.Client { return client }).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal /api/version: %v", err)
+	}
+	if _, isBool := payload["p2p"].(bool); !isBool {
+		t.Fatalf("/api/version must contain bool \"p2p\", got %T", payload["p2p"])
+	}
+}
+
 func TestTunnelStreamSupportsSer2Net(t *testing.T) {
 	client := newTestClient(t, []moleAgent_client.Tunnel{
 		{

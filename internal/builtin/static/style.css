@@ -1092,6 +1092,7 @@ body {
 .badge-udp { background: #f3e8ff; color: #6b21a8; }
 .badge-ser2tcp { background: #fff7ed; color: #9a3412; }
 .badge-ser2udp { background: #faf5ff; color: #7e22ce; }
+.badge-p2p { background: #e0f2fe; color: #075985; }
 .badge-neutral { background: #eef2ff; color: #4338ca; }
 .badge-err { background: #fee2e2; color: #991b1b; }
 
@@ -1644,9 +1645,83 @@ body {
 
 .hidden { display: none !important; }
 
-@keyframes slideIn { 
-  from { transform: translateX(120%); opacity: 0; } 
-  to { transform: translateX(0); opacity: 1; } 
+/* ===== P2P ===== */
+.p2p-banner {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 14px;
+  line-height: 1.6;
+}
+
+.pf-mappings-head {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr 1.4fr 1fr 2.5rem;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.pf-map-row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr 1.4fr 1fr 2.5rem;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.pf-map-row select,
+.pf-map-row input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.pf-map-remove {
+  justify-self: center;
+  width: 30px;
+  padding: 4px 0 !important;
+  line-height: 1;
+  font-size: 15px;
+}
+
+.pf-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pf-mode-chip {
+  border: 1px solid var(--border-color);
+  background: #fff;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pf-mode-chip:hover { border-color: var(--primary); color: var(--primary); }
+
+.pf-mode-chip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+@keyframes slideIn {
+  from { transform: translateX(120%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
 }
 
 @media (max-width: 980px) {
@@ -1809,6 +1884,17 @@ body {
   .table-wrap {
     margin: 0 -18px;
     padding: 0 18px;
+  }
+
+  .pf-mappings-head { display: none; }
+
+  .pf-map-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pf-map-remove {
+    grid-column: 1 / -1;
+    width: 100%;
   }
 }
 

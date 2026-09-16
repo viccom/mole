@@ -25,6 +25,7 @@ type SystemInfo struct {
 	Goroutines int    `json:"goroutines"`
 	MemAllocMB uint64 `json:"mem_alloc_mb"`
 	MemSysMB   uint64 `json:"mem_sys_mb"`
+	P2P        bool   `json:"p2p"` // 构建能力标志：-tags p2p 构建=true（前端据此提示 P2P 不可用）
 }
 
 func GetSystemInfo() SystemInfo {
@@ -40,5 +41,6 @@ func GetSystemInfo() SystemInfo {
 		Goroutines: runtime.NumGoroutine(),
 		MemAllocMB: m.Alloc / 1024 / 1024,
 		MemSysMB:   m.Sys / 1024 / 1024,
+		P2P:        buildP2PEnabled,
 	}
 }

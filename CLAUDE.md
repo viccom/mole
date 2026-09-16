@@ -86,7 +86,7 @@ internal/
 | GET | `/api/tunnels/:name/chart` | VNT 流量图表 |
 | GET | `/api/tunnels/:name/stream` | SSE 实时数据流（ser2mq） |
 | GET | `/api/status` | 客户端全局状态 |
-| GET | `/api/version` | 版本与系统信息 |
+| GET | `/api/version` | 版本与系统信息（含 `p2p` 构建能力标志） |
 | GET | `/api/check-update` | 检测新版本 |
 | POST | `/api/self-update` | 自动升级并重启 |
 
