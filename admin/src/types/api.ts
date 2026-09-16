@@ -123,16 +123,19 @@ export interface TunnelPara {
   auth_type?: 'password' | 'key'
   password?: string
   priv_key?: string
-  // p2p 配置（字段与服务端 core.ValidateP2PPara / 客户端 proxy/p2p.P2PConfig 一致）
+  // p2p 配置（两层结构，与服务端 core.ValidateP2PPara / 客户端 proxy/p2p 一致：
+  // 连接参数两端对称；mappings 仅访问发起端配置，对端无需映射）
   room?: string
   modes?: string[]
   relay_server?: string
   mqtt_brokers?: string[]
   stun_servers?: string[]
-  protocol?: 'tcp' | 'udp'
-  local_port?: number
-  target_host?: string
-  target_port?: number
+  mappings?: Array<{
+    protocol: 'tcp' | 'udp'
+    local_port: number
+    target_host: string
+    target_port: number
+  }>
 }
 
 export interface SerialConfig {

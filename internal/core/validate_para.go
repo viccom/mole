@@ -20,24 +20,38 @@ var p2pModeSet = map[string]bool{
 // room 格式：8-32 字符 [a-zA-Z0-9_-]（与客户端 FromPara 校验一致）
 var p2pRoomRegexp = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,32}$`)
 
-// ValidateP2PPara 校验 p2p 隧道 Para 的合法性。
-// room 是共享密钥材料（知道 room 即可加入信令并推导 payload key），格式必须把关；
-// 规则与客户端 internal/proxy/p2p 的 Validate 保持一致：
+// p2pMapping / p2pPara 是 p2p 隧道 Para 的两层结构（协议契约 §0.2，与客户端逐字一致）：
+// 连接参数（room/modes/relay_server/mqtt_brokers/stun_servers）两端对称；
+// 端口映射 mappings[] 仅访问发起端配置，随 TUNNEL:OPEN 在线传给对端，对端无需配置。
+type p2pMapping struct {
+	Protocol   string `json:"protocol"`
+	LocalPort  int    `json:"local_port"`
+	TargetHost string `json:"target_host"`
+	TargetPort int    `json:"target_port"`
+}
+
+type p2pPara struct {
+	Room        string       `json:"room"`
+	Modes       []string     `json:"modes"`
+	RelayServer string       `json:"relay_server"`
+	MQTTBrokers []string     `json:"mqtt_brokers"`
+	STUNServers []string     `json:"stun_servers"`
+	Mappings    []p2pMapping `json:"mappings"`
+}
+
+// ValidateP2PPara 校验 p2p 隧道 Para 的合法性（协议契约 §0.3，与客户端逐字一致）。
+// room 是共享密钥材料（知道 room 即可加入信令并推导 payload key），格式必须把关：
 //   - room 必填，8-32 字符 [a-zA-Z0-9_-]
-//   - modes 可选（缺省=客户端默认链），每个值必须 ∈ AllModes
-//   - protocol 必填且 ∈ {tcp, udp}
-//   - 发起端（target_host 非空）：local_port、target_port 均 1-65535
-//   - 纯会话端（target_host 空）：target_port 必须为 0
+//   - modes 可选（缺省/空 = 客户端默认链），每个值必须 ∈ AllModes；
+//     含 v4-relay 时 relay_server 必填，否则忽略
+//   - mappings 可选（缺省/空数组 = 纯会话端，仅建会话不在本机监听端口），
+//     逐条校验：protocol ∈ {tcp,udp}；local_port/target_port 均 1-65535；
+//     target_host 非空；同一 para 内 local_port 不得重复
+//
+// 旧单组映射的顶层字段（protocol/local_port/target_host/target_port）已废弃；
+// 线上无存量 p2p 数据，不写兼容代码。
 func ValidateP2PPara(para json.RawMessage) error {
-	var p struct {
-		Room        string   `json:"room"`
-		Modes       []string `json:"modes"`
-		RelayServer string   `json:"relay_server"`
-		Protocol    string   `json:"protocol"`
-		LocalPort   int      `json:"local_port"`
-		TargetHost  string   `json:"target_host"`
-		TargetPort  int      `json:"target_port"`
-	}
+	var p p2pPara
 	if err := json.Unmarshal(para, &p); err != nil {
 		return fmt.Errorf("%w: p2p para is not valid JSON", ErrTunnelInvalid)
 	}
@@ -53,18 +67,24 @@ func ValidateP2PPara(para json.RawMessage) error {
 			return fmt.Errorf("%w: p2p modes contains v4-relay but relay_server is empty", ErrTunnelInvalid)
 		}
 	}
-	if p.Protocol != "tcp" && p.Protocol != "udp" {
-		return fmt.Errorf("%w: p2p protocol must be tcp or udp", ErrTunnelInvalid)
-	}
-	if p.TargetHost != "" {
-		if p.LocalPort < 1 || p.LocalPort > 65535 {
-			return fmt.Errorf("%w: p2p local_port must be 1-65535 for initiator side", ErrTunnelInvalid)
+	seen := make(map[int]bool, len(p.Mappings))
+	for i, m := range p.Mappings {
+		if m.Protocol != "tcp" && m.Protocol != "udp" {
+			return fmt.Errorf("%w: p2p mappings[%d].protocol must be tcp or udp", ErrTunnelInvalid, i)
 		}
-		if p.TargetPort < 1 || p.TargetPort > 65535 {
-			return fmt.Errorf("%w: p2p target_port must be 1-65535 for initiator side", ErrTunnelInvalid)
+		if m.LocalPort < 1 || m.LocalPort > 65535 {
+			return fmt.Errorf("%w: p2p mappings[%d].local_port must be 1-65535", ErrTunnelInvalid, i)
 		}
-	} else if p.TargetPort != 0 {
-		return fmt.Errorf("%w: p2p target_port must be 0 for pure session side (no target_host)", ErrTunnelInvalid)
+		if m.TargetHost == "" {
+			return fmt.Errorf("%w: p2p mappings[%d].target_host is required", ErrTunnelInvalid, i)
+		}
+		if m.TargetPort < 1 || m.TargetPort > 65535 {
+			return fmt.Errorf("%w: p2p mappings[%d].target_port must be 1-65535", ErrTunnelInvalid, i)
+		}
+		if seen[m.LocalPort] {
+			return fmt.Errorf("%w: p2p mappings[%d].local_port %d duplicated in same para", ErrTunnelInvalid, i, m.LocalPort)
+		}
+		seen[m.LocalPort] = true
 	}
 	return nil
 }

@@ -50,6 +50,19 @@ const P2P_ROOM_REGEXP = /^[a-zA-Z0-9_-]{8,32}$/
 const parseListInput = (value: string): string[] =>
   value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean)
 
+// p2p 端口映射行（输入态：端口用 string 以允许中途为空，提交时转 number）
+interface P2PMappingDraft {
+  protocol: 'tcp' | 'udp'
+  local_port: string
+  target_host: string
+  target_port: string
+}
+
+const newP2PMappingDraft = (): P2PMappingDraft => ({ protocol: 'tcp', local_port: '', target_host: '127.0.0.1', target_port: '' })
+
+// 整行留空视为未启用的空行（提交时忽略；校验与 buildPara 共用同一判空口径）
+const isP2PMappingRowEmpty = (m: P2PMappingDraft) => !m.local_port.trim() && !m.target_host.trim() && !m.target_port.trim()
+
 export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, onSuccess }: TunnelFormModalProps) {
   const { toast } = useToast()
   const isEdit = !!tunnel
@@ -129,13 +142,16 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
   const [sshPassword, setSshPassword] = useState(sshPwdSaved ? '' : (tunnel?.para?.password || ''))
   const [sshPrivKey, setSshPrivKey] = useState(sshKeySaved ? '' : (tunnel?.para?.priv_key || ''))
 
-  // p2p 配置：两端用同一 room 配对；发起端（target_host 非空）额外监听 local_port
+  // p2p 配置：连接参数两端对称（同 room 配对）；端口映射仅访问发起端配置，空列表 = 纯会话端
   const [p2pRoom, setP2pRoom] = useState(tunnel?.para?.room || '')
-  const [p2pProtocol, setP2pProtocol] = useState<'tcp' | 'udp'>(tunnel?.para?.protocol || 'tcp')
-  const [p2pRole, setP2pRole] = useState<'initiator' | 'session'>(tunnel?.para?.target_host ? 'initiator' : 'session')
-  const [p2pLocalPort, setP2pLocalPort] = useState(tunnel?.para?.local_port?.toString() || '')
-  const [p2pTargetHost, setP2pTargetHost] = useState(tunnel?.para?.target_host || '127.0.0.1')
-  const [p2pTargetPort, setP2pTargetPort] = useState(tunnel?.para?.target_port?.toString() || '')
+  const [p2pMappings, setP2pMappings] = useState<P2PMappingDraft[]>(
+    (tunnel?.para?.mappings || []).map(m => ({
+      protocol: m.protocol,
+      local_port: m.local_port?.toString() || '',
+      target_host: m.target_host || '',
+      target_port: m.target_port?.toString() || '',
+    })),
+  )
   const [p2pModes, setP2pModes] = useState<string[]>(tunnel?.para?.modes || [])
   const [p2pRelayServer, setP2pRelayServer] = useState(tunnel?.para?.relay_server || '')
   const [p2pMqttBrokers, setP2pMqttBrokers] = useState((tunnel?.para?.mqtt_brokers || []).join(', '))
@@ -243,23 +259,23 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
     if (type === 'p2p') {
       const brokers = parseListInput(p2pMqttBrokers)
       const stunServers = parseListInput(p2pStunServers)
+      const mappings = p2pMappings
+        .filter(m => !isP2PMappingRowEmpty(m))
+        .map(m => ({
+          protocol: m.protocol,
+          local_port: Number(m.local_port),
+          target_host: m.target_host.trim(),
+          target_port: Number(m.target_port),
+        }))
       return {
-        enable: enabled,
         room: p2pRoom.trim(),
-        protocol: p2pProtocol,
         // 空数组/空串一律省略，服务端与客户端以「字段缺失」为使用默认值的信号
         ...(p2pModes.length ? { modes: p2pModes } : {}),
         ...(p2pModes.includes('v4-relay') && p2pRelayServer.trim() ? { relay_server: p2pRelayServer.trim() } : {}),
         ...(brokers.length ? { mqtt_brokers: brokers } : {}),
         ...(stunServers.length ? { stun_servers: stunServers } : {}),
-        // 纯会话端不带 target_host/local_port/target_port（服务端要求 target_port 必须为 0）
-        ...(p2pRole === 'initiator'
-          ? {
-              local_port: Number(p2pLocalPort),
-              target_host: p2pTargetHost.trim(),
-              target_port: Number(p2pTargetPort),
-            }
-          : {}),
+        // 空列表 = 纯会话端（仅建会话不监听端口）；映射随 TUNNEL:OPEN 在线传给对端
+        ...(mappings.length ? { mappings } : {}),
       }
     }
     return undefined
@@ -333,7 +349,7 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
       }
     }
     if (type === 'p2p') {
-      // 规则与服务端 core.ValidateP2PPara 一致，前端先拦一道给出可读提示
+      // 规则与服务端 core.ValidateP2PPara（协议契约 §0.3）一致，前端先拦一道给出可读提示
       if (!P2P_ROOM_REGEXP.test(p2pRoom.trim())) {
         toast('room 必须为 8-32 个字符，仅限字母数字和 _ -', 'error')
         return
@@ -342,21 +358,28 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         toast('选中 v4-relay 模式时必须填写中继服务器地址', 'error')
         return
       }
-      if (p2pRole === 'initiator') {
-        const localPort = Number(p2pLocalPort)
+      const seenPorts = new Set<number>()
+      for (const [i, m] of p2pMappings.entries()) {
+        if (isP2PMappingRowEmpty(m)) continue
+        const localPort = Number(m.local_port)
         if (!(localPort >= 1 && localPort <= 65535)) {
-          toast('本地监听端口必须为 1-65535', 'error')
+          toast(`映射第 ${i + 1} 行：本端监听端口必须为 1-65535`, 'error')
           return
         }
-        if (!p2pTargetHost.trim()) {
-          toast('请输入对端目标地址', 'error')
+        if (!m.target_host.trim()) {
+          toast(`映射第 ${i + 1} 行：请输入对端目标地址`, 'error')
           return
         }
-        const targetPort = Number(p2pTargetPort)
+        const targetPort = Number(m.target_port)
         if (!(targetPort >= 1 && targetPort <= 65535)) {
-          toast('对端目标端口必须为 1-65535', 'error')
+          toast(`映射第 ${i + 1} 行：对端目标端口必须为 1-65535`, 'error')
           return
         }
+        if (seenPorts.has(localPort)) {
+          toast(`映射第 ${i + 1} 行：本端监听端口 ${localPort} 与其它映射重复`, 'error')
+          return
+        }
+        seenPorts.add(localPort)
       }
     }
     if (!isEdit && !nodeId) {
@@ -395,8 +418,8 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
             case 'vpn-manager': return vpnBinaryName
             case 'ser2tcp': case 'ser2udp': return snSerialPort
             case 'webssh': return `${sshHost}:${sshPort}`
-            // p2p 的实际访问目标在 para（target_host/target_port），Target 仅作列表展示
-            case 'p2p': return p2pRole === 'initiator' ? `${p2pTargetHost.trim()}:${p2pTargetPort}` : ''
+            // p2p 的实际映射在 para.mappings，Target 仅作列表展示
+            case 'p2p': return (buildPara()?.mappings || []).map(m => `${m.target_host}:${m.target_port}`).join(', ')
             default: return target.trim()
           }
         })(),
@@ -974,21 +997,6 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
               P2P 打洞直连：两个节点各建一条同 room 的 p2p 隧道，配对成功后数据由两端点对点直连，
               不经服务端网关中转（仅 v4-relay 模式经中继）。需客户端用 <span className="font-mono">-tags p2p</span> 构建。
             </div>
-            <FormField label="本端角色">
-              <select
-                value={p2pRole}
-                onChange={e => setP2pRole(e.target.value as 'initiator' | 'session')}
-                className={selectClass}
-              >
-                <option value="initiator">发起端（本端监听端口 → 对端目标）</option>
-                <option value="session">纯会话端（仅配对，不监听端口）</option>
-              </select>
-              <p className="mt-1 text-xs text-gray-500">
-                {p2pRole === 'initiator'
-                  ? '用户访问「发起端 : 本地监听端口」，由对端节点转发到其内网目标地址。'
-                  : '本端不监听端口，仅建立会话把本端内网服务暴露给对端 OPEN 使用。'}
-              </p>
-            </FormField>
             <FormField label="Room（配对密钥）">
               <input
                 type="text"
@@ -1001,55 +1009,81 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
                 两端必须完全一致：8-32 个字符，仅限字母数字和 _ -。room 即共享密钥（可推导信令与载荷密钥），请通过安全渠道告知对端。
               </p>
             </FormField>
-            <FormField label="协议">
-              <select
-                value={p2pProtocol}
-                onChange={e => setP2pProtocol(e.target.value as 'tcp' | 'udp')}
-                className={`${selectClass} max-w-48`}
-              >
-                <option value="tcp">TCP</option>
-                <option value="udp">UDP</option>
-              </select>
-            </FormField>
-            {p2pRole === 'initiator' && (
-              <>
-                <FormField label="本地监听端口">
-                  <input
-                    type="number"
-                    value={p2pLocalPort}
-                    onChange={e => setP2pLocalPort(e.target.value)}
-                    min="1"
-                    max="65535"
-                    placeholder="例如: 18080"
-                    className={inputClass}
-                  />
-                  <p className="mt-1 text-xs text-gray-500">运行 p2p 的节点本机监听端口，用户连它就是访问对端目标服务。</p>
-                </FormField>
-                <div className="grid grid-cols-2 gap-4">
-                  <FormField label="对端目标地址">
-                    <input
-                      type="text"
-                      value={p2pTargetHost}
-                      onChange={e => setP2pTargetHost(e.target.value)}
-                      placeholder="127.0.0.1"
-                      className={inputClass}
-                    />
-                  </FormField>
-                  <FormField label="对端目标端口">
-                    <input
-                      type="number"
-                      value={p2pTargetPort}
-                      onChange={e => setP2pTargetPort(e.target.value)}
-                      min="1"
-                      max="65535"
-                      placeholder="8080"
-                      className={inputClass}
-                    />
-                  </FormField>
+            <div className="border-t border-gray-200 pt-4 mt-2">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-medium text-gray-700">端口映射（可选）</h4>
+                <button
+                  type="button"
+                  onClick={() => setP2pMappings(prev => [...prev, newP2PMappingDraft()])}
+                  className="px-3 py-1.5 text-sm border border-primary text-primary rounded-lg hover:bg-primary/5"
+                >
+                  + 添加映射
+                </button>
+              </div>
+              {p2pMappings.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  未添加映射 = 纯会话端：仅建立 p2p 会话，把本端内网服务暴露给对端使用，本机不监听任何端口。
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-[5.5rem_1fr_1.4fr_1fr_2.5rem] gap-2 text-xs text-gray-500">
+                    <span>协议</span>
+                    <span>本端监听端口</span>
+                    <span>对端目标地址</span>
+                    <span>对端目标端口</span>
+                    <span />
+                  </div>
+                  {p2pMappings.map((m, i) => (
+                    <div key={i} className="grid grid-cols-[5.5rem_1fr_1.4fr_1fr_2.5rem] gap-2">
+                      <select
+                        value={m.protocol}
+                        onChange={e => setP2pMappings(prev => prev.map((row, idx) => idx === i ? { ...row, protocol: e.target.value as 'tcp' | 'udp' } : row))}
+                        className={selectClass}
+                      >
+                        <option value="tcp">TCP</option>
+                        <option value="udp">UDP</option>
+                      </select>
+                      <input
+                        type="number"
+                        value={m.local_port}
+                        onChange={e => setP2pMappings(prev => prev.map((row, idx) => idx === i ? { ...row, local_port: e.target.value } : row))}
+                        min="1"
+                        max="65535"
+                        placeholder="18080"
+                        className={inputClass}
+                      />
+                      <input
+                        type="text"
+                        value={m.target_host}
+                        onChange={e => setP2pMappings(prev => prev.map((row, idx) => idx === i ? { ...row, target_host: e.target.value } : row))}
+                        placeholder="127.0.0.1"
+                        className={inputClass}
+                      />
+                      <input
+                        type="number"
+                        value={m.target_port}
+                        onChange={e => setP2pMappings(prev => prev.map((row, idx) => idx === i ? { ...row, target_port: e.target.value } : row))}
+                        min="1"
+                        max="65535"
+                        placeholder="8080"
+                        className={inputClass}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setP2pMappings(prev => prev.filter((_, idx) => idx !== i))}
+                        className="px-2 py-2 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+                        aria-label="删除此映射"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
                 </div>
-                <p className="-mt-2 text-xs text-gray-500">目标地址是「纯会话端」节点视角的内网地址（如 127.0.0.1:8080）。</p>
-              </>
-            )}
+              )}
+              <p className="mt-2 text-xs text-gray-500">
+                目标地址由对端解析（如 127.0.0.1 或对端内网地址）。同一隧道内本端监听端口不得重复。
+              </p>
+            </div>
 
             <div className="border-t border-gray-200 pt-4 mt-2">
               <h4 className="text-sm font-medium text-gray-700 mb-3">打洞选项（可选）</h4>

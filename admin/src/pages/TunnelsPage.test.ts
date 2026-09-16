@@ -90,7 +90,7 @@ describe('tunnelMatchesKeyword', () => {
       target: '127.0.0.1:8080',
       enabled: true,
       node_id: 'node-1',
-      para: { room: 'MyRoom_2026_x', protocol: 'tcp', local_port: 18080, target_host: '127.0.0.1', target_port: 8080 },
+      para: { room: 'MyRoom_2026_x', mappings: [{ protocol: 'tcp', local_port: 18080, target_host: '127.0.0.1', target_port: 8080 }] },
     }
 
     expect(tunnelMatchesKeyword(p2pTunnel, 'myroom_2026_x')).toBe(true)
