@@ -58,6 +58,7 @@ internal/
 | `ser2udp` | 串口 ↔ UDP（Server/Client 双模式，本地透传，不参与路由） |
 | `vpn-manager` | VPN 程序启停监视 |
 | `webssh` | WebSSH 远程终端 + SFTP（TOFU 主机密钥） |
+| `p2p` | P2P 打洞直连（`-tags p2p` 构建；连接参数 + 端口映射两层，同 room 配对，映射仅访问发起端配置） |
 
 ## 统一 API
 

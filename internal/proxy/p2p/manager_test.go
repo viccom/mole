@@ -17,8 +17,8 @@ func setupTestManager(t *testing.T) (*Manager, *sessionRecorder) {
 }
 
 func p2pCfg(room string) P2PConfig {
-	return P2PConfig{Room: room, Protocol: "tcp", LocalPort: 18080,
-		TargetHost: "127.0.0.1", TargetPort: 8080}
+	return P2PConfig{Room: room, Mappings: []Mapping{{Protocol: "tcp", LocalPort: 18080,
+		TargetHost: "127.0.0.1", TargetPort: 8080}}}
 }
 
 // Notify 增量启停：新配置启动 handler、配置消失即停机（Enable=false 不下发=消失）
@@ -47,8 +47,10 @@ func TestNotifyParaChangeRestarts(t *testing.T) {
 	waitFor(t, func() bool { return sessions.len() >= 1 }, 2*time.Second, "first handler not started")
 	first := sessions.at(0)
 
+	// 换新切片而非原地改：changed := cfg 浅拷贝共享 Mappings 底层数组，
+	// 原地改会连带改掉 Manager 已存的旧配置，configEqual 判等导致不重启
 	changed := cfg
-	changed.LocalPort = 19999
+	changed.Mappings = []Mapping{{Protocol: "tcp", LocalPort: 19999, TargetHost: "127.0.0.1", TargetPort: 8080}}
 	m.OnTunnelUpdate(map[string]P2PConfig{"a": changed})
 	waitFor(t, func() bool { return sessions.len() >= 2 }, 2*time.Second, "handler not restarted on Para change")
 	// 拆除在 OnTunnelUpdate 锁外异步完成（复审 F1）：等待旧会话关闭而非立即断言
@@ -113,7 +115,7 @@ func TestCloseAll(t *testing.T) {
 	m, sessions := setupTestManager(t)
 
 	b := p2pCfg("closebbb01")
-	b.LocalPort = 18081 // F11：同节点 local_port 唯一性，测试用不同端口
+	b.Mappings[0].LocalPort = 18081 // F11：同节点 local_port 唯一性，测试用不同端口
 	m.OnTunnelUpdate(map[string]P2PConfig{
 		"a": p2pCfg("closeaaa01"),
 		"b": b,
@@ -134,7 +136,7 @@ func TestLocalPortConflictSkipsNewer(t *testing.T) {
 
 	a := p2pCfg("conflicta1") // 按名排序先启动
 	b := p2pCfg("conflictb1")
-	b.LocalPort = a.LocalPort // 故意同端口
+	b.Mappings[0].LocalPort = a.Mappings[0].LocalPort // 故意同端口
 
 	h.OnTunnelUpdate(map[string]P2PConfig{"a": a, "b": b})
 

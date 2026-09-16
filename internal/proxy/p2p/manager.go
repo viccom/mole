@@ -47,7 +47,8 @@ type Manager struct {
 }
 
 // NewManager 构造 Manager。serverHost 用于派生默认服务器列表：
-// mqtt_brokers 空 → tcp://<serverHost>:1883；stun_servers 空 → 公共列表 + <serverHost>:3478。
+// mqtt_brokers 空 → 公共 broker 列表 + tcp://<serverHost>:1883 兜底；
+// stun_servers 空 → 公共列表 + <serverHost>:3478。
 func NewManager(serverHost string) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
@@ -95,33 +96,44 @@ func (m *Manager) OnTunnelUpdate(configs map[string]P2PConfig) {
 	if len(m.handlers) == 0 {
 		m.brokerSig = ""
 	}
-	// 起：新增的 + 变更重启的。按名排序保证确定性；发起端 local_port
-	// 全节点唯一——重复端口的败者会以 Connected 状态空转并不断重试绑定
-	//（复审 F11），配置期直接跳过并告警
+	// 起：新增的 + 变更重启的。按名排序保证确定性；发起端各 mapping 的
+	// local_port 全节点唯一（跨隧道）——重复端口的败者会以 Connected 状态
+	// 空转并不断重试绑定（复审 F11），配置期直接跳过并告警
 	names := make([]string, 0, len(configs))
 	for name := range configs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	usedPorts := make(map[int]string)
-	for hname, h := range m.handlers {
-		if oc, ok := m.configs[hname]; ok && oc.TargetHost != "" && oc.LocalPort > 0 {
-			usedPorts[oc.LocalPort] = hname
+	for hname := range m.handlers {
+		if oc, ok := m.configs[hname]; ok {
+			for _, mp := range oc.Mappings {
+				if mp.LocalPort > 0 { // 越界不参与登记（防御，Validate 已拦非法值）
+					usedPorts[mp.LocalPort] = hname
+				}
+			}
 		}
-		_ = h
 	}
 	for _, name := range names {
 		if _, running := m.handlers[name]; running {
 			continue
 		}
 		cfg := configs[name]
-		if cfg.TargetHost != "" && cfg.LocalPort > 0 {
-			if owner, dup := usedPorts[cfg.LocalPort]; dup {
-				slog.Error("p2p tunnel skipped: local_port already used on this node",
-					"tunnel", name, "port", cfg.LocalPort, "owner", owner)
+		conflict := false
+		for _, mp := range cfg.Mappings {
+			if mp.LocalPort <= 0 {
 				continue
 			}
-			usedPorts[cfg.LocalPort] = name
+			if owner, dup := usedPorts[mp.LocalPort]; dup {
+				slog.Error("p2p tunnel skipped: local_port already used on this node",
+					"tunnel", name, "port", mp.LocalPort, "owner", owner)
+				conflict = true
+				break
+			}
+			usedPorts[mp.LocalPort] = name
+		}
+		if conflict {
+			continue
 		}
 		m.startLocked(name, cfg)
 	}
@@ -278,9 +290,11 @@ func DefaultSTUNServers(serverHost string) []string {
 	return append(engine.DefaultSTUNServers(), net.JoinHostPort(serverHost, "3478"))
 }
 
-// defaultMQTTBrokers 默认指向 server 内嵌 broker
+// DefaultMQTTBrokers 公共 broker 列表在前 + server 内嵌 broker 兜底追加
+// （协议契约 §0.2：mqtt_brokers 省略或空 = 公共服务器优先 + 本服务端兜底；
+// easyp2p 对列表并发建连、信令跨全部已连 broker 广播，任一共有 broker 可达即可承载）
 func DefaultMQTTBrokers(serverHost string) []string {
-	return []string{"tcp://" + net.JoinHostPort(serverHost, "1883")}
+	return append(engine.DefaultMQTTBrokers(), "tcp://"+net.JoinHostPort(serverHost, "1883"))
 }
 
 // MQTTBrokerSignature 归一化 broker 列表的比较签名：小写 scheme/host、

@@ -5,6 +5,7 @@ package p2p
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -233,7 +234,7 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 		// 发起端建隧道持续失败视同未连通：必须走退避而不是 3s 快速重连——
 		// 否则完整重打洞（conntrack 洪泛源）无限循环（复审 F5）
 		tunnelOK := true
-		if h.cfg.TargetHost != "" && !h.restoreTunnel(ctx, sess) {
+		if len(h.cfg.Mappings) > 0 && !h.restoreTunnel(ctx, sess) {
 			tunnelOK = false
 			// 会话虽活但本端监听不存在：就地拆掉走退避重试。否则控制流会一直
 			// 停在 <-runDone 等会话自然断开，期间永不重试、Status 还报 Connected
@@ -254,29 +255,43 @@ func (h *Handler) tryConnect(ctx context.Context) bool {
 	return false
 }
 
-// restoreTunnel 发起端建隧道，3 次重试（对齐上游 connection.go 重连自愈惯例）
+// restoreTunnel 发起端按 mappings 逐条建隧道（每条 mapping 一个独立 tunnel，
+// fork 的 tunnel.Manager 原生支持多隧道），每条 3 次重试（对齐上游
+// connection.go 重连自愈惯例）。逐条尽力 + 全部成功才算连通：任一条失败
+// 视同未连通走退避（F5 语义：本端监听不完整视同未连通），失败项汇总进 setFailure
 func (h *Handler) restoreTunnel(ctx context.Context, sess session.Session) bool {
-	params := tunnel.Params{
-		Protocol:   h.cfg.Protocol,
-		LocalPort:  h.cfg.LocalPort,
-		TargetHost: h.cfg.TargetHost,
-		TargetPort: h.cfg.TargetPort,
-	}
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if _, err := sess.CreateTunnel(params); err != nil {
-			lastErr = err
-			select {
-			case <-ctx.Done():
-				return false
-			case <-time.After(tunnelRetryDelay):
-			}
-			continue
+	var failed []string
+	for _, m := range h.cfg.Mappings {
+		params := tunnel.Params{
+			Protocol:   m.Protocol,
+			LocalPort:  m.LocalPort,
+			TargetHost: m.TargetHost,
+			TargetPort: m.TargetPort,
 		}
-		return true
+		ok := false
+		var lastErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if _, err := sess.CreateTunnel(params); err != nil {
+				lastErr = err
+				select {
+				case <-ctx.Done():
+					return false
+				case <-time.After(tunnelRetryDelay):
+				}
+				continue
+			}
+			ok = true
+			break
+		}
+		if !ok {
+			failed = append(failed, fmt.Sprintf(":%d (%v)", m.LocalPort, lastErr))
+		}
 	}
-	h.setFailure(fmt.Sprintf("tunnel :%d FAILED after 3 retries: %v", h.cfg.LocalPort, lastErr))
-	return false
+	if len(failed) > 0 {
+		h.setFailure(fmt.Sprintf("tunnels FAILED after 3 retries: %s", strings.Join(failed, ", ")))
+		return false
+	}
+	return true
 }
 
 // Status 运行时快照：Connected = session 已建立；字节聚合自 ListTunnels

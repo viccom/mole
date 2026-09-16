@@ -172,8 +172,8 @@ func withFailingConnect(t *testing.T, failTimes int, backoffSpy *intSlice) *sess
 
 func initiatorCfg() P2PConfig {
 	// 显式单 mode：每个连接循环轮次恰好一次尝试，退避计数可精确断言
-	return P2PConfig{Room: "roomOK123456", Modes: []string{"lan"}, Protocol: "tcp",
-		LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 8080}
+	return P2PConfig{Room: "roomOK123456", Modes: []string{"lan"},
+		Mappings: []Mapping{{Protocol: "tcp", LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 8080}}}
 }
 
 // 发起端：session 建立后必须 CreateTunnel（本地监听 + 由对端 dial target）
@@ -194,10 +194,91 @@ func TestHandlerRunWithTargetCreatesTunnel(t *testing.T) {
 	}
 }
 
+// 多组映射：restoreTunnel 必须逐条 CreateTunnel（每条 mapping 一个独立
+// tunnel，fork 原生多隧道），参数逐项对应
+func TestHandlerRunMultiMappingCreatesEachTunnel(t *testing.T) {
+	sessions := withFailingConnect(t, 0, nil)
+	cfg := P2PConfig{Room: "roomOK123456", Modes: []string{"lan"}, Mappings: []Mapping{
+		{Protocol: "tcp", LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 80},
+		{Protocol: "udp", LocalPort: 18081, TargetHost: "10.0.0.2", TargetPort: 53},
+	}}
+	h := NewHandler(cfg, "127.0.0.1", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = h.Run(ctx) }()
+	t.Cleanup(cancel)
+
+	waitFor(t, func() bool { return sessions.len() > 0 && sessions.at(0).createCount() == 2 },
+		2*time.Second, "expected 2 CreateTunnel calls for 2 mappings")
+	calls := sessions.at(0).createCallsForAssert()
+	want := []tunnel.Params{
+		{Protocol: "tcp", LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 80},
+		{Protocol: "udp", LocalPort: 18081, TargetHost: "10.0.0.2", TargetPort: 53},
+	}
+	for i, w := range want {
+		if calls[i] != w {
+			t.Fatalf("CreateTunnel[%d] = %+v, want %+v", i, calls[i], w)
+		}
+	}
+}
+
+// 部分映射建失败：视同未连通走退避重连，而不是带着残缺监听继续跑
+//（F5 语义延伸：本端监听不完整不能算连通）
+func TestHandlerPartialMappingFailureTriggersBackoff(t *testing.T) {
+	// 压缩重试间隔与退避（注册序即逆清理序：延迟恢复最后执行，此刻 Run 已退出）
+	origDelay := tunnelRetryDelay
+	tunnelRetryDelay = time.Millisecond
+	t.Cleanup(func() { tunnelRetryDelay = origDelay })
+	origBackoff := backoffFn
+	backoffFn = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { backoffFn = origBackoff })
+
+	attempts := &intSlice{}
+	origConnect := connectFn
+	connectFn = func(ctx context.Context, modeName string, cfg P2PConfig, host string, creds SignalCredentials) (session.Session, error) {
+		attempts.add(0)
+		return &partialCreateSession{mockSession: newMockSession()}, nil
+	}
+	t.Cleanup(func() { connectFn = origConnect })
+
+	cfg := P2PConfig{Room: "roomOK123456", Modes: []string{"lan"}, Mappings: []Mapping{
+		{Protocol: "tcp", LocalPort: 18080, TargetHost: "127.0.0.1", TargetPort: 80},
+		{Protocol: "tcp", LocalPort: 18081, TargetHost: "127.0.0.1", TargetPort: 81},
+	}}
+	h := NewHandler(cfg, "127.0.0.1", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { _ = h.Run(ctx); close(runDone) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	// 第一条成功、第二条持续失败 → 整轮视同未连通 → 退避后重连（第二次 connect）
+	waitFor(t, func() bool { return len(attempts.snapshot()) >= 2 },
+		3*time.Second, "partial mapping failure must enter backoff and reconnect")
+	// 轮询而非立即读：重连瞬间的 setSession 会先清 lastErr，新一轮失败重写前有空窗
+	waitFor(t, func() bool { return strings.Contains(h.Status().Error, "FAILED") },
+		3*time.Second, "failure summary must surface in Status.Error")
+}
+
+// partialCreateSession 第 2 条起 CreateTunnel 永远失败（模拟第二个端口被占用）
+type partialCreateSession struct{ *mockSession }
+
+func (m *partialCreateSession) CreateTunnel(p tunnel.Params) (session.TunnelInfo, error) {
+	if m.createCount() >= 1 {
+		return session.TunnelInfo{}, errors.New("bind: address already in use")
+	}
+	return m.mockSession.CreateTunnel(p)
+}
+
 // 纯会话端：只建 session 供对端 OPEN，不得 CreateTunnel
 func TestHandlerPureSessionNoTunnel(t *testing.T) {
 	sessions := withFailingConnect(t, 0, nil)
-	cfg := P2PConfig{Room: "roomOK123456", Protocol: "tcp"} // 无 target
+	cfg := P2PConfig{Room: "roomOK123456"} // 无映射 = 纯会话端
 	h := NewHandler(cfg, "127.0.0.1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())

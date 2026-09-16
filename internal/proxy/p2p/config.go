@@ -13,25 +13,30 @@ import (
 	"moleAgent_client/internal/p2p/engine"
 )
 
-// P2PConfig 对应服务端存储的 p2p 隧道 Para（json tag 与服务端 core.ValidateP2PPara 校验字段一致）。
-//
-// 隧道两端不对称（tunnel.go 语义）：
-//   - 发起端（TargetHost 非空）：session 建立后 CreateTunnel 监听 LocalPort，
-//     用户连 发起端:LocalPort，由对端 dial TargetHost:TargetPort
-//   - 纯会话端（TargetHost 空）：只建 session 供对端 OPEN，自身不 CreateTunnel
+// Mapping 单条端口映射（对端无需配置：参数随 TUNNEL:OPEN 在线传给对端，
+// 对端 AcceptRemote 被动接受——p2punch 原生行为）。
+type Mapping struct {
+	Protocol   string `json:"protocol"`    // "tcp" / "udp"
+	LocalPort  int    `json:"local_port"`  // 本端监听端口
+	TargetHost string `json:"target_host"` // 对端解析的目标地址
+	TargetPort int    `json:"target_port"` // 对端目标端口
+}
+
+// P2PConfig 对应服务端存储的 p2p 隧道 Para（json tag 与服务端 core.ValidateP2PPara
+// 校验字段一致）。两层结构（协议契约 §0.2）：
+//   - 连接参数（Room/Modes/RelayServer/MQTTBrokers/STUNServers）两端对称，同 room 配对
+//   - Mappings 仅访问发起端配置：会话建立后逐条 CreateTunnel；
+//     空 = 纯会话端（只建 session 供对端 OPEN，本机不监听任何端口）
 //
 // Enable 不入结构体：Manager 以「配置从 map 消失」为停机信号（同 ser2mq/ser2net/webssh），
 // 由上层 notifyManagers 用 IsEnabled() 过滤后再下发。
 type P2PConfig struct {
-	Room        string   `json:"room"`                   // 8-32 [a-zA-Z0-9_-]，共享密钥材料
-	Modes       []string `json:"modes,omitempty"`        // 空 = engine.DefaultModes
-	RelayServer string   `json:"relay_server,omitempty"` // v4-relay 预留
-	MQTTBrokers []string `json:"mqtt_brokers,omitempty"` // 空 = tcp://<serverHost>:1883
-	STUNServers []string `json:"stun_servers,omitempty"` // 空 = 公共列表 + serverHost:3478
-	Protocol    string   `json:"protocol"`               // "tcp" / "udp"，恒填
-	LocalPort   int      `json:"local_port,omitempty"`   // 仅发起端：本端监听端口
-	TargetHost  string   `json:"target_host,omitempty"`  // 仅发起端填写；空 = 纯会话端
-	TargetPort  int      `json:"target_port,omitempty"`  // 仅发起端；纯会话端必须为 0
+	Room        string    `json:"room"`                   // 8-32 [a-zA-Z0-9_-]，共享密钥材料
+	Modes       []string  `json:"modes,omitempty"`        // 空 = engine.DefaultModes
+	RelayServer string    `json:"relay_server,omitempty"` // modes 含 v4-relay 时必填
+	MQTTBrokers []string  `json:"mqtt_brokers,omitempty"` // 空 = 公共 broker 优先 + tcp://<serverHost>:1883 兜底
+	STUNServers []string  `json:"stun_servers,omitempty"` // 空 = 公共列表 + serverHost:3478
+	Mappings    []Mapping `json:"mappings,omitempty"`     // 空 = 纯会话端
 }
 
 // room 校验自实现（p2punch 的 validateRoom 在 cmd 层，fork 不带）；
@@ -59,12 +64,15 @@ func (c P2PConfig) ToPara() (json.RawMessage, error) {
 	return b, nil
 }
 
-// Validate 校验规则（与 server core.ValidateP2PPara 保持一致）：
+// Validate 校验规则（与 server core.ValidateP2PPara 保持一致，协议契约 §0.3）：
 //   - room 8-32 [a-zA-Z0-9_-]
-//   - modes ⊆ engine.AllModes（空 = 默认链）
-//   - protocol ∈ {tcp, udp} 恒校验
-//   - 发起端：local_port、target_port 均 1-65535
-//   - 纯会话端：target_port 必须为 0
+//   - modes ⊆ engine.AllModes（空 = 默认链）；含 v4-relay 时 relay_server 必填
+//   - mappings 逐条：protocol ∈ {tcp, udp}；local_port/target_port 均 1-65535；
+//     target_host 非空；同 para 内 local_port 不得重复（I12）
+//   - mappings 空 = 纯会话端，合法（只建会话不监听端口）
+//
+// 旧单组映射的顶层字段（protocol/local_port/target_host/target_port）已废弃，
+// 无存量数据，不做兼容。
 func (c P2PConfig) Validate() error {
 	if !roomRegexp.MatchString(c.Room) {
 		return fmt.Errorf("p2p room must be 8-32 chars of [a-zA-Z0-9_-]")
@@ -79,18 +87,24 @@ func (c P2PConfig) Validate() error {
 			return fmt.Errorf("p2p modes contains v4-relay but relay_server is empty (para field relay_server)")
 		}
 	}
-	if c.Protocol != "tcp" && c.Protocol != "udp" {
-		return fmt.Errorf("p2p protocol must be tcp or udp")
-	}
-	if c.TargetHost != "" {
-		if c.LocalPort < 1 || c.LocalPort > 65535 {
-			return fmt.Errorf("p2p local_port must be 1-65535 for initiator side")
+	seen := make(map[int]bool, len(c.Mappings))
+	for i, m := range c.Mappings {
+		if m.Protocol != "tcp" && m.Protocol != "udp" {
+			return fmt.Errorf("p2p mappings[%d].protocol must be tcp or udp", i)
 		}
-		if c.TargetPort < 1 || c.TargetPort > 65535 {
-			return fmt.Errorf("p2p target_port must be 1-65535 for initiator side")
+		if m.LocalPort < 1 || m.LocalPort > 65535 {
+			return fmt.Errorf("p2p mappings[%d].local_port must be 1-65535", i)
 		}
-	} else if c.TargetPort != 0 {
-		return fmt.Errorf("p2p target_port must be 0 for pure session side (no target_host)")
+		if m.TargetHost == "" {
+			return fmt.Errorf("p2p mappings[%d].target_host is required", i)
+		}
+		if m.TargetPort < 1 || m.TargetPort > 65535 {
+			return fmt.Errorf("p2p mappings[%d].target_port must be 1-65535", i)
+		}
+		if seen[m.LocalPort] {
+			return fmt.Errorf("p2p mappings[%d].local_port %d duplicated in same para", i, m.LocalPort)
+		}
+		seen[m.LocalPort] = true
 	}
 	return nil
 }
