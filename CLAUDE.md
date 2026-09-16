@@ -14,9 +14,13 @@ config.go                    Config 加载/验证/默认值
 tunnel.go                    TunnelType 常量、Tunnel 结构体、校验与转换
 event.go                     EventBus 同步事件总线
 nodeid.go                    节点 ID 生成（硬件指纹 + 随机回退）
+p2p_hook.go                  p2pController 接口 + P2PRuntime 状态结构（无 tag）
+client_p2p.go                //go:build p2p      真实现（Para 解析过滤 + 信令凭据拉取）
+client_p2p_stub.go           //go:build !p2p    空实现（默认构建零 P2P 代码）
 internal/
   protocol/types.go          协议层类型（ControlCmd, Tunnel 等）
   transport/dialer.go        连接/认证/smux 会话管理
+  p2p/                       fork 自 p2punch 的上游代码（easyp2p/engine/session/tunnel）——禁止修改
   proxy/http.go              HTTP + WebSocket 代理
   proxy/tcp.go               TCP/UDP 原始转发
   proxy/relay.go             双向数据转发 + 流量统计
@@ -40,6 +44,10 @@ internal/
     handler.go               SSH 连接/会话桥接 + TOFU 主机密钥
     handler_sftp.go          SFTP 文件操作（列表/上传/下载/删除/读取）
     manager.go               多隧道生命周期管理
+  proxy/p2p/                 （//go:build p2p）P2P 打洞直连
+    config.go                P2PConfig 两层结构（连接参数 + mappings[]）+ §0.3 校验
+    handler.go               连接编排：mode 链逐个尝试 → session → 按 mappings 逐条 CreateTunnel
+    manager.go               多隧道生命周期管理 + local_port 跨隧道唯一性
   builtin/
     server.go                内置 HTTP 服务 + REST API
     static/                  前端（ES Module 模块化，go:embed 嵌入）
@@ -100,6 +108,7 @@ webssh 隧道无专属 REST 端点：运行时状态（sessions、bytes、last_r
 | S→C | `tunnel_push` | 全量替换客户端 `tunnels[]` |
 | S→C | `tunnel_action` | 远程 start/stop/restart（vpn-manager/ser2mq/ser2tcp/ser2udp） |
 | S→C | `restart` | 远程重启（CAS 防重复，delay 上限 300s，仅标记由 supervisor 拉起） |
+| C→S | `p2p_signal_token` | p2p 信令 MQTT 凭据请求（仅 -tags p2p；平铺 JSON 响应，凭据只存内存） |
 
 响应统一经 `readResponse()` 读取（单次读，仅适用于简短 ack）。
 
@@ -132,6 +141,7 @@ applyTunnelMutation() 在快照上执行增/删/替换
 - ser2tcp/ser2udp：`json.Unmarshal(Para)` → `ser2net.Ser2NetConfig` → `ser2netMgr.OnTunnelUpdate(configs map)`
 - vpn-manager：`json.Unmarshal(Para)` → `vpn.Config` → `vpnMgr.OnTunnelUpdate(names, configs map)`
 - webssh：`json.Unmarshal(Para)` → `WebSSHConfig` → `websshMgr.OnTunnelUpdate(configs map)`
+- p2p：经 `p2pController.Notify` 过滤（TunnelTypeP2P + IsEnabled + Para 合法）→ `p2pMgr.OnTunnelUpdate(configs map)`；仅 -tags p2p 构建，默认构建 controller 为 nil，p2p 隧道**静默不启动**
 - disabled 的隧道不进入 configs map，Manager 检测到"消失"会停止对应处理器/进程
 
 ### ⚠️ 易出错点
@@ -159,6 +169,8 @@ applyTunnelMutation() 在快照上执行增/删/替换
 13. **WebSSH 主机密钥**：优先加载可执行文件同目录 `config/known_hosts`；不存在时 TOFU（首次信任，缓存跨连接复用，进程重启首次仍信任）
 14. **WebSSH 消息协议**：`[type 1B][len 2B BE][payload]`，type 见 `handler.go` 常量（终端数据/resize/心跳/文件操作），payload 上限 65535 字节
 15. **WebSSH 凭据**：password/key 明文存于 Para 并发服务端（同 ser2mq secret 设计，私钥更敏感）
+16. **`internal/p2p/**` 是 fork 自 p2punch 的上游代码**：一行都不能改——多隧道/信令/打洞原生支持，集成 glue 全在 `proxy/p2p`；同步上游走专门流程
+17. **p2p Para 两层契约**：连接参数 + `mappings[]` 的 schema 与校验规则（§0.2/§0.3）和服务端逐字一致，共享测试向量 I1-I12/V1-V7 改契约时两端同步更新；映射变更 = Handler 重建 + 会话重打洞（对端零配置）；信令默认公共 MQTT broker 优先 + 服务端内嵌 broker 兜底
 
 ## 开发约束
 
@@ -174,4 +186,8 @@ applyTunnelMutation() 在快照上执行增/删/替换
 ```bash
 make build
 go vet ./...
+# P2P 功能（proxy/p2p + 打洞 fork；默认构建不含任何 P2P 代码）
+go vet -tags p2p ./...
+go test -tags p2p ./...
+go build -tags p2p -o moleagent-client-p2p ./cmd/moleagent-client
 ```
