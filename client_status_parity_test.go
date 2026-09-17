@@ -2,11 +2,14 @@ package moleAgent_client
 
 import (
 	"bytes"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"moleAgent_client/internal/protocol"
 )
 
 // newStatusTestClient 构造带真实 manager 的 Client（不建立连接）。
@@ -190,3 +193,78 @@ func TestTunnelPushHandlerCallsWarning(t *testing.T) {
 		t.Fatal("tunnel_push 分支未调用 warnInvalidPushedTunnels——纵深防御告警未接线")
 	}
 }
+
+// 服务端拒绝控制命令响应时必须留痕——旧实现丢弃 readResponse 的两个
+// 返回值，上报被拒时客户端完全无感。
+func TestReadResponseRejectionIsLogged(t *testing.T) {
+	oldW, oldF := log.Writer(), log.Flags()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldW)
+		log.SetFlags(oldF)
+	})
+
+	logReadResponse("tunnel_status", &protocol.ControlResponse{Cmd: "err", Msg: "too many tunnels"}, nil)
+	if !strings.Contains(buf.String(), "too many tunnels") {
+		t.Fatalf("server rejection must be logged, got %q", buf.String())
+	}
+
+	// 成功响应不得产生日志（防刷屏：心跳周期任务每次都会走到这里）
+	buf.Reset()
+	logReadResponse("tunnel_status", &protocol.ControlResponse{Cmd: "ok", Msg: "status received"}, nil)
+	if buf.Len() != 0 {
+		t.Fatalf("ok response must not log, got %q", buf.String())
+	}
+}
+
+// 读取失败同样必须留痕
+func TestReadResponseErrorIsLogged(t *testing.T) {
+	oldW, oldF := log.Writer(), log.Flags()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldW)
+		log.SetFlags(oldF)
+	})
+
+	logReadResponse("sysinfo", nil, errors.New("read: EOF"))
+	if !strings.Contains(buf.String(), "EOF") {
+		t.Fatalf("read error must be logged, got %q", buf.String())
+	}
+}
+
+// writeResp 写失败必须留痕（服务端会等到超时，甚至判本节点失活）
+func TestWriteRespLogsWriteFailure(t *testing.T) {
+	oldW, oldF := log.Writer(), log.Flags()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldW)
+		log.SetFlags(oldF)
+	})
+
+	writeResp(&failingWriter{}, "ok", "tunnels updated")
+	if !strings.Contains(buf.String(), "write control response") {
+		t.Fatalf("writeResp failure must be logged, got %q", buf.String())
+	}
+
+	// 成功时不得产生日志
+	buf.Reset()
+	var ok bytes.Buffer
+	writeResp(&ok, "ok", "tunnels updated")
+	if buf.Len() != 0 {
+		t.Fatalf("successful writeResp must not log, got %q", buf.String())
+	}
+	if !strings.Contains(ok.String(), `"cmd":"ok"`) {
+		t.Fatalf("response body malformed: %q", ok.String())
+	}
+}
+
+// failingWriter 永远写失败
+type failingWriter struct{}
+
+func (f *failingWriter) Write([]byte) (int, error) { return 0, errors.New("stream closed") }

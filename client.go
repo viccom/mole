@@ -725,7 +725,8 @@ func (c *Client) sendSysInfo() {
 		return
 	}
 
-	readResponse(stream, c.cfg.HeartbeatTimeout)
+	resp, err := readResponse(stream, c.cfg.HeartbeatTimeout)
+	logReadResponse("sysinfo", resp, err)
 }
 
 // collectTunnelStatuses 收集各 Manager 的隧道运行时状态
@@ -824,7 +825,8 @@ func (c *Client) sendTunnelStatus() {
 		return
 	}
 
-	readResponse(stream, c.cfg.HeartbeatTimeout)
+	resp, err := readResponse(stream, c.cfg.HeartbeatTimeout)
+	logReadResponse("tunnel_status", resp, err)
 }
 
 // acceptLoop 接受服务端流（数据转发 + 控制推送）
@@ -1250,7 +1252,29 @@ func readControlMsg(r io.Reader, maxSize int) ([]byte, error) {
 // writeResp 向服务端流写 JSON 响应行（与服务端 writeJSONLine 一致，以 '\n' 结尾）
 func writeResp(w io.Writer, cmd, msg string) {
 	resp, _ := json.Marshal(map[string]string{"cmd": cmd, "msg": msg})
-	w.Write(append(resp, '\n'))
+	// 写失败不能静默：服务端会等到超时（tunnel_push 的探活 3s、其余 10s），
+	// 甚至把本节点判为失活。调用方无法补救（流可能已半关），但必须留痕。
+	if _, err := w.Write(append(resp, '\n')); err != nil {
+		log.Printf("write control response (%s) failed: %v", cmd, err)
+	}
+}
+
+// logReadResponse 记录控制命令响应的读取/拒绝错误，供周期任务使用。
+//
+// 调用点由心跳派生（sendSysInfo / sendTunnelStatus）：链路断开后每次心跳
+// 都会失败，故刻意只记日志、不改控制流——断开由 sendPing 的失败路径负责，
+// 在此重复触发会与心跳竞争断开状态。日志量由心跳周期天然限流
+// （默认 20s / 50s 一次）。
+//
+// 成功响应不产生任何输出（防刷屏）。
+func logReadResponse(kind string, resp *protocol.ControlResponse, err error) {
+	if err != nil {
+		log.Printf("%s response read failed: %v", kind, err)
+		return
+	}
+	if resp != nil && resp.Cmd != "ok" {
+		log.Printf("%s rejected by server: %s", kind, resp.Msg)
+	}
 }
 
 func writeCmd(w io.Writer, cmd protocol.ControlCmd) error {

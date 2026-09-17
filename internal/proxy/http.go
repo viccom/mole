@@ -354,7 +354,11 @@ func writeHTTPError(w io.Writer, code int, msg string) {
 		Header:     http.Header{"Content-Type": []string{"text/plain"}},
 		Body:       io.NopCloser(strings.NewReader(msg)),
 	}
-	_ = resp.Write(w)
+	// 写失败不能静默：客户端拿不到状态码时，日志是唯一的定性依据。
+	// 此处不改写调用方控制流——响应可能已部分写出，无法回滚。
+	if err := resp.Write(w); err != nil {
+		log.Printf("write HTTP error response (%d %s) failed: %v", code, http.StatusText(code), err)
+	}
 }
 
 func stripHostPort(host string) string {
