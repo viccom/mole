@@ -26,15 +26,15 @@ type SignalCredentials struct {
 // MappingStatus 单条端口映射的运行时状态。BytesIn/Out 为当前会话级计数
 // （fork TunnelInfo 语义，重连归零；跨重连累计仅外层 bytes_in/bytes_out 具备，F15）
 type MappingStatus struct {
-	Protocol   string `json:"protocol"`             // "tcp" / "udp"
-	LocalPort  int    `json:"local_port"`           // 本端监听端口（remote 行 = 发起端配置的端口）
-	TargetHost string `json:"target_host"`          // 对端解析的目标地址
+	Protocol   string `json:"protocol"`    // "tcp" / "udp"
+	LocalPort  int    `json:"local_port"`  // 本端监听端口（remote 行 = 发起端配置的端口）
+	TargetHost string `json:"target_host"` // 对端解析的目标地址
 	TargetPort int    `json:"target_port"`
 	BytesIn    uint64 `json:"bytes_in"`
 	BytesOut   uint64 `json:"bytes_out"`
-	Up         bool   `json:"up"`                   // 会话内存在对应隧道（cfg 行）/ 远程映射处于活跃
-	Remote     bool   `json:"remote,omitempty"`     // 对端发起、本端 AcceptRemote 被动接受的映射
-	Error      string `json:"error,omitempty"`      // restoreTunnel 记录的逐条失败原因
+	Up         bool   `json:"up"`               // 会话内存在对应隧道（cfg 行）/ 远程映射处于活跃
+	Remote     bool   `json:"remote,omitempty"` // 对端发起、本端 AcceptRemote 被动接受的映射
+	Error      string `json:"error,omitempty"`  // restoreTunnel 记录的逐条失败原因
 }
 
 // Runtime 是 Handler 的运行时快照（两处状态收集共用：tunnel_status 上报 + 本地 REST）。
@@ -70,12 +70,12 @@ type Handler struct {
 	stopped   chan struct{}
 
 	// 会话元信息（Status 快照展示；断线窗口保留最近值，与 lastErr 同待遇）
-	mode        string // 最近一次成功建立会话的 mode
-	localAddr   string // 本端地址（打洞后协商连接的 Local，ip:port）
-	remoteAddr  string // 对端地址（打洞后协商连接的 Remote，ip:port）
-	punchMs     int64  // 最近一次成功建连的打洞耗时 ms
-	connectedAt int64  // 最近一次会话建立时间 unix ms；0 = 从未连上
-	reconnects  int    // 首次成功之后的会话重建次数
+	mode        string         // 最近一次成功建立会话的 mode
+	localAddr   string         // 本端地址（打洞后协商连接的 Local，ip:port）
+	remoteAddr  string         // 对端地址（打洞后协商连接的 Remote，ip:port）
+	punchMs     int64          // 最近一次成功建连的打洞耗时 ms
+	connectedAt int64          // 最近一次会话建立时间 unix ms；0 = 从未连上
+	reconnects  int            // 首次成功之后的会话重建次数
 	mapErrs     map[int]string // restoreTunnel 逐条失败记录（key = cfg.Mappings 的 LocalPort）
 
 	// modeAttemptTimeout 单次连接尝试（打洞+信令+会话建立）的上限：
@@ -99,10 +99,10 @@ func NewHandler(cfg P2PConfig, serverHost string, credsFn func(ctx context.Conte
 // connectResult 一次成功建连的产物：session + 连接层元信息（fork 的 Session 接口
 // 不暴露底层 conn，地址与打洞耗时只能在 Outcome 层截取）
 type connectResult struct {
-	sess      session.Session
-	localAddr net.Addr
+	sess       session.Session
+	localAddr  net.Addr
 	remoteAddr net.Addr
-	punchMs   int64 // 打洞耗时（信令交换 + NAT 打洞 + secure 协商）
+	punchMs    int64 // 打洞耗时（信令交换 + NAT 打洞 + secure 协商）
 }
 
 // connectFn / backoffFn 是测试注入点（同包测试替换，生产用默认实现）

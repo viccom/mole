@@ -11,7 +11,7 @@ import (
 )
 
 // -tags p2p 构建下 hook 必须提供真实控制器；返回 nil 会让 p2p 隧道静默失联
-//（配置分发了但没有任何 Manager 运行）
+// （配置分发了但没有任何 Manager 运行）
 func TestNewP2PControllerNonNil(t *testing.T) {
 	c := &Client{cfg: DefaultConfig()}
 	if c.p2p != nil {
@@ -25,7 +25,7 @@ func TestNewP2PControllerNonNil(t *testing.T) {
 }
 
 // 控制器过滤逻辑：非 p2p / 已禁用 / Para 非法的隧道不得进入 Manager
-//（enabled 且合法的完整链路由 internal/proxy/p2p 的 mock 测试覆盖；
+// （enabled 且合法的完整链路由 internal/proxy/p2p 的 mock 测试覆盖；
 // 这里避免真连公共 broker，不启用任何可运行隧道）
 func TestP2PControllerNotifyFiltering(t *testing.T) {
 	c := &Client{cfg: DefaultConfig()}
@@ -83,7 +83,7 @@ func TestP2PRuntimeConversionParity(t *testing.T) {
 }
 
 // 零值路径：空 Mappings / 未连上时序列化不含 mappings / mode / connected_at 键
-//（前端据此区分「纯会话端」与「映射未建」）
+// （前端据此区分「纯会话端」与「映射未建」）
 func TestToP2PRuntimeEmptyFieldsOmitted(t *testing.T) {
 	got := toP2PRuntime(p2p.Runtime{Running: true})
 	b, err := json.Marshal(got)

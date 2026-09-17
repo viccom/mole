@@ -372,4 +372,3 @@ func parseHost(rawURL string) (string, error) {
 	}
 	return u.Host, nil
 }
-

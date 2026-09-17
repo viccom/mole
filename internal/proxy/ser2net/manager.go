@@ -13,21 +13,21 @@ type TunnelConfig struct {
 }
 
 type Manager struct {
-	mu      sync.RWMutex
-	tunnels map[string]*Handler
-	errors  map[string]Stats
-	ctx     context.Context
-	cancel  context.CancelFunc
+	mu        sync.RWMutex
+	tunnels   map[string]*Handler
+	errors    map[string]Stats
+	ctx       context.Context
+	cancel    context.CancelFunc
 	streamHub *StreamHub
 }
 
 func NewManager(ctx context.Context) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
 	return &Manager{
-		tunnels: make(map[string]*Handler),
-		errors:  make(map[string]Stats),
-		ctx:     ctx,
-		cancel:  cancel,
+		tunnels:   make(map[string]*Handler),
+		errors:    make(map[string]Stats),
+		ctx:       ctx,
+		cancel:    cancel,
 		streamHub: NewStreamHub(200),
 	}
 }

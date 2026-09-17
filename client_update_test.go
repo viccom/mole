@@ -7,7 +7,7 @@ func TestApplyTunnelMutationAddUsesLatestSnapshot(t *testing.T) {
 		{Name: "alpha", Type: TunnelTypeTCP, Target: "127.0.0.1:1000"},
 	}
 	next, err := applyTunnelMutation(current, tunnelMutation{
-		kind: tunnelMutationAdd,
+		kind:   tunnelMutationAdd,
 		tunnel: Tunnel{Name: "beta", Type: TunnelTypeTCP, Target: "127.0.0.1:2000"},
 	})
 	if err != nil {

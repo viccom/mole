@@ -15,7 +15,7 @@ type SerialConfig struct {
 	BaudRate int     `json:"baudrate"`
 	DataBits int     `json:"databits"`
 	StopBits float64 `json:"stopbits"`
-	Parity   string  `json:"parity"` // N/E/O/M/S
+	Parity   string  `json:"parity"`  // N/E/O/M/S
 	Timeout  int     `json:"timeout"` // 读超时毫秒
 }
 

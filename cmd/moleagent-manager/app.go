@@ -8,17 +8,17 @@ import (
 	"sync"
 	"time"
 
-	"moleAgent_client/cmd/moleagent-manager/internal/node"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"moleAgent_client/cmd/moleagent-manager/internal/node"
 )
 
 // App 是主应用结构体
 type App struct {
 	ctx         context.Context
-	nodeMgr    *node.Manager
-	builtinURL string
-	checking   bool
-	checkMu    sync.Mutex
+	nodeMgr     *node.Manager
+	builtinURL  string
+	checking    bool
+	checkMu     sync.Mutex
 	checkCancel context.CancelFunc
 
 	// 单实例激活相关

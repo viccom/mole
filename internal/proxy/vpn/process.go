@@ -23,10 +23,10 @@ type ProcessMgr struct {
 	process *os.Process
 
 	// 状态
-	running     bool
-	startTime   time.Time
-	crashCount  int
-	crashLogs   []CrashLog
+	running    bool
+	startTime  time.Time
+	crashCount int
+	crashLogs  []CrashLog
 
 	// 启动失败诊断
 	lastError      string
@@ -55,8 +55,8 @@ type ProcessMgr struct {
 
 // 全局进程管理器映射（用于互斥检查）
 var globalManagers = struct {
-	mu      sync.RWMutex
-	procs   map[string]*ProcessMgr
+	mu    sync.RWMutex
+	procs map[string]*ProcessMgr
 }{
 	procs: make(map[string]*ProcessMgr),
 }
@@ -108,9 +108,9 @@ func NewProcessMgr(name string, cfg Config) (*ProcessMgr, error) {
 // 消费点默认值：服务端存储的 Para 可能缺省生命周期/日志字段（零值），
 // 直接使用会导致"开了重启却永不重启 / 0 宽限强杀 / 环形缓冲死循环"
 const (
-	defaultMaxRestarts    = 3
-	defaultQuitGrace      = 10
-	defaultLogBufferSize  = 64 << 10
+	defaultMaxRestarts   = 3
+	defaultQuitGrace     = 10
+	defaultLogBufferSize = 64 << 10
 )
 
 // Start 启动进程（经 lifecycleMu 与 Stop/迟到重启串行化）
@@ -194,7 +194,7 @@ func (pm *ProcessMgr) startLocked(ctx context.Context) error {
 	// 构建命令参数
 	args := cfg.BuildArgs()
 	log.Printf("vpn-manager: command: %s %v", binPath, args)
-	
+
 	// 创建命令
 	cmd := exec.Command(binPath, args...)
 	cmd.SysProcAttr = getSysProcAttr()
@@ -355,13 +355,13 @@ func (pm *ProcessMgr) Status() Status {
 	defer pm.mu.RUnlock()
 
 	status := Status{
-		Name:        pm.name,
-		Running:     pm.running,
-		CrashCount:  pm.crashCount,
-		CrashLogs:   make([]CrashLog, len(pm.crashLogs)),
-		Error:       pm.lastError,
-		ErrorPhase:  pm.lastErrorPhase,
-		ErrorTime:   pm.lastErrorTime,
+		Name:       pm.name,
+		Running:    pm.running,
+		CrashCount: pm.crashCount,
+		CrashLogs:  make([]CrashLog, len(pm.crashLogs)),
+		Error:      pm.lastError,
+		ErrorPhase: pm.lastErrorPhase,
+		ErrorTime:  pm.lastErrorTime,
 	}
 	copy(status.CrashLogs, pm.crashLogs)
 

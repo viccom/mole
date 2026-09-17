@@ -173,10 +173,10 @@ func TestVersionAPIIncludesP2PCapability(t *testing.T) {
 func TestTunnelStreamSupportsSer2Net(t *testing.T) {
 	client := newTestClient(t, []moleAgent_client.Tunnel{
 		{
-			Name: "s2n",
-			Type: moleAgent_client.TunnelTypeSer2TCP,
+			Name:   "s2n",
+			Type:   moleAgent_client.TunnelTypeSer2TCP,
 			Target: "COM1",
-			Para: json.RawMessage(`{"enable":true,"mode":"server","address":"127.0.0.1:0","serial":{"port":"COM1","baudrate":9600,"databits":8,"stopbits":1,"parity":"N","timeout":1000}}`),
+			Para:   json.RawMessage(`{"enable":true,"mode":"server","address":"127.0.0.1:0","serial":{"port":"COM1","baudrate":9600,"databits":8,"stopbits":1,"parity":"N","timeout":1000}}`),
 		},
 	})
 

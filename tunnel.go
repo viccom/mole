@@ -21,9 +21,9 @@ const (
 	TunnelTypeSer2MQ  TunnelType = "ser2mq"      // 串口转 MQTT
 	TunnelTypeSer2TCP TunnelType = "ser2tcp"     // 串口转 TCP
 	TunnelTypeSer2UDP TunnelType = "ser2udp"     // 串口转 UDP
-	TunnelTypeVPNMgr  TunnelType = "vpn-manager"  // VPN 程序管理
-	TunnelTypeWebSSH  TunnelType = "webssh"       // WebSSH 远程终端
-	TunnelTypeP2P     TunnelType = "p2p"          // P2P 直连隧道（需 -tags p2p 构建才运行）
+	TunnelTypeVPNMgr  TunnelType = "vpn-manager" // VPN 程序管理
+	TunnelTypeWebSSH  TunnelType = "webssh"      // WebSSH 远程终端
+	TunnelTypeP2P     TunnelType = "p2p"         // P2P 直连隧道（需 -tags p2p 构建才运行）
 )
 
 // Tunnel 隧道配置（统一类型，替代原 tunnelConfig 和 protocol.Tunnel 两套定义）
@@ -33,8 +33,8 @@ type Tunnel struct {
 	Target     string          `json:"target"`
 	Domain     string          `json:"domain,omitempty"`
 	ListenPort int             `json:"listen_port,omitempty"`
-	Enabled    *bool           `json:"enabled,omitempty"` // 启用开关，nil/true=启用，false=禁用
-	Para       json.RawMessage `json:"para,omitempty"`    // 扩展配置（ser2mq/vpn-manager 等）
+	Enabled    *bool           `json:"enabled,omitempty"`    // 启用开关，nil/true=启用，false=禁用
+	Para       json.RawMessage `json:"para,omitempty"`       // 扩展配置（ser2mq/vpn-manager 等）
 	RateLimit  json.RawMessage `json:"rate_limit,omitempty"` // 服务端限速配置，原样透传（防止本地变更全量回传时清空服务端限速）
 }
 

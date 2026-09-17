@@ -19,31 +19,31 @@ type Tunnel struct {
 	Domain     string          `json:"domain,omitempty"`
 	ListenPort int             `json:"listen_port,omitempty"`
 	Enabled    *bool           `json:"enabled,omitempty"`
-	Para       json.RawMessage `json:"para,omitempty"`  // 扩展配置（ser2mq/vpn-manager）
+	Para       json.RawMessage `json:"para,omitempty"`       // 扩展配置（ser2mq/vpn-manager）
 	RateLimit  json.RawMessage `json:"rate_limit,omitempty"` // 服务端专属限速配置，原样透传（tunnel_update 全量回传时防止服务端限速配置被清空）
 }
 
 // ControlCmd 控制命令
 type ControlCmd struct {
-	Cmd      string          `json:"cmd"`
-	NodeID   string          `json:"node_id,omitempty"`
-	Name     string          `json:"name,omitempty"`
-	Token    string          `json:"token,omitempty"`
-	Tunnels  []Tunnel        `json:"tunnels,omitempty"`
-	Ts       int64           `json:"ts,omitempty"`            // Unix 毫秒（ping RTT）
-	Action   string          `json:"action,omitempty"`        // tunnel_action: start/stop/restart
-	Delay    int             `json:"delay_seconds,omitempty"` // restart 延迟秒数
-	Reason   string          `json:"reason,omitempty"`        // restart 原因
-	Statuses []TunnelStatus  `json:"statuses,omitempty"`      // tunnel_status 上报
-	SysInfo  *SysInfo        `json:"sysinfo,omitempty"`       // 系统信息上报
+	Cmd      string         `json:"cmd"`
+	NodeID   string         `json:"node_id,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Token    string         `json:"token,omitempty"`
+	Tunnels  []Tunnel       `json:"tunnels,omitempty"`
+	Ts       int64          `json:"ts,omitempty"`            // Unix 毫秒（ping RTT）
+	Action   string         `json:"action,omitempty"`        // tunnel_action: start/stop/restart
+	Delay    int            `json:"delay_seconds,omitempty"` // restart 延迟秒数
+	Reason   string         `json:"reason,omitempty"`        // restart 原因
+	Statuses []TunnelStatus `json:"statuses,omitempty"`      // tunnel_status 上报
+	SysInfo  *SysInfo       `json:"sysinfo,omitempty"`       // 系统信息上报
 }
 
 // ControlResponse 控制响应
 type ControlResponse struct {
 	Cmd  string          `json:"cmd"`
 	Msg  string          `json:"msg,omitempty"`
-	Ts   int64           `json:"ts,omitempty"`    // 原样回传（ping RTT）
-	Data json.RawMessage `json:"data,omitempty"`  // 结构化数据
+	Ts   int64           `json:"ts,omitempty"`   // 原样回传（ping RTT）
+	Data json.RawMessage `json:"data,omitempty"` // 结构化数据
 }
 
 // TunnelStatus 隧道运行时状态（tunnel_status 用）

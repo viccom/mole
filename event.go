@@ -9,29 +9,29 @@ import (
 type EventType string
 
 const (
-	EventConnected          EventType = "connected"
-	EventDisconnected      EventType = "disconnected"
-	EventReconnecting      EventType = "reconnecting"
-	EventAuthenticated     EventType = "authenticated"
-	EventRegistered        EventType = "registered"
-	EventHeartbeatOK       EventType = "heartbeat_ok"
-	EventHeartbeatFail     EventType = "heartbeat_fail"
-	EventTunnelUpdated     EventType = "tunnel_updated" // 服务端推送
-	EventRTT               EventType = "rtt"            // ping RTT 测量结果
-	EventTunnelSynced      EventType = "tunnel_synced"  // 客户端发起同步完成
-	EventError             EventType = "error"
+	EventConnected     EventType = "connected"
+	EventDisconnected  EventType = "disconnected"
+	EventReconnecting  EventType = "reconnecting"
+	EventAuthenticated EventType = "authenticated"
+	EventRegistered    EventType = "registered"
+	EventHeartbeatOK   EventType = "heartbeat_ok"
+	EventHeartbeatFail EventType = "heartbeat_fail"
+	EventTunnelUpdated EventType = "tunnel_updated" // 服务端推送
+	EventRTT           EventType = "rtt"            // ping RTT 测量结果
+	EventTunnelSynced  EventType = "tunnel_synced"  // 客户端发起同步完成
+	EventError         EventType = "error"
 
 	// VPN 管理事件
-	EventVPNStarted      EventType = "vpn_started"
-	EventVPNStopped      EventType = "vpn_stopped"
-	EventVPNCrashed      EventType = "vpn_crashed"
-	EventVPNRestarting   EventType = "vpn_restarting"
-	EventVPNMaxRestarts  EventType = "vpn_max_restarts"
+	EventVPNStarted     EventType = "vpn_started"
+	EventVPNStopped     EventType = "vpn_stopped"
+	EventVPNCrashed     EventType = "vpn_crashed"
+	EventVPNRestarting  EventType = "vpn_restarting"
+	EventVPNMaxRestarts EventType = "vpn_max_restarts"
 
 	// ser2mq 事件
-	EventSer2MQConnected     EventType = "ser2mq_connected"
+	EventSer2MQConnected    EventType = "ser2mq_connected"
 	EventSer2MQDisconnected EventType = "ser2mq_disconnected"
-	EventSer2MQError       EventType = "ser2mq_error"
+	EventSer2MQError        EventType = "ser2mq_error"
 )
 
 // Event 事件

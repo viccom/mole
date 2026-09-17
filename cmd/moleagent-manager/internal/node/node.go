@@ -14,18 +14,18 @@ import (
 
 // Node 表示一个 moleAgent_client 后端节点
 type Node struct {
-	Name       string `json:"name"`       // 节点名称（显示用）
-	Addr       string `json:"addr"`       // 后端地址
-	Port       int    `json:"port"`       // 后端端口
-	IsDefault  bool   `json:"is_default"` // 是否为默认节点
-	IsOnline   bool   `json:"is_online"`   // 在线状态（运行时）
+	Name      string `json:"name"`       // 节点名称（显示用）
+	Addr      string `json:"addr"`       // 后端地址
+	Port      int    `json:"port"`       // 后端端口
+	IsDefault bool   `json:"is_default"` // 是否为默认节点
+	IsOnline  bool   `json:"is_online"`  // 在线状态（运行时）
 }
 
 // Config 节点配置文件结构
 type Config struct {
-	Nodes        []Node `json:"nodes"`        // 所有节点列表
-	CurrentNode  string `json:"current_node"`  // 当前激活的节点名称
-	CheckInterval int   `json:"check_interval"` // 检测间隔（秒）
+	Nodes         []Node `json:"nodes"`          // 所有节点列表
+	CurrentNode   string `json:"current_node"`   // 当前激活的节点名称
+	CheckInterval int    `json:"check_interval"` // 检测间隔（秒）
 }
 
 const defaultNodePort = 59870
@@ -44,8 +44,8 @@ func NewManager() *Manager {
 	return &Manager{
 		cfgPath: cfgPath,
 		config: &Config{
-			Nodes:        []Node{},
-			CurrentNode:  "",
+			Nodes:         []Node{},
+			CurrentNode:   "",
 			CheckInterval: 5,
 		},
 	}

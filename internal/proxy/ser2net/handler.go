@@ -32,12 +32,12 @@ type Handler struct {
 	running  atomic.Bool
 	lastErr  atomic.Value // string
 
-	recentErr       atomic.Value // string
-	recentErrAtMs   atomic.Int64
-	lastRxUnixMs    atomic.Int64
-	lastTxUnixMs    atomic.Int64
-	onPacket        func(PacketInfo)
-	cleanupOnce     sync.Once
+	recentErr     atomic.Value // string
+	recentErrAtMs atomic.Int64
+	lastRxUnixMs  atomic.Int64
+	lastTxUnixMs  atomic.Int64
+	onPacket      func(PacketInfo)
+	cleanupOnce   sync.Once
 }
 
 func NewHandler(name, typ string, cfg Ser2NetConfig) (*Handler, error) {
@@ -92,23 +92,23 @@ func (h *Handler) IsRunning() bool {
 }
 
 type Stats struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Mode       string `json:"mode"`
-	Running    bool   `json:"running"`
-	SerialOpen bool   `json:"serial_open"`
-	SerialPort string `json:"serial_port"`
-	Address    string `json:"address"`
-	Clients    int    `json:"clients"`
-	BytesIn    uint64 `json:"bytes_in"`
-	BytesOut   uint64 `json:"bytes_out"`
-	ServerListening  bool   `json:"server_listening,omitempty"`
-	ClientConnected  bool   `json:"client_connected,omitempty"`
-	LastRxUnixMs     int64  `json:"last_rx_unix_ms,omitempty"`
-	LastTxUnixMs     int64  `json:"last_tx_unix_ms,omitempty"`
-	RecentError      string `json:"recent_error,omitempty"`
-	RecentErrorAtUnixMs int64 `json:"recent_error_at_unix_ms,omitempty"`
-	Error      string `json:"error,omitempty"`
+	Name                string `json:"name"`
+	Type                string `json:"type"`
+	Mode                string `json:"mode"`
+	Running             bool   `json:"running"`
+	SerialOpen          bool   `json:"serial_open"`
+	SerialPort          string `json:"serial_port"`
+	Address             string `json:"address"`
+	Clients             int    `json:"clients"`
+	BytesIn             uint64 `json:"bytes_in"`
+	BytesOut            uint64 `json:"bytes_out"`
+	ServerListening     bool   `json:"server_listening,omitempty"`
+	ClientConnected     bool   `json:"client_connected,omitempty"`
+	LastRxUnixMs        int64  `json:"last_rx_unix_ms,omitempty"`
+	LastTxUnixMs        int64  `json:"last_tx_unix_ms,omitempty"`
+	RecentError         string `json:"recent_error,omitempty"`
+	RecentErrorAtUnixMs int64  `json:"recent_error_at_unix_ms,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 
 func (h *Handler) Stats() Stats {
@@ -131,23 +131,23 @@ func (h *Handler) Stats() Stats {
 	serialOpen := h.serial != nil
 	h.writeMu.Unlock()
 	return Stats{
-		Name:       h.name,
-		Type:       h.typ,
-		Mode:       h.cfg.Mode,
-		Running:    running,
-		SerialOpen: serialOpen,
-		SerialPort: h.cfg.Serial.Port,
-		Address:    h.cfg.Address,
-		Clients:    clients,
-		BytesIn:    h.bytesIn.Load(),
-		BytesOut:   h.bytesOut.Load(),
-		ServerListening: h.cfg.Mode == "server" && running && h.getListener() != nil,
-		ClientConnected: h.cfg.Mode == "client" && clients > 0,
-		LastRxUnixMs: h.lastRxUnixMs.Load(),
-		LastTxUnixMs: h.lastTxUnixMs.Load(),
-		RecentError: recent,
+		Name:                h.name,
+		Type:                h.typ,
+		Mode:                h.cfg.Mode,
+		Running:             running,
+		SerialOpen:          serialOpen,
+		SerialPort:          h.cfg.Serial.Port,
+		Address:             h.cfg.Address,
+		Clients:             clients,
+		BytesIn:             h.bytesIn.Load(),
+		BytesOut:            h.bytesOut.Load(),
+		ServerListening:     h.cfg.Mode == "server" && running && h.getListener() != nil,
+		ClientConnected:     h.cfg.Mode == "client" && clients > 0,
+		LastRxUnixMs:        h.lastRxUnixMs.Load(),
+		LastTxUnixMs:        h.lastTxUnixMs.Load(),
+		RecentError:         recent,
 		RecentErrorAtUnixMs: h.recentErrAtMs.Load(),
-		Error:      errText,
+		Error:               errText,
 	}
 }
 

@@ -224,7 +224,7 @@ func TestHandlerRunMultiMappingCreatesEachTunnel(t *testing.T) {
 }
 
 // 部分映射建失败：视同未连通走退避重连，而不是带着残缺监听继续跑
-//（F5 语义延伸：本端监听不完整不能算连通）
+// （F5 语义延伸：本端监听不完整不能算连通）
 func TestHandlerPartialMappingFailureTriggersBackoff(t *testing.T) {
 	// 压缩重试间隔与退避（注册序即逆清理序：延迟恢复最后执行，此刻 Run 已退出）
 	origDelay := tunnelRetryDelay

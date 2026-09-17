@@ -1,8 +1,8 @@
 package ser2mq
 
 import (
-	"crypto/rand"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 

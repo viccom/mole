@@ -17,19 +17,19 @@ var (
 )
 
 type tunnelTraffic struct {
-	Name        string
-	TCPBytesIn  uint64
-	TCPBytesOut uint64
-	HTTPBytesIn uint64
+	Name         string
+	TCPBytesIn   uint64
+	TCPBytesOut  uint64
+	HTTPBytesIn  uint64
 	HTTPBytesOut uint64
 }
 
 // TunnelTraffic is an exported alias for external access
 type TunnelTraffic = tunnelTraffic
 
-func GetTCPBytesIn()   uint64 { return atomic.LoadUint64(&tcpBytesIn) }
-func GetTCPBytesOut()  uint64 { return atomic.LoadUint64(&tcpBytesOut) }
-func GetHTTPBytesIn()  uint64 { return atomic.LoadUint64(&httpBytesIn) }
+func GetTCPBytesIn() uint64   { return atomic.LoadUint64(&tcpBytesIn) }
+func GetTCPBytesOut() uint64  { return atomic.LoadUint64(&tcpBytesOut) }
+func GetHTTPBytesIn() uint64  { return atomic.LoadUint64(&httpBytesIn) }
 func GetHTTPBytesOut() uint64 { return atomic.LoadUint64(&httpBytesOut) }
 
 func AddHTTPBytes(tunnelName string, in, out uint64) {

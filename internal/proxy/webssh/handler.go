@@ -59,8 +59,8 @@ type Handler struct {
 	bytesIn  atomic.Uint64 // SSH 输出字节（目标→客户端）
 	bytesOut atomic.Uint64 // SSH 输入字节（客户端→目标）
 	running  atomic.Bool
-	sessions atomic.Int32  // 当前活跃会话数
-	lastErr  atomic.Value  // string
+	sessions atomic.Int32 // 当前活跃会话数
+	lastErr  atomic.Value // string
 	lastRxMs atomic.Int64
 	lastTxMs atomic.Int64
 }

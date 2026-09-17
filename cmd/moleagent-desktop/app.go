@@ -265,10 +265,10 @@ func (a *App) GetStatus() map[string]interface{} {
 
 	stats := a.client.Stats()
 	return map[string]interface{}{
-		"connected":    stats.Connected,
-		"node_id":      stats.NodeID,
-		"server_addr":  stats.ServerAddr,
-		"tunnels":      a.client.AllTunnelStatus(),
+		"connected":   stats.Connected,
+		"node_id":     stats.NodeID,
+		"server_addr": stats.ServerAddr,
+		"tunnels":     a.client.AllTunnelStatus(),
 	}
 }
 

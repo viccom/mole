@@ -282,11 +282,11 @@ func TestLoadPersistedID_CorruptFile(t *testing.T) {
 func TestLoadPersistedID_RejectsInvalidNodeID(t *testing.T) {
 	dir := withTempNodeIDDir(t)
 	cases := []string{
-		"12345678", // 数字开头
-		"ab12cd3",  // 长度不足 7
+		"12345678",  // 数字开头
+		"ab12cd3",   // 长度不足 7
 		"ab12cd345", // 长度超 9
-		"abcé1234", // 非 ASCII
-		"",         // 空（已被现有逻辑拦截，此处确认）
+		"abcé1234",  // 非 ASCII
+		"",          // 空（已被现有逻辑拦截，此处确认）
 	}
 	for _, bad := range cases {
 		writePersistedRaw(t, dir, "mid", bad)

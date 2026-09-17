@@ -104,11 +104,11 @@ func (h *Handler) getSFTPClient() (*sftp.Client, error) {
 
 // fileEntry 文件列表单项
 type fileEntry struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Mode     string `json:"mode"`
-	ModTime  string `json:"mod_time"`
-	IsDir    bool   `json:"is_dir"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Mode    string `json:"mode"`
+	ModTime string `json:"mod_time"`
+	IsDir   bool   `json:"is_dir"`
 }
 
 // handleFileListReq 处理目录列表请求

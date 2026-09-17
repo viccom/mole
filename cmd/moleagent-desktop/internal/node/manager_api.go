@@ -6,8 +6,8 @@ import (
 
 // NodeManagerAPI 节点管理 API（暴露给前端）
 type NodeManagerAPI struct {
-	mgr  *Manager
-	app  interface{} // 避免循环引用
+	mgr *Manager
+	app interface{} // 避免循环引用
 }
 
 // NewNodeManagerAPI 创建节点管理器 API

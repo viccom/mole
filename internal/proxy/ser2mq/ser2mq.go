@@ -14,22 +14,22 @@ import (
 // Ser2MQConfig ser2mq 隧道配置
 type Ser2MQConfig struct {
 	Enable bool         `json:"enable"`
-	Broker string       `json:"broker"`  // mqtt://user:pass@host:port
+	Broker string       `json:"broker"` // mqtt://user:pass@host:port
 	Serial SerialConfig `json:"serial"`
-	Secret string       `json:"secret"`   // 32字节 hex 字符串
-	QoS    int          `json:"qos"`      // 0/1/2, 默认 1
+	Secret string       `json:"secret"` // 32字节 hex 字符串
+	QoS    int          `json:"qos"`    // 0/1/2, 默认 1
 }
 
 // Ser2MQHandler ser2mq 隧道处理器
 type Ser2MQHandler struct {
-	name       string
-	nodeID     string
-	cfg        Ser2MQConfig
-	crypto     *Crypto
-	serial     SerialConn
-	mqtt       *MQTTClient
-	portName   string // SanitizePortName 缓存
-	sink       PacketSink
+	name     string
+	nodeID   string
+	cfg      Ser2MQConfig
+	crypto   *Crypto
+	serial   SerialConn
+	mqtt     *MQTTClient
+	portName string // SanitizePortName 缓存
+	sink     PacketSink
 
 	mu      sync.RWMutex
 	running bool

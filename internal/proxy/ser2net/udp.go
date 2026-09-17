@@ -10,6 +10,7 @@ import (
 )
 
 const udpPeerTimeout = 5 * time.Minute
+
 var udpProbePayload = []byte("__MOLE_UDP_PROBE__")
 
 type peerEntry struct {

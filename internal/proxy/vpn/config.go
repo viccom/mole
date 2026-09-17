@@ -16,16 +16,16 @@ type Config struct {
 
 // VNTConfig vnt-cli 专用配置
 type VNTConfig struct {
-	Enabled  bool   `json:"enabled"`    // 是否为 vnt-cli 程序（启用后激活 REST API 集成）
-	Token    string `json:"token"`      // -k 连接令牌
-	Server   string `json:"server"`     // -s VPN 服务器地址
-	DeviceID string `json:"device_id"`  // -d 设备标识
-	Name     string `json:"name"`       // -n 设备名称
-	Password string `json:"password"`   // -w 密码
-	InIP     string `json:"in_ip"`      // -i 输入代理子网
-	OutIP    string `json:"out_ip"`     // -o 输出代理子网
-	IP       string `json:"ip"`         // --ip 指定虚拟IP
-	RestPort int    `json:"rest_port"`  // REST API 端口，默认 59871
+	Enabled  bool   `json:"enabled"`   // 是否为 vnt-cli 程序（启用后激活 REST API 集成）
+	Token    string `json:"token"`     // -k 连接令牌
+	Server   string `json:"server"`    // -s VPN 服务器地址
+	DeviceID string `json:"device_id"` // -d 设备标识
+	Name     string `json:"name"`      // -n 设备名称
+	Password string `json:"password"`  // -w 密码
+	InIP     string `json:"in_ip"`     // -i 输入代理子网
+	OutIP    string `json:"out_ip"`    // -o 输出代理子网
+	IP       string `json:"ip"`        // --ip 指定虚拟IP
+	RestPort int    `json:"rest_port"` // REST API 端口，默认 59871
 }
 
 // BinaryConfig 程序配置
@@ -36,24 +36,24 @@ type BinaryConfig struct {
 
 // LifecycleConfig 生命周期配置
 type LifecycleConfig struct {
-	Autostart      bool `json:"autostart"`       // moleAgent 启动时自动启动
+	Autostart      bool `json:"autostart"`        // moleAgent 启动时自动启动
 	RestartOnCrash bool `json:"restart_on_crash"` // 崩溃后自动重启
-	MaxRestarts    int  `json:"max_restarts"`    // 最大重启次数，默认 3
-	RestartDelay   int  `json:"restart_delay"`   // 重启延迟(秒)，默认 5
+	MaxRestarts    int  `json:"max_restarts"`     // 最大重启次数，默认 3
+	RestartDelay   int  `json:"restart_delay"`    // 重启延迟(秒)，默认 5
 }
 
 // WatchdogConfig 监视配置
 type WatchdogConfig struct {
-	Enabled    bool `json:"enabled"`     // 启用进程监视
-	Interval   int  `json:"interval"`     // 检查间隔(秒)，默认 10
-	QuitGrace  int  `json:"quit_grace"`   // 优雅退出超时(秒)，默认 10
+	Enabled   bool `json:"enabled"`    // 启用进程监视
+	Interval  int  `json:"interval"`   // 检查间隔(秒)，默认 10
+	QuitGrace int  `json:"quit_grace"` // 优雅退出超时(秒)，默认 10
 }
 
 // LogConfig 日志配置
 type LogConfig struct {
 	Capture    bool   `json:"capture"`     // 捕获进程输出
-	MaxSize    int    `json:"max_size"`     // 日志缓冲区大小，默认 64KB
-	OutputPath string `json:"output_path"`  // 日志写入文件，为空则内存缓冲
+	MaxSize    int    `json:"max_size"`    // 日志缓冲区大小，默认 64KB
+	OutputPath string `json:"output_path"` // 日志写入文件，为空则内存缓冲
 }
 
 // CrashLog 崩溃日志
@@ -80,11 +80,11 @@ type Status struct {
 	ErrorTime  int64  `json:"error_time,omitempty"`
 
 	// vnt-cli REST API 数据
-	RestPort  int            `json:"rest_port,omitempty"`
-	VNTInfo   *VNTInfo       `json:"vnt_info,omitempty"`
+	RestPort  int             `json:"rest_port,omitempty"`
+	VNTInfo   *VNTInfo        `json:"vnt_info,omitempty"`
 	VNTPeers  []VNTDeviceItem `json:"vnt_peers,omitempty"`
 	VNTRoutes []VNTRouteItem  `json:"vnt_routes,omitempty"`
-	VNTStatus *VNTBuildInfo  `json:"vnt_status,omitempty"`
+	VNTStatus *VNTBuildInfo   `json:"vnt_status,omitempty"`
 }
 
 // DefaultConfig 返回默认配置

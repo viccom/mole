@@ -10,13 +10,13 @@ import (
 
 // Config 可从文件加载的配置
 type Config struct {
-	ServerAddr string   `json:"server_addr"`
-	Token      string   `json:"token"`
-	NodeID     string   `json:"node_id"`
-	NodeName   string   `json:"node_name"`
+	ServerAddr string `json:"server_addr"`
+	Token      string `json:"token"`
+	NodeID     string `json:"node_id"`
+	NodeName   string `json:"node_name"`
 	// NodeIDFile 指定 node.id 持久化文件路径（nodeID 的真相源）。
 	// 留空则用默认 ~/.moleAgent-client/node.id；systemd 等 HOME 不稳定的部署建议显式固定。
-	NodeIDFile string `json:"node_id_file,omitempty"`
+	NodeIDFile string   `json:"node_id_file,omitempty"`
 	Transport  string   `json:"transport"` // 传输协议: tcp, ws, kcp
 	UseTLS     bool     `json:"tls"`
 	Tunnels    []Tunnel `json:"tunnels"`

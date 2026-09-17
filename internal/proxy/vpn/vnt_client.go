@@ -84,33 +84,33 @@ func (c *VNTClient) Chart() (*VNTChartA, error) {
 
 // VNTInfo 对应 vnt-cli GET /info 响应
 type VNTInfo struct {
-	Name            string   `json:"name"`
-	VirtualIP       string   `json:"virtual_ip"`
-	VirtualGateway  string   `json:"virtual_gateway"`
-	VirtualNetmask  string   `json:"virtual_netmask"`
-	ConnectStatus   string   `json:"connect_status"`
-	RelayServer     string   `json:"relay_server"`
-	NATType         string   `json:"nat_type"`
-	PublicIPs       string   `json:"public_ips"`
-	LocalAddr       string   `json:"local_addr"`
-	IPv6Addr        string   `json:"ipv6_addr"`
-	UDPListenAddr   []string `json:"udp_listen_addr"`
-	TCPListenAddr   string   `json:"tcp_listen_addr"`
+	Name           string   `json:"name"`
+	VirtualIP      string   `json:"virtual_ip"`
+	VirtualGateway string   `json:"virtual_gateway"`
+	VirtualNetmask string   `json:"virtual_netmask"`
+	ConnectStatus  string   `json:"connect_status"`
+	RelayServer    string   `json:"relay_server"`
+	NATType        string   `json:"nat_type"`
+	PublicIPs      string   `json:"public_ips"`
+	LocalAddr      string   `json:"local_addr"`
+	IPv6Addr       string   `json:"ipv6_addr"`
+	UDPListenAddr  []string `json:"udp_listen_addr"`
+	TCPListenAddr  string   `json:"tcp_listen_addr"`
 }
 
 // VNTDeviceItem 对应 vnt-cli GET /list 中的设备项
 type VNTDeviceItem struct {
-	Name               string `json:"name"`
-	VirtualIP          string `json:"virtual_ip"`
-	NATType            string `json:"nat_type"`
-	PublicIPs          string `json:"public_ips"`
-	LocalIP            string `json:"local_ip"`
-	IPv6               string `json:"ipv6"`
-	NATTraversalType   string `json:"nat_traversal_type"`
-	RT                 string `json:"rt"`
-	Status             string `json:"status"`
-	ClientSecret       bool   `json:"client_secret"`
-	WireGuard          bool   `json:"wire_guard"`
+	Name             string `json:"name"`
+	VirtualIP        string `json:"virtual_ip"`
+	NATType          string `json:"nat_type"`
+	PublicIPs        string `json:"public_ips"`
+	LocalIP          string `json:"local_ip"`
+	IPv6             string `json:"ipv6"`
+	NATTraversalType string `json:"nat_traversal_type"`
+	RT               string `json:"rt"`
+	Status           string `json:"status"`
+	ClientSecret     bool   `json:"client_secret"`
+	WireGuard        bool   `json:"wire_guard"`
 }
 
 // VNTRouteItem 对应 vnt-cli GET /route 中的路由项
@@ -136,9 +136,9 @@ type VNTBuildInfo struct {
 
 // VNTChartA 对应 vnt-cli GET /chart 响应
 type VNTChartA struct {
-	DisableStats bool               `json:"disable_stats"`
-	UpTotal      uint64             `json:"up_total"`
-	DownTotal    uint64             `json:"down_total"`
-	UpMap        map[string]uint64  `json:"up_map"`
-	DownMap      map[string]uint64  `json:"down_map"`
+	DisableStats bool              `json:"disable_stats"`
+	UpTotal      uint64            `json:"up_total"`
+	DownTotal    uint64            `json:"down_total"`
+	UpMap        map[string]uint64 `json:"up_map"`
+	DownMap      map[string]uint64 `json:"down_map"`
 }

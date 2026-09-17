@@ -283,8 +283,8 @@ func addTunnel(baseURL, spec, domain string, port int) int {
 	}
 
 	body := map[string]any{
-		"name": name,
-		"type": typ,
+		"name":   name,
+		"type":   typ,
 		"target": target,
 	}
 	if domain != "" {
