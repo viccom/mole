@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus, Database, ArrowRightLeft, RotateCcw, Cpu, HardDrive, Clock, Monitor, Activity } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus, Database, ArrowRightLeft, RotateCcw, Cpu, HardDrive, Clock, Monitor, Activity, Tag } from 'lucide-react'
 import { api } from '../api/client'
 import type { Node, PersistedNode, Tunnel, SysInfo, ClientTunnelStatus } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
@@ -661,11 +661,8 @@ function NodeRowGroup({
                   <div className="flex items-center gap-2 mb-3">
                     <Monitor className="w-4 h-4 text-gray-500" />
                     <span className="text-sm font-medium text-gray-700">系统信息</span>
-                    {node.sysinfo.agent_version && (
-                      <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">v{node.sysinfo.agent_version}</span>
-                    )}
                   </div>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                     {node.sysinfo.hostname && (
                       <div className="flex items-center gap-2">
                         <HardDrive className="w-3.5 h-3.5 text-gray-400" />
@@ -699,6 +696,15 @@ function NodeRowGroup({
                         <div>
                           <div className="text-xs text-gray-400">运行时间</div>
                           <div className="text-sm font-medium">{formatUptime(node.sysinfo.uptime_seconds)}</div>
+                        </div>
+                      </div>
+                    )}
+                    {node.sysinfo.agent_version && (
+                      <div className="flex items-center gap-2">
+                        <Tag className="w-3.5 h-3.5 text-gray-400" />
+                        <div>
+                          <div className="text-xs text-gray-400">版本</div>
+                          <div className="text-sm font-medium">{node.sysinfo.agent_version}</div>
                         </div>
                       </div>
                     )}
