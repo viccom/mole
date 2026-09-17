@@ -83,3 +83,41 @@ func TestBrokerErrorDoesNotLeakCredentials(t *testing.T) {
 		t.Errorf("brokerError() dropped host, msg = %s", msg)
 	}
 }
+
+// 对抗用例：密码含 '/' 时 url.Parse 会伪成功（把 user:pa 误当 host），
+// 成功路径的端口校验必须识破——此用例在只信任 url.Parse 的实现上会泄漏
+// 用户名与密码片段（复核轮发现的真实缺陷）。
+func TestRedactedBrokerAdversarialPasswordWithSlash(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"mqtt://user:pa://ss@host:1883": "host:1883", // 密码含 ://
+		"mqtt://us@er:pass@host:1883":   "host:1883", // 用户名与密码都含 @
+		"mqtt://user:pass@@host:1883":   "host:1883", // 密码尾部 @
+		"mqtt://user:pass@":             "",          // @ 后无 host
+	}
+	for raw, wantHost := range cases {
+		got := RedactedBroker(raw)
+		for _, leak := range []string{"user", "us@er", "pa://ss", "pass"} {
+			if strings.Contains(got, leak) {
+				t.Errorf("RedactedBroker(%q) = %q, 泄漏 %q", raw, got, leak)
+			}
+		}
+		if wantHost != "" && !strings.Contains(got, wantHost) {
+			t.Errorf("RedactedBroker(%q) = %q, 应保留 host %q", raw, got, wantHost)
+		}
+	}
+}
+
+// 路径里含 @ 的正常 URL：url.Parse 成功且 host 合法，走成功路径
+func TestRedactedBrokerPathWithAt(t *testing.T) {
+	t.Parallel()
+
+	if got := RedactedBroker("mqtt://host:1883/path@x"); got != "mqtt://host:1883" {
+		t.Errorf("RedactedBroker 路径含 @ 的合法 URL = %q, want mqtt://host:1883", got)
+	}
+	if got := RedactedBroker("[::1]"); got != "<redacted>" && !strings.Contains(got, "::1") {
+		// IPv6 无端口：不崩即可
+		_ = got
+	}
+}

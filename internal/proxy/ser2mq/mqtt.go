@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,30 +49,52 @@ func (m *MQTTConfig) Validate() error {
 // mqtt://user:pass@host:port 的 userinfo 是凭据必须剥离；host:port 是
 // 排查连接问题所必需的信息，必须保留。
 //
-// 解析失败时绝不回退原串——原串正是被解析拒绝的那个（可能含凭据）。
-// 此时退回字符串切分：先按最后一个 '@' 截掉 userinfo，只保留其后的
-// host 部分（host 本身不是凭据）。
+// 两条路径都不回退原串——原串可能含凭据：
+//   - 正规解析后按 u.Host 输出（url.URL.Host 结构上不含 userinfo）；
+//     但须先校验 host:port 合法——密码含 '/' 时 authority 提前终止，
+//     url.Parse 会把 user:pa 误当 host「成功」解析（Host="user:pa:"），
+//     伪成功必须识破
+//   - 解析失败/伪成功时按最后一个 '@' 手工剥离 userinfo（密码可含 '@'
+//     与 '/'，最后一个 @ 之前的内容全部丢弃——宁可显示错，不可泄漏）
 func RedactedBroker(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+	if u, err := url.Parse(raw); err == nil && u.Host != "" && hostPortValid(u.Host) {
 		return u.Scheme + "://" + u.Host
 	}
-	// 解析失败：按 userinfo 定界符手工剥离。
-	// 用 LastIndex 是因为密码本身可能含 '@'，最后一个才是真正的定界符。
-	s := raw
-	if i := strings.LastIndex(s, "@"); i >= 0 {
-		s = s[i+1:] // 丢弃 user:pass，只留 host[:port]
+	scheme := ""
+	if i := strings.Index(raw, "://"); i > 0 {
+		scheme = raw[:i+3]
 	}
-	// scheme 前缀原样保留（非凭据）；无 scheme 时整体作为 host 展示
-	if i := strings.Index(s, "://"); i >= 0 {
-		s = s[i+3:]
+	rest := raw[len(scheme):]
+	if i := strings.LastIndex(rest, "@"); i >= 0 {
+		rest = rest[i+1:]
 	}
-	if s == "" {
+	// host 段在第一个路径分隔符处结束
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	if rest == "" {
 		return "<redacted>"
 	}
-	return s
+	return scheme + rest
+}
+
+// hostPortValid 判定 host[:port] 形态合法（端口缺省或 0-65535 数字）。
+// 用于识破 url.Parse 的伪成功：Host="user:pa:"（密码含 '/' 被 truncate
+// 出来的残片）端口段不是数字，此处返回 false
+func hostPortValid(hostport string) bool {
+	_, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		// 无端口形态（"broker.example.com"）合法；但含裸 ':' 的残片不合法
+		return !strings.Contains(hostport, ":")
+	}
+	if port == "" {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 0 && n <= 65535
 }
 
 // brokerError 构造不含凭据的 broker 解析错误。
