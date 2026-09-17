@@ -4,7 +4,7 @@ import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe,
 import { api } from '../api/client'
 import type { Tunnel, TunnelStats, TunnelUsageItem, Node } from '../types/api'
 import { PageHeader } from '../components/PageHeader'
-import { Badge } from '../components/Badge'
+import { Badge, type BadgeVariant } from '../components/Badge'
 import { Loading } from '../components/Loading'
 import { Empty } from '../components/Empty'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -81,6 +81,37 @@ export function buildTabStats(
     active: enabled,
     count: tunnels.length,
   }
+}
+
+export interface P2PConnBadge {
+  label: string
+  variant: BadgeVariant
+  title?: string
+}
+
+// p2pClientStatus 从节点的 client_statuses（客户端 tunnel_status 上报的平铺状态）
+// 推导 p2p 隧道的连接徽章。p2p 流量不过网关，网关侧统计恒为 0，客户端上报是
+// 唯一数据源；节点离线/未上报必须与「未连通」区分，否则会误报故障。
+// 适用门禁内聚在此（含测试覆盖）：非 p2p 或已禁用返回 null——禁用隧道的 handler
+// 必然停止（客户端上报 running=false），再标「未运行」是误导。
+// 注：/tunnels 只列在线节点的隧道，node 缺失只发生在并发拉取竞态窗口，
+// 与离线同义处理
+export function p2pClientStatus(node: Node | undefined, tunnel: Tunnel): P2PConnBadge | null {
+  if (tunnel.type !== 'p2p' || !tunnel.enabled) return null
+  if (!node || node.status !== 'online') return { label: '节点离线', variant: 'info' }
+  const st = node.client_statuses?.find(s => s.name === tunnel.name && s.type === 'p2p')
+  if (!st) return { label: '未上报', variant: 'info', title: '客户端尚未上报该隧道状态（刚启动或旧版本）' }
+  if (st.connected) return { label: '已连通', variant: 'success' }
+  if (!st.running) {
+    // running=false 条目不携带 error（客户端 handler 存在时 Running 恒 true），
+    // 成因有多个，不能断言为构建缺失
+    return {
+      label: '未运行',
+      variant: 'error',
+      title: '客户端未运行该 p2p 隧道：构建未含 p2p（-tags p2p）、端口冲突或配置被跳过，详见节点本地日志',
+    }
+  }
+  return { label: '未连通', variant: 'warning', title: st.error || '会话未建立，打洞重试中' }
 }
 
 export function TunnelsPage() {
@@ -429,7 +460,8 @@ export function TunnelsPage() {
                 <th className="px-6 py-3">状态</th>
                 <th className="px-6 py-3">类型</th>
                 <th className="px-6 py-3">目标</th>
-                <th className="px-6 py-3">访问地址</th>
+                {/* P2P 无接入地址，该列展示 Room（配对标识），列头随之改名 */}
+                <th className="px-6 py-3">{activeTab === 'p2p' ? 'Room' : '访问地址'}</th>
                 <th className="px-6 py-3">节点</th>
                 {showDetails && <th className="px-6 py-3">流量</th>}
                 {showDetails && <th className="px-6 py-3">连接</th>}
@@ -443,6 +475,9 @@ export function TunnelsPage() {
                 const url = tunnelAccessUrl(tunnel)
                 const ownerNode = tunnel.node_id ? nodeMap[tunnel.node_id] : undefined
                 const usage = usageMap[`${tunnel.node_id}:${tunnel.name}`]
+                // p2p 连接状态：来自客户端上报（client_statuses），网关侧对 p2p 无统计；
+                // 门禁（类型/启用）内聚在 p2pClientStatus
+                const p2pBadge = p2pClientStatus(ownerNode, tunnel)
                 return (
                   <tr key={`${tunnel.name}-${tunnel.node_id}`} className="hover:bg-gray-50/50">
                     <td className="px-4 py-3">
@@ -466,6 +501,11 @@ export function TunnelsPage() {
                       <Badge variant={tunnel.enabled ? 'success' : 'error'}>
                         {tunnel.enabled ? '启用' : '禁用'}
                       </Badge>
+                      {p2pBadge && (
+                        <div className="mt-1" title={p2pBadge.title}>
+                          <Badge variant={p2pBadge.variant}>{p2pBadge.label}</Badge>
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-3">
                       <Badge variant={typeBadgeVariant(tunnel.type)}>
@@ -485,6 +525,9 @@ export function TunnelsPage() {
                         >
                           {url}
                         </a>
+                      ) : tunnel.type === 'p2p' ? (
+                        // p2p 无接入地址，展示 room（配对标识）便于确认该节点加入了哪个 room
+                        <span className="text-gray-600 font-mono" title="P2P Room（配对标识）">{url}</span>
                       ) : (
                         <span className="text-gray-500">{url}</span>
                       )}

@@ -1,7 +1,11 @@
 import { cn } from '../lib/utils'
 
+// BadgeVariant 导出供状态推导函数（如 TunnelsPage 的 p2pClientStatus）
+// 复用，避免手抄联合类型导致漂移
+export type BadgeVariant = 'success' | 'error' | 'info' | 'warning' | 'purple' | 'cyan' | 'pink'
+
 interface BadgeProps {
-  variant?: 'success' | 'error' | 'info' | 'warning' | 'purple' | 'cyan' | 'pink'
+  variant?: BadgeVariant
   className?: string
   children: React.ReactNode
 }
