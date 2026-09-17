@@ -1,4 +1,4 @@
-.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish
+.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish test test-race vet fmt-check
 
 .DEFAULT_GOAL := help
 
@@ -122,6 +122,29 @@ release: ## 交叉编译所有平台二进制
 		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM go build -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH); \
 	done
 	@echo ">> All platforms built in $(RELEASE_DIR)/"
+
+test: ## 运行全部测试（默认 + p2p 两种构建标签）
+	@echo ">> go test ./... (default build)"
+	go test ./...
+	@echo ">> go test -tags p2p ./..."
+	go test -tags p2p ./...
+
+test-race: ## 竞态检测（-tags p2p，含 fork 的并发测试；约 40s）
+	@echo ">> go test -race -tags p2p ./..."
+	go test -race -tags p2p ./...
+
+vet: ## go vet 两种构建标签
+	go vet ./...
+	go vet -tags p2p ./...
+
+fmt-check: ## 检查 gofmt 合规（internal/p2p 为上游 fork，豁免）
+	@UNFMT=$$(gofmt -l . | grep -v '^internal/p2p/' || true); \
+	if [ -n "$$UNFMT" ]; then \
+		echo "!! gofmt 不合规（internal/p2p fork 已豁免）："; \
+		echo "$$UNFMT"; \
+		exit 1; \
+	fi
+	@echo ">> gofmt OK"
 
 clean: ## 清理编译产物
 	@rm -f $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)

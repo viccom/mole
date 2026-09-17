@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,3 +269,29 @@ func TestWriteRespLogsWriteFailure(t *testing.T) {
 type failingWriter struct{}
 
 func (f *failingWriter) Write([]byte) (int, error) { return 0, errors.New("stream closed") }
+
+// EnableDebugLogging 后 slog.Debug 必须落到标准 log（此前被无条件丢弃）。
+// 全局状态，不可并行；用返回的旧级别恢复。
+func TestEnableDebugLoggingRoutesSlogDebugToLog(t *testing.T) {
+	oldW, oldF := log.Writer(), log.Flags()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	oldLevel := slog.SetLogLoggerLevel(slog.LevelInfo)
+	t.Cleanup(func() {
+		log.SetOutput(oldW)
+		log.SetFlags(oldF)
+		slog.SetLogLoggerLevel(oldLevel)
+	})
+
+	slog.Debug("before-enable marker")
+	if buf.Len() != 0 {
+		t.Fatalf("slog.Debug must be dropped at Info level, got %q", buf.String())
+	}
+
+	EnableDebugLogging()
+	slog.Debug("after-enable marker", "k", "v")
+	if !strings.Contains(buf.String(), "after-enable marker") {
+		t.Fatalf("EnableDebugLogging() did not surface Debug output, got %q", buf.String())
+	}
+}

@@ -156,7 +156,8 @@ applyTunnelMutation() 在快照上执行增/删/替换
 
 1. **不要修改 `internal/protocol/types.go`** 的字段名和 JSON tag（与服务端共享协议）
 2. **节点 ID**：固定 8 字符，首字符字母，其余字母或数字
-3. **HTTP 隧道 Target**：必须以 `http://` 或 `https://` 开头
+3. **HTTP/HTTPS 隧道 Target**：必须是裸 `host:port`（如 `127.0.0.1:8080`），**不得含 `://`**。`Validate()` 会拒绝任何含 scheme 的 target（与服务端 `validateTunnel` 对齐——含 scheme 的值会被整单拒绝），scheme 由 `dispatchStream` 按隧道类型缺省补齐。`tcp`/`udp` 同样为 `host:port`
+3.1 **`Validate()` 实际约束清单**（`tunnel.go`）：name 非空且不含 `\x00`/`\n`/`\r`（名称进入 `\x00<name>\n` 代理头，控制字符会破坏定界）；type 必须是 10 个已注册常量之一；target 必填（`vpn-manager`/`p2p` 空 target 豁免）；http/https/tcp/udp 的 target 需 host 非空 + 端口 1-65535；rate_limit 若存在须为对象且 max_conns 0-100000、max_bandwidth 0-10737418240、至少一项非零（`null` 或省略 = 清除）。**`listen_port` 两端均不校验**
 4. **TunnelType**：使用类型化常量，不用原始字符串
 5. **串口读写**：使用 copy-and-release 模式，不持锁跨 I/O
 6. **MQTT 连接**：每隧道独立连接，非共享池
@@ -188,10 +189,11 @@ applyTunnelMutation() 在快照上执行增/删/替换
 ## 构建
 
 ```bash
-make build
-go vet ./...
-# P2P 功能（proxy/p2p + 打洞 fork；默认构建不含任何 P2P 代码）
-go vet -tags p2p ./...
-go test -tags p2p ./...
+make build         # 编译当前平台
+make test          # 全部测试（默认 + -tags p2p 两种构建，约 42s）
+make test-race     # 竞态检测（-tags p2p，含 fork 并发测试；约 40s）
+make vet           # go vet 两种构建标签
+make fmt-check     # gofmt 合规（internal/p2p fork 豁免——rule 16 禁改）
+# P2P 单独构建（proxy/p2p + 打洞 fork；默认构建不含任何 P2P 代码）
 go build -tags p2p -o moleagent-client-p2p ./cmd/moleagent-client
 ```

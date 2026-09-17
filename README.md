@@ -225,7 +225,7 @@ go client.Run(ctx)
 
 client.AddTunnel(moleAgent_client.Tunnel{
     Name: "web", Type: moleAgent_client.TunnelTypeHTTP,
-    Target: "http://127.0.0.1:8080", Enabled: true,
+    Target: "127.0.0.1:8080", Enabled: true,
 })
 ```
 

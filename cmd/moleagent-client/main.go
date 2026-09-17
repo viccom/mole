@@ -44,6 +44,7 @@ func main() {
 	tlsFlag := flag.Bool("tls", false, "启用 TLS")
 	transportFlag := flag.String("transport", "", "传输协议: tcp, ws, kcp")
 	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)")
+	verboseFlag := flag.Bool("verbose", false, "启用 DEBUG 级日志（webssh 会话细节等）")
 	tunnelsFlag := flag.Bool("tunnels", false, "隧道管理子命令 (见: moleagent-client -tunnels -h)")
 	versionFlag := flag.Bool("version", false, "打印版本信息并退出")
 	debugFlag := flag.String("debug", "", "pprof 调试 HTTP 监听地址 (默认 off，如 127.0.0.1:59871)")
@@ -113,6 +114,10 @@ Examples:
 	}
 
 	// 创建客户端
+	if *verboseFlag {
+		moleAgent_client.EnableDebugLogging()
+	}
+
 	client, err := moleAgent_client.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
@@ -272,7 +277,7 @@ func addTunnel(baseURL, spec, domain string, port int) int {
 	parts := strings.SplitN(spec, ":", 3)
 	if len(parts) != 3 {
 		fmt.Fprintf(os.Stderr, "Error: invalid tunnel spec %q, expected name:type:target\n", spec)
-		fmt.Fprintln(os.Stderr, "Example: web:http:http://127.0.0.1:8080")
+		fmt.Fprintln(os.Stderr, "Example: web:http:127.0.0.1:8080")
 		return 1
 	}
 

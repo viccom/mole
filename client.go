@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -30,6 +31,17 @@ import (
 
 // Version 客户端版本，编译时通过 -ldflags 注入
 var Version = "dev"
+
+// EnableDebugLogging 让 slog.Debug 输出到标准 log（与全仓日志同一流向）。
+//
+// 必要性：仓库未调用 slog.SetDefault，slog 顶层函数走 log 桥接且默认最低
+// 级别为 Info——webssh 等处的 slog.Debug 被无条件丢弃。Go 1.21+ 的
+// SetLogLoggerLevel 正是在这种「未 SetDefault」模式下调整该阈值。
+//
+// 默认关闭：webssh 的 debug 含逐消息类型跟踪，负载下很吵。由 -verbose 开启。
+func EnableDebugLogging() {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+}
 
 // startTime 进程启动时间，供 sysinfo uptime 使用
 var startTime = time.Now()
