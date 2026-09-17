@@ -188,12 +188,30 @@ applyTunnelMutation() 在快照上执行增/删/替换
 
 ## 构建
 
+**P2P 已进入默认编译产物**：Makefile 的 `TAGS := p2p` 令 `build` / `build-desktop` /
+`release` / `publish` 全部带 `-tags p2p`，官方产物一律含 P2P 打洞代码
+（`/api/version` 的 `p2p` 标志为 true）。源码零改动——`internal/p2p/**` fork
+保持上游原样（rule 16），隔离全靠 build tag。
+
 ```bash
-make build         # 编译当前平台
+make build         # 编译当前平台（含 p2p）
 make test          # 全部测试（默认 + -tags p2p 两种构建，约 42s）
 make test-race     # 竞态检测（-tags p2p，含 fork 并发测试；约 40s）
 make vet           # go vet 两种构建标签
 make fmt-check     # gofmt 合规（internal/p2p fork 豁免——rule 16 禁改）
-# P2P 单独构建（proxy/p2p + 打洞 fork；默认构建不含任何 P2P 代码）
-go build -tags p2p -o moleagent-client-p2p ./cmd/moleagent-client
+make publish       # 交叉编译 + latest.json + 上传（需先打 tag，见下）
+
+# 裸 go build 不含 p2p（tag 未显式给出）——发布走 make，勿直接 go build
+go build ./cmd/moleagent-client              # 无 P2P
+go build -tags p2p ./cmd/moleagent-client    # 含 P2P（等价于 make build）
 ```
+
+### 发布纪律
+
+`publish` 依赖 `check-tag` 前置守卫：**VERSION 必须是 HEAD 上的干净 tag**。
+`git describe` 若带 `-N-g<hash>`（未打 tag）或 `-dirty`（工作区脏），publish 立即中止。
+原因：`latest.json` 里的 `version` 例如 `v0.6.0-31-gfad1b01` 会被 selfupdater 的
+`fallbackParse` 解析成 `0.6.0` + pre-release，按 SemVer 低于 `0.6.0`，老客户端会
+判定「无更新」——升级永远不生效。发布顺序：**先 `git tag` → 再 `make publish`**。
+
+`scripts/build.ps1` / `scripts/release.ps1`（Windows）已同步带 `-tags p2p`。

@@ -26,5 +26,5 @@ $output = Join-Path $releaseDir $binaryName
 
 Write-Host ">> Building $binaryName ($version)..."
 $env:CGO_ENABLED = "0"
-go build -trimpath -ldflags $ldflags -o $output $cmdPath
+go build -tags p2p -trimpath -ldflags $ldflags -o $output $cmdPath
 Write-Host ">> Done: $output"

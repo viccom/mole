@@ -1,4 +1,4 @@
-.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish test test-race vet fmt-check
+.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish check-tag test test-race vet fmt-check
 
 .DEFAULT_GOAL := help
 
@@ -35,6 +35,9 @@ LDFLAGS  := -s -w \
             -X moleAgent_client/internal/version.GitHash=$(BUILD) \
             -X moleAgent_client/internal/version.BuildDate=$(DATE)
 
+# 构建标签：P2P 打洞代码默认参与编译（internal/p2p fork 与 proxy/p2p 均以 p2p tag 隔离）
+TAGS     := p2p
+
 # 交叉编译目标（armv7 → GOARCH=arm, GOARM=7）
 TARGETS := \
 	linux/amd64 \
@@ -69,13 +72,13 @@ ensure-wails: ## 检查并安装 Wails CLI
 
 # 默认：编译当前平台
 build: ## 编译当前平台 CLI 二进制
-	@echo ">> Building $(BINARY_NAME) ($(VERSION))..."
+	@echo ">> Building $(BINARY_NAME) ($(VERSION), tags=$(TAGS))..."
 	@mkdir -p $(RELEASE_DIR)
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(RELEASE_DIR)/$(BINARY_NAME) $(CMD_PATH)
+	CGO_ENABLED=0 go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(RELEASE_DIR)/$(BINARY_NAME) $(CMD_PATH)
 	@echo ">> Done: $(RELEASE_DIR)/$(BINARY_NAME)"
 
 build-desktop: ensure-wails ## 编译桌面版 GUI（Wails）
-	@echo ">> Building $(DESKTOP_NAME) ($(VERSION))..."
+	@echo ">> Building $(DESKTOP_NAME) ($(VERSION), tags=$(TAGS))..."
 	@mkdir -p $(RELEASE_DIR)
 	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
 	if [ -z "$$WAILS_BIN" ]; then \
@@ -84,7 +87,7 @@ build-desktop: ensure-wails ## 编译桌面版 GUI（Wails）
 		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
 		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
 	fi; \
-	(cd $(DESKTOP_DIR) && "$$WAILS_BIN" build -clean -o $(DESKTOP_NAME)$(HOST_EXE) -ldflags "$(LDFLAGS)"); \
+	(cd $(DESKTOP_DIR) && "$$WAILS_BIN" build -clean -tags "$(TAGS)" -o $(DESKTOP_NAME)$(HOST_EXE) -ldflags "$(LDFLAGS)"); \
 	cp -f $(DESKTOP_DIR)/build/bin/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)
 	@echo ">> Done: $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)"
 
@@ -119,7 +122,7 @@ release: ## 交叉编译所有平台二进制
 		ARCH_TAG=$${target##*/}; \
 		OUT=$(RELEASE_DIR)/$(BINARY_NAME)-$$GOOS-$$ARCH_TAG$$EXT; \
 		echo ">> Building $$OUT ..."; \
-		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM go build -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH); \
+		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH); \
 	done
 	@echo ">> All platforms built in $(RELEASE_DIR)/"
 
@@ -152,6 +155,7 @@ fmt-check: ## 检查 gofmt 合规（internal/p2p 为上游 fork，豁免）
 	@echo ">> gofmt OK"
 
 clean: ## 清理编译产物
+	@rm -f $(RELEASE_DIR)/$(BINARY_NAME) $(RELEASE_DIR)/$(BINARY_NAME)-*
 	@rm -f $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
 	@echo ">> Cleaned $(BINARY_NAME) artifacts"
 
@@ -159,7 +163,17 @@ clean: ## 清理编译产物
 UPLOAD_DIR  := px:/lhcos-data/appupdater/molec
 UPDATE_BASE := https://fs.px.metme.top/app/molec
 
-publish: release ## 编译所有平台并发布到升级服务器
+# VERSION 必须是 HEAD 上的干净 tag（git describe 无 -N-g<hash> 后缀、无 -dirty）。
+# 否则 latest.json 的 version 例如 "v0.6.0-31-gfad1b01" 会被 selfupdater 的
+# fallbackParse 解析为 0.6.0 + pre-release，SemVer 判定其低于 0.6.0 —— 老客户端
+# 会认为「无更新」，升级永远不生效。
+check-tag:
+	@case "$(VERSION)" in \
+		*-dirty) echo "!! publish 中止：工作区有未提交改动（VERSION=$(VERSION)），请先提交"; exit 1;; \
+		*-*-g*) echo "!! publish 中止：HEAD 不在 tag 上（VERSION=$(VERSION)），请先 git tag"; exit 1;; \
+	esac
+
+publish: check-tag release ## 编译所有平台并发布到升级服务器
 	@echo ">> Generating latest.json ..."
 	@echo '{"version":"$(VERSION)","date":"$(DATE)","assets":{' > $(RELEASE_DIR)/latest.json
 	@first=true; \
@@ -178,7 +192,7 @@ publish: release ## 编译所有平台并发布到升级服务器
 		SIZE=$$(stat -c%s $$PATHFILE); \
 		if [ "$$first" = true ]; then first=false; else echo ',' >> $(RELEASE_DIR)/latest.json; fi; \
 		printf '"%s/%s":{"url":"$(UPDATE_BASE)/%s","sha256":"%s","size":%d}' \
-			$$GOOS $$ARCH_TAG $$FILE $$SHA256 $$SIZE >> $(RELEASE_DIR)/latest.json; \
+			$$GOOS $$GOARCH $$FILE $$SHA256 $$SIZE >> $(RELEASE_DIR)/latest.json; \
 	done; \
 	echo '}}' >> $(RELEASE_DIR)/latest.json
 	@echo ">> latest.json:"

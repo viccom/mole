@@ -46,7 +46,7 @@ foreach ($target in $targets) {
     Remove-Item Env:GOARM -ErrorAction SilentlyContinue
   }
 
-  go build -trimpath -ldflags $ldflags -o $output $cmdPath
+  go build -tags p2p -trimpath -ldflags $ldflags -o $output $cmdPath
 }
 
 Remove-Item Env:GOOS, Env:GOARCH, Env:GOARM -ErrorAction SilentlyContinue
