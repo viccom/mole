@@ -1,5 +1,7 @@
 # 编译产物
 moleAgent_client
+moleagent-client
+moleagent-client-*
 *.exe
 
 # IDE
