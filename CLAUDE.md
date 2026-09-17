@@ -171,6 +171,10 @@ applyTunnelMutation() 在快照上执行增/删/替换
 15. **WebSSH 凭据**：password/key 明文存于 Para 并发服务端（同 ser2mq secret 设计，私钥更敏感）
 16. **`internal/p2p/**` 是 fork 自 p2punch 的上游代码**：一行都不能改——多隧道/信令/打洞原生支持，集成 glue 全在 `proxy/p2p`；同步上游走专门流程
 17. **p2p Para 两层契约**：连接参数 + `mappings[]` 的 schema 与校验规则（§0.2/§0.3）和服务端逐字一致，共享测试向量 I1-I12/V1-V7 改契约时两端同步更新；映射变更 = Handler 重建 + 会话重打洞（对端零配置）；信令默认公共 MQTT broker 优先 + 服务端内嵌 broker 兜底
+18. **p2p 多隧道并行**：一个节点可同时运行多条 p2p 隧道（Manager 按隧道名分发，每条独立 Handler + session，fork 原生支持多隧道），但有两条硬约束：
+    - **`local_port` 全节点唯一（跨隧道）**：`manager.go` 启动前登记所有在跑隧道已占端口，冲突的新隧道整条跳过（slog.Error 不启动）。服务端只保证同 para 内不重复（§0.3 I12），跨隧道唯一性仅客户端检查
+    - **`mqtt_brokers` 全节点同质**：签名不一致的新隧道拒绝启动。根因是 fork 的 easyp2p 服务器列表与信令凭据均为**包级全局单值**（`SetServers`/`SetSignalCredentials` 写全局，`MQTTSignal` 读全局），混用会把 A 隧道 token 发给 B 隧道配置的第三方 broker——安全考量，宁可拒绝。默认配置下不受影响（`DefaultMQTTBrokers` 只依赖 serverHost，不随 room 变）；手工给不同隧道配不同 broker 列表才会触发。要支持多 broker 需改造 fork，非配置可绕过
+    - 服务端侧：同 room 全局最多 2 条记录且必须分属 2 个不同节点（`validateP2PRoomPairing`），同节点内不得有两条同 room——多隧道必须用不同 room
 
 ## 开发约束
 
