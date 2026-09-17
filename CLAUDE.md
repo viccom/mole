@@ -276,6 +276,12 @@ cd admin && npm install && npm run build    # 产物在 admin/dist/
 cd admin && npm run dev
 ```
 
+**发布纪律**：`make publish` 依赖 `check-tag` 前置守卫——**VERSION 必须是 HEAD 上的
+干净 tag**。`git describe` 若带 `-N-g<hash>`（未打 tag）或 `-dirty`（工作区脏），
+publish 立即中止。原因：`latest.json` 里的 `version` 例如 `v0.5.0-26-g28e7e03` 会被
+selfupdater 的 `fallbackParse` 解析成 `0.5.0` + pre-release，按 SemVer 低于 `0.5.0`，
+老服务端会判定「无更新」——升级永远不生效。发布顺序：**先 `git tag` → 再 `make publish`**。
+
 环境变量覆盖配置:
 
 | 环境变量 | 用途 |

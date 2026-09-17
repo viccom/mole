@@ -1,4 +1,4 @@
-.PHONY: help build release clean build-admin build-mobile copy-admin copy-mobile publish
+.PHONY: help build release clean build-admin build-mobile copy-admin copy-mobile publish check-tag
 
 .DEFAULT_GOAL := help
 
@@ -103,7 +103,17 @@ clean: ## 清理编译产物
 UPLOAD_DIR  := px:/lhcos-data/appupdater/moles
 UPDATE_BASE := https://fs.px.metme.top/app/moles
 
-publish: release ## 编译所有平台并发布到升级服务器
+# VERSION 必须是 HEAD 上的干净 tag（git describe 无 -N-g<hash> 后缀、无 -dirty）。
+# 否则 latest.json 的 version 例如 "v0.5.0-26-g28e7e03" 会被 selfupdater 的
+# fallbackParse 解析为 0.5.0 + pre-release，SemVer 判定其低于 0.5.0 —— 老服务端
+# 会认为「无更新」，升级永远不生效。
+check-tag:
+	@case "$(VERSION)" in \
+		*-dirty) echo "!! publish 中止：工作区有未提交改动（VERSION=$(VERSION)），请先提交"; exit 1;; \
+		*-*-g*) echo "!! publish 中止：HEAD 不在 tag 上（VERSION=$(VERSION)），请先 git tag"; exit 1;; \
+	esac
+
+publish: check-tag release ## 编译所有平台并发布到升级服务器
 	@echo ">> Generating latest.json ..."
 	@echo '{"version":"$(VERSION)","date":"$(DATE)","assets":{' > $(RELEASE_DIR)/latest.json
 	@first=true; \
