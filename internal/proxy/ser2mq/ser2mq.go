@@ -99,8 +99,10 @@ func (h *Ser2MQHandler) Start(ctx context.Context) error {
 
 	h.emitStatus("started")
 
+	// broker 日志脱敏：Broker 的文档形态是 mqtt://user:pass@host:port，
+	// userinfo 是凭据不得落盘（host:port 保留以便排查连接问题）
 	log.Printf("ser2mq tunnel %s started (broker: %s, serial: %s, pub: %s, sub: %s)",
-		h.name, h.cfg.Broker, h.cfg.Serial.Port,
+		h.name, RedactedBroker(h.cfg.Broker), h.cfg.Serial.Port,
 		h.mqtt.OutTopic(), h.mqtt.InTopic())
 	return nil
 }

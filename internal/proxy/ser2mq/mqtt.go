@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,7 +30,7 @@ func (m *MQTTConfig) Validate() error {
 	}
 	u, err := url.Parse(m.Broker)
 	if err != nil {
-		return fmt.Errorf("invalid broker URL: %w", err)
+		return brokerError(m.Broker, err)
 	}
 	if u.Scheme != "mqtt" && u.Scheme != "tcp" {
 		return fmt.Errorf("unsupported scheme: %s (expected mqtt/tcp)", u.Scheme)
@@ -37,6 +39,56 @@ func (m *MQTTConfig) Validate() error {
 		return fmt.Errorf("broker host is required")
 	}
 	return nil
+}
+
+// RedactedBroker 返回 broker URL 的脱敏形式：去掉 userinfo，保留 scheme://host[:port]。
+//
+// 使用场景：任何可能进入日志或错误信息的路径。文档形态
+// mqtt://user:pass@host:port 的 userinfo 是凭据必须剥离；host:port 是
+// 排查连接问题所必需的信息，必须保留。
+//
+// 解析失败时绝不回退原串——原串正是被解析拒绝的那个（可能含凭据）。
+// 此时退回字符串切分：先按最后一个 '@' 截掉 userinfo，只保留其后的
+// host 部分（host 本身不是凭据）。
+func RedactedBroker(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	// 解析失败：按 userinfo 定界符手工剥离。
+	// 用 LastIndex 是因为密码本身可能含 '@'，最后一个才是真正的定界符。
+	s := raw
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:] // 丢弃 user:pass，只留 host[:port]
+	}
+	// scheme 前缀原样保留（非凭据）；无 scheme 时整体作为 host 展示
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if s == "" {
+		return "<redacted>"
+	}
+	return s
+}
+
+// brokerError 构造不含凭据的 broker 解析错误。
+//
+// 必要性：url.Parse 返回的 *url.Error 其 Error() 形如
+// `parse "mqtt://user:pass@host:1883": <cause>`——原样上抛会让凭据随
+// 错误信息进入日志（ser2mq manager 会 log.Printf 这些 err）。
+// 这里只保留内层 cause，并附上脱敏后的 URL。
+//
+// 残余风险：cause 可能是 EscapeError，其文本含至多 3 字节的问题片段
+// （如密码中出现裸 %）。可接受——相比完整凭据泄漏，这是数量级改善，
+// 且完全丢弃 cause 会损失可诊断性。
+func brokerError(raw string, err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("invalid broker URL %s: %w", RedactedBroker(raw), ue.Err)
+	}
+	return fmt.Errorf("invalid broker URL %s: %w", RedactedBroker(raw), err)
 }
 
 // MQTTMessage 与 mole-cgui 兼容的消息格式
@@ -71,7 +123,9 @@ func NewMQTTClient(ctx context.Context, cfg MQTTConfig, nodeID, tunnel string) (
 
 	u, err := url.Parse(cfg.Broker)
 	if err != nil {
-		return nil, err
+		// 不直接 return err：*url.Error 的文本内嵌原始 URL（含 user:pass@），
+		// 上抛后会经 manager 的 log.Printf 落盘
+		return nil, brokerError(cfg.Broker, err)
 	}
 
 	portName := SanitizePortName(tunnel)
