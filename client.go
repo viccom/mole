@@ -992,6 +992,12 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 	switch cmd.Cmd {
 	case "tunnel_push":
 		tunnels := fromProtocols(cmd.Tunnels)
+		// 服务端推送路径不改变配置，仅记录校验不通过的项。
+		// 服务端侧 validateTunnels 已在 pushToClient 前把关，此处是纵深防御：
+		// 若服务端校验回退、或历史脏数据经兼容路径推来，客户端留诊断线索。
+		// 刻意不过滤——过滤会让被跳过的隧道在后续 tunnel_update 时从服务端
+		// 持久化中消失，把「一条配置有问题」放大成「配置丢失」。
+		warnInvalidPushedTunnels(tunnels)
 		c.mu.Lock()
 		c.tunnels = make([]Tunnel, len(tunnels))
 		copy(c.tunnels, tunnels)

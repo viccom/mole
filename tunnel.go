@@ -3,6 +3,7 @@ package moleAgent_client
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -166,4 +167,22 @@ func fromProtocols(tunnels []protocol.Tunnel) []Tunnel {
 		result[i] = fromProtocol(t)
 	}
 	return result
+}
+
+// warnInvalidPushedTunnels 对服务端推送的隧道逐条跑 Validate，把不通过的
+// 项记入日志（含隧道名与原因）。**不改动配置、不改变返回值**。
+//
+// 定位：纵深防御 + 诊断线索。服务端侧 validateTunnels 已在 pushToClient
+// 前把关，故正常情况下不会触发；但若服务端校验回退、或历史脏数据经
+// control.go 的兼容路径（nodeRepo 直推，未过校验）推来，这里留下痕迹。
+//
+// 刻意不做过滤：过滤会让被跳过的隧道在后续 sendTunnelUpdate 上报时从
+// 服务端持久化中消失——把「一条配置有问题」放大成「配置丢失」，
+// 而收益仅覆盖一个生产不可达的路径。
+func warnInvalidPushedTunnels(tunnels []Tunnel) {
+	for _, t := range tunnels {
+		if err := t.Validate(); err != nil {
+			log.Printf("tunnel_push: server pushed invalid tunnel %q (type %s): %v", t.Name, t.Type, err)
+		}
+	}
 }
