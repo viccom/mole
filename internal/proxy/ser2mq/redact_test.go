@@ -64,23 +64,34 @@ func TestRedactedBrokerNeverReturnsRawOnParseError(t *testing.T) {
 func TestBrokerErrorDoesNotLeakCredentials(t *testing.T) {
 	t.Parallel()
 
-	raw := "mqtt://leakuser:leakpass@broker.example.com:1883%zz"
-	// 构造真实的 url.Parse 错误（非法转义）
+	// 主用例：坏转义在密码里、host 干净（最真实的触发形态）
+	raw := "mqtt://leakuser:leak%zzpass@broker.example.com:1883"
 	_, err := url.Parse(raw)
 	if err == nil {
-		t.Fatal("expected url.Parse to fail for malformed escape")
+		t.Fatal("expected url.Parse to fail for malformed escape in password")
 	}
-	wrapped := brokerError(raw, err)
-
-	msg := wrapped.Error()
-	for _, leak := range []string{"leakuser", "leakpass", "leakuser:leakpass@"} {
+	msg := brokerError(raw, err).Error()
+	for _, leak := range []string{"leakuser", "leakpass", "leakuser:leak%zzpass@"} {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("brokerError() leaked %q in error text: %s", leak, msg)
 		}
 	}
-	// 仍需保留可诊断性：host 与内层 cause 应在
-	if !strings.Contains(msg, "broker.example.com") {
-		t.Errorf("brokerError() dropped host, msg = %s", msg)
+	// host 干净时必须保留（排查连接问题所需）
+	if !strings.Contains(msg, "broker.example.com:1883") {
+		t.Errorf("brokerError() dropped clean host, msg = %s", msg)
+	}
+
+	// 变体：坏转义在 host 段——host 本身不可信，允许整体遮蔽，但绝不能泄漏
+	raw2 := "mqtt://leakuser:leakpass@broker.example.com:1883%zz"
+	_, err2 := url.Parse(raw2)
+	if err2 == nil {
+		t.Fatal("expected url.Parse to fail for malformed port")
+	}
+	msg2 := brokerError(raw2, err2).Error()
+	for _, leak := range []string{"leakuser", "leakpass"} {
+		if strings.Contains(msg2, leak) {
+			t.Fatalf("brokerError() leaked %q for malformed-host input: %s", leak, msg2)
+		}
 	}
 }
 
@@ -109,15 +120,47 @@ func TestRedactedBrokerAdversarialPasswordWithSlash(t *testing.T) {
 	}
 }
 
-// 路径里含 @ 的正常 URL：url.Parse 成功且 host 合法，走成功路径
+// 路径里含 @ 的 URL：显示会错（含 @ 的输入一律走手工剥离，取最后一个 @
+// 之后的内容）——已知代价：broker 连接只用 host，路径无意义；此测试钉住
+// 该行为，防有人"修复"显示时把泄漏带回来
 func TestRedactedBrokerPathWithAt(t *testing.T) {
 	t.Parallel()
 
-	if got := RedactedBroker("mqtt://host:1883/path@x"); got != "mqtt://host:1883" {
-		t.Errorf("RedactedBroker 路径含 @ 的合法 URL = %q, want mqtt://host:1883", got)
+	if got := RedactedBroker("mqtt://host:1883/path@x"); got != "mqtt://x" {
+		t.Errorf("RedactedBroker 路径含 @ = %q, want mqtt://x（显示错误的已知代价）", got)
 	}
-	if got := RedactedBroker("[::1]"); got != "<redacted>" && !strings.Contains(got, "::1") {
-		// IPv6 无端口：不崩即可
-		_ = got
+	// IPv6 无端口裸串：残片不可信，整体遮蔽（F15：原断言为空操作，已修正）
+	if got := RedactedBroker("[::1]"); got != "<redacted>" {
+		t.Errorf("RedactedBroker(裸 IPv6) = %q, want <redacted>", got)
+	}
+	// 合法带端口的 IPv6 正常展示
+	if got := RedactedBroker("mqtt://[::1]:1883"); got != "mqtt://[::1]:1883" {
+		t.Errorf("RedactedBroker(IPv6:port) = %q, want mqtt://[::1]:1883", got)
+	}
+}
+
+// 独立审查复核轮的三条泄漏（均已实证）：
+//  1. 无 @ 且解析失败 → 原实现原样返回 "mqtt://admin:S3cr3t"
+//  2. 密码首段全数字 → url.Parse 伪成功 Host="alice:1883" 带出用户名
+//  3. 密码含 "://" 且无合法 scheme → 从密码切出的伪 scheme 前缀含用户名
+func TestRedactedBrokerReviewRoundLeaks(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ in, want string }{
+		{"mqtt://admin:S3cr3t", "<redacted>"},                              // 1: 残片不可信
+		{"mqtt://alice:1883/secret@realhost:9000", "mqtt://realhost:9000"}, // 2
+		{"user:pa://ss@host:1883", "host:1883"},                            // 3: 伪 scheme 被拒
+		{"mqtt://user:/path", "<redacted>"},                                // 尾随冒号空端口残片
+	}
+	for _, tc := range cases {
+		got := RedactedBroker(tc.in)
+		if got != tc.want {
+			t.Errorf("RedactedBroker(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		for _, leak := range []string{"admin", "S3cr3t", "alice", "user:pa", "user:"} {
+			if strings.Contains(got, leak) && !strings.Contains(tc.want, leak) {
+				t.Errorf("RedactedBroker(%q) = %q 泄漏 %q", tc.in, got, leak)
+			}
+		}
 	}
 }

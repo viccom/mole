@@ -47,43 +47,66 @@ func (m *MQTTConfig) Validate() error {
 //
 // 使用场景：任何可能进入日志或错误信息的路径。文档形态
 // mqtt://user:pass@host:port 的 userinfo 是凭据必须剥离；host:port 是
-// 排查连接问题所必需的信息，必须保留。
+// 排查连接问题所必需的信息，尽量保留。任何情况下不回退原串。
 //
-// 两条路径都不回退原串——原串可能含凭据：
-//   - 正规解析后按 u.Host 输出（url.URL.Host 结构上不含 userinfo）；
-//     但须先校验 host:port 合法——密码含 '/' 时 authority 提前终止，
-//     url.Parse 会把 user:pa 误当 host「成功」解析（Host="user:pa:"），
-//     伪成功必须识破
-//   - 解析失败/伪成功时按最后一个 '@' 手工剥离 userinfo（密码可含 '@'
-//     与 '/'，最后一个 @ 之前的内容全部丢弃——宁可显示错，不可泄漏）
+// 复核轮确立的两条规则（均有对抗用例钉住）：
+//   - 含 '@' 一律走手工剥离，不信任 url.Parse——密码含 '/' 时 authority
+//     提前终止，url.Parse 会把 user:pa 误当 host「成功」解析
+//     （Host="user:pa:" 或 Host="alice:1883"），伪成功无法靠 host 形态
+//     校验完全识破。按最后一个 '@' 剥离对「密码含 @ 与 /」都正确；
+//     代价是路径含 '@' 的显示错误（broker 连接只用 host，路径无意义）
+//   - 手工剥离结果仍须过 hostPortValid——无 '@' 且解析失败的残片
+//     （如 "mqtt://admin:S3cr3t"，操作员想写凭据但漏了 @host）不可信
 func RedactedBroker(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	if u, err := url.Parse(raw); err == nil && u.Host != "" && hostPortValid(u.Host) {
-		return u.Scheme + "://" + u.Host
+	if !strings.Contains(raw, "@") {
+		// 无 '@' ⇒ 按 URL 语法不可能存在 userinfo，可信任解析结果
+		if u, err := url.Parse(raw); err == nil && u.Host != "" && hostPortValid(u.Host) {
+			return u.Scheme + "://" + u.Host
+		}
 	}
-	scheme := ""
-	if i := strings.Index(raw, "://"); i > 0 {
-		scheme = raw[:i+3]
-	}
+	scheme := schemePrefix(raw)
 	rest := raw[len(scheme):]
 	if i := strings.LastIndex(rest, "@"); i >= 0 {
 		rest = rest[i+1:]
 	}
-	// host 段在第一个路径分隔符处结束
 	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
 		rest = rest[:i]
 	}
-	if rest == "" {
+	if rest == "" || !hostPortValid(rest) {
 		return "<redacted>"
 	}
 	return scheme + rest
 }
 
+// schemePrefix 提取 "scheme://" 前缀；前缀段必须符合 RFC 3986 scheme
+// 字符集（字母开头，[a-zA-Z0-9+.-]），否则视为无 scheme——否则密码含
+// "://" 时（"user:pa://ss@host"）会从密码中切出含 ':' 的伪 scheme
+// 前缀，把用户名带进输出
+func schemePrefix(raw string) string {
+	i := strings.Index(raw, "://")
+	if i <= 0 {
+		return ""
+	}
+	for j := 0; j < i; j++ {
+		c := raw[j]
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if j == 0 && !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return ""
+		}
+		if !isAlnum && c != '+' && c != '-' && c != '.' {
+			return ""
+		}
+	}
+	return raw[:i+3]
+}
+
 // hostPortValid 判定 host[:port] 形态合法（端口缺省或 0-65535 数字）。
-// 用于识破 url.Parse 的伪成功：Host="user:pa:"（密码含 '/' 被 truncate
-// 出来的残片）端口段不是数字，此处返回 false
+// 用于识破 url.Parse 的伪成功与手工剥离后的不可信残片。
+// 注意与 tunnel.go validateHostPort 的差异（此处端口可缺省）是有意的：
+// broker 允许无端口形态，二者不应合并
 func hostPortValid(hostport string) bool {
 	_, port, err := net.SplitHostPort(hostport)
 	if err != nil {
@@ -91,7 +114,9 @@ func hostPortValid(hostport string) bool {
 		return !strings.Contains(hostport, ":")
 	}
 	if port == "" {
-		return true
+		// "host:"（尾随冒号空端口）视为残片——url.Parse 对
+		// "mqtt://user:/path" 会给出 Host="user:"，不能当合法 host 展示
+		return !strings.HasSuffix(hostport, ":")
 	}
 	n, err := strconv.Atoi(port)
 	return err == nil && n >= 0 && n <= 65535

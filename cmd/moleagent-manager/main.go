@@ -3,6 +3,8 @@ package main
 import (
 	_ "embed"
 	"log"
+	"log/slog"
+	"os"
 
 	"moleAgent_client/internal/shellui"
 
@@ -15,6 +17,13 @@ import (
 var iconData []byte
 
 func main() {
+	// MOLE_VERBOSE=1 开启 DEBUG 日志。GUI 无命令行入口，用环境变量；
+	// CLI 侧对应 -verbose flag。此处直接调 slog 而非引入根包
+	// （manager 模块本不依赖 moleAgent_client，避免拖入整棵依赖树）
+	if os.Getenv("MOLE_VERBOSE") != "" {
+		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
+
 	app := NewApp()
 
 	err := wails.Run(

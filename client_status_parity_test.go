@@ -11,7 +11,23 @@ import (
 	"testing"
 
 	"moleAgent_client/internal/protocol"
+	"moleAgent_client/internal/proxy/ser2mq"
 )
+
+// captureLog 捕获全局 log 输出，测试结束自动恢复。
+// 全局状态捕获不可与并行测试共存——调用方不得 t.Parallel()。
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	oldW, oldF := log.Writer(), log.Flags()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldW)
+		log.SetFlags(oldF)
+	})
+	return &buf
+}
 
 // newStatusTestClient 构造带真实 manager 的 Client（不建立连接）。
 // NodeID 显式指定 + NodeIDFile 指向临时目录：避免写入 $HOME，也跳过
@@ -22,11 +38,17 @@ func newStatusTestClient(t *testing.T) *Client {
 	cfg.NodeID = "Test0001"
 	cfg.NodeIDFile = filepath.Join(t.TempDir(), "node.id")
 
+	// New 会把 cfg.NodeIDFile 写进包级全局（SetNodeIDFile），测试结束后
+	// t.TempDir 被删除——不恢复会让后续未显式指定 NodeIDFile 的测试
+	// 解析到已删除的路径（独立审查复核轮发现）
+	oldFile := nodeIDFile
+	t.Cleanup(func() { nodeIDFile = oldFile })
+
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(c.Close)
 	return c
 }
 
@@ -79,36 +101,28 @@ func TestSer2MQConnectedSemanticsMatchAcrossPaths(t *testing.T) {
 	}
 }
 
-// buildTunnelStatus 的 ser2mq 分支不得再引用 Running 锁存位。
-// 这是上一条的语义守卫：若有人把实现改回 stats.Running，本测试通过
-// 源码断言失败——因为无法在不导出 ser2mq.Handler 内部的前提下构造
-// 「Running=true 但 MQTT 掉线」的运行时状态。
-func TestSer2MQLocalStatusUsesConjunctionNotRunning(t *testing.T) {
-	src, err := os.ReadFile("client.go")
-	if err != nil {
-		t.Fatalf("read client.go: %v", err)
+// ser2mqConnected 的行为真值表（取代原先的源码 grep 断言）：
+// 核心语义——Running 锁存位不参与判定，MQTT 掉线必须判离线。
+// 这正是本地路径曾经用错的地方（buildTunnelStatus 用了 Running）。
+func TestSer2MQConnectedTruthTable(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		running      bool
+		mqtt, serial bool
+		want         bool
+	}{
+		{"全在线", true, true, true, true},
+		{"MQTT 掉线（Running 仍锁存 true）", true, false, true, false},
+		{"串口关闭", true, true, false, false},
+		{"从未启动", false, false, false, false},
 	}
-	text := string(src)
-	// 先定位 buildTunnelStatus 函数体——`case TunnelTypeSer2MQ:` 在
-	// collectTunnelStatuses 里也出现，必须从正确的函数起算
-	fnIdx := strings.Index(text, "func (c *Client) buildTunnelStatus(")
-	if fnIdx < 0 {
-		t.Fatal("buildTunnelStatus function not found")
-	}
-	body := text[fnIdx:]
-	idx := strings.Index(body, "case TunnelTypeSer2MQ:")
-	if idx < 0 {
-		t.Fatal("ser2mq branch not found inside buildTunnelStatus")
-	}
-	rest := body[idx:]
-	if next := strings.Index(rest, "case TunnelTypeSer2TCP"); next > 0 {
-		rest = rest[:next]
-	}
-	if strings.Contains(rest, "ts.Connected = stats.Running") {
-		t.Fatal("buildTunnelStatus 的 ser2mq 分支回退到了 Running 锁存位，应为 MQTTConnected && SerialOpen")
-	}
-	if !strings.Contains(rest, "MQTTConnected && stats.SerialOpen") {
-		t.Fatal("buildTunnelStatus 的 ser2mq 分支缺少合取语义")
+	for _, tc := range cases {
+		stats := ser2mq.Ser2MQStats{Running: tc.running, MQTTConnected: tc.mqtt, SerialOpen: tc.serial}
+		if got := ser2mqConnected(stats); got != tc.want {
+			t.Errorf("%s: ser2mqConnected = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -120,14 +134,7 @@ func TestSer2MQLocalStatusUsesConjunctionNotRunning(t *testing.T) {
 // 的 tunnel_push 分支真的调用了此函数——单元测试无法覆盖接线是否接上。
 func TestWarnInvalidPushedTunnelsLogsButKeepsConfig(t *testing.T) {
 	// 替换全局 log 输出，不可并行
-	oldW, oldF := log.Writer(), log.Flags()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(oldW)
-		log.SetFlags(oldF)
-	})
+	buf := captureLog(t)
 
 	tunnels := []Tunnel{
 		{Name: "good", Type: TunnelTypeTCP, Target: "127.0.0.1:8080"},
@@ -156,14 +163,7 @@ func TestWarnInvalidPushedTunnelsLogsButKeepsConfig(t *testing.T) {
 
 // 全部合法时不产生任何日志（防刷屏：tunnel_push 每次重连都会来一次）
 func TestWarnInvalidPushedTunnelsSilentWhenAllValid(t *testing.T) {
-	oldW, oldF := log.Writer(), log.Flags()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(oldW)
-		log.SetFlags(oldF)
-	})
+	buf := captureLog(t)
 
 	warnInvalidPushedTunnels([]Tunnel{
 		{Name: "a", Type: TunnelTypeTCP, Target: "127.0.0.1:8080"},
@@ -198,14 +198,7 @@ func TestTunnelPushHandlerCallsWarning(t *testing.T) {
 // 服务端拒绝控制命令响应时必须留痕——旧实现丢弃 readResponse 的两个
 // 返回值，上报被拒时客户端完全无感。
 func TestReadResponseRejectionIsLogged(t *testing.T) {
-	oldW, oldF := log.Writer(), log.Flags()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(oldW)
-		log.SetFlags(oldF)
-	})
+	buf := captureLog(t)
 
 	logReadResponse("tunnel_status", &protocol.ControlResponse{Cmd: "err", Msg: "too many tunnels"}, nil)
 	if !strings.Contains(buf.String(), "too many tunnels") {
@@ -222,14 +215,7 @@ func TestReadResponseRejectionIsLogged(t *testing.T) {
 
 // 读取失败同样必须留痕
 func TestReadResponseErrorIsLogged(t *testing.T) {
-	oldW, oldF := log.Writer(), log.Flags()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(oldW)
-		log.SetFlags(oldF)
-	})
+	buf := captureLog(t)
 
 	logReadResponse("sysinfo", nil, errors.New("read: EOF"))
 	if !strings.Contains(buf.String(), "EOF") {
@@ -239,14 +225,7 @@ func TestReadResponseErrorIsLogged(t *testing.T) {
 
 // writeResp 写失败必须留痕（服务端会等到超时，甚至判本节点失活）
 func TestWriteRespLogsWriteFailure(t *testing.T) {
-	oldW, oldF := log.Writer(), log.Flags()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(oldW)
-		log.SetFlags(oldF)
-	})
+	buf := captureLog(t)
 
 	writeResp(&failingWriter{}, "ok", "tunnels updated")
 	if !strings.Contains(buf.String(), "write control response") {

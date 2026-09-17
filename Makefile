@@ -123,19 +123,24 @@ release: ## 交叉编译所有平台二进制
 	done
 	@echo ">> All platforms built in $(RELEASE_DIR)/"
 
-test: ## 运行全部测试（默认 + p2p 两种构建标签）
+# GUI 子模块（desktop/manager 各有独立 go.mod，根模块的 ./... 不覆盖它们）
+GUI_MODULES := cmd/moleagent-desktop cmd/moleagent-manager
+
+test: ## 运行全部测试（根模块双构建标签 + GUI 子模块）
 	@echo ">> go test ./... (default build)"
 	go test ./...
 	@echo ">> go test -tags p2p ./..."
 	go test -tags p2p ./...
+	@for m in $(GUI_MODULES); do echo ">> go test $$m"; (cd $$m && go test ./...); done
 
 test-race: ## 竞态检测（-tags p2p，含 fork 的并发测试；约 40s）
 	@echo ">> go test -race -tags p2p ./..."
 	go test -race -tags p2p ./...
 
-vet: ## go vet 两种构建标签
+vet: ## go vet 两种构建标签 + GUI 子模块
 	go vet ./...
 	go vet -tags p2p ./...
+	@for m in $(GUI_MODULES); do echo ">> go vet $$m"; (cd $$m && go vet ./...); done
 
 fmt-check: ## 检查 gofmt 合规（internal/p2p 为上游 fork，豁免）
 	@UNFMT=$$(gofmt -l . | grep -v '^internal/p2p/' || true); \

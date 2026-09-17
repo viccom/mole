@@ -146,3 +146,20 @@ func TestRedactedArgsHandlesTrailingSensitiveFlag(t *testing.T) {
 		t.Fatalf("redactedArgs() = %v, want passthrough of 2 elements", red)
 	}
 }
+
+// 连写形式（复核轮发现）："-k=SECRET" 无独立值位，标志-值对投影会漏。
+// 修复前 redactedArgs(["-k=SECRET","--tap"]) 原样穿透。
+func TestRedactedArgsHandlesJoinedForm(t *testing.T) {
+	t.Parallel()
+
+	red := redactedArgs([]string{"-k=SECRET-TOKEN", "--tap", "-w=SECRET-PASS", "--tail"})
+	joined := strings.Join(red, " ")
+	for _, secret := range []string{"SECRET-TOKEN", "SECRET-PASS"} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("redactedArgs() leaked joined-form %q: %v", secret, red)
+		}
+	}
+	assertArgSequence(t, red, "-k=<redacted>")
+	assertArgSequence(t, red, "-w=<redacted>")
+	assertArgSequence(t, red, "--tap")
+}

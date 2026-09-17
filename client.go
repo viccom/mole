@@ -741,6 +741,17 @@ func (c *Client) sendSysInfo() {
 	logReadResponse("sysinfo", resp, err)
 }
 
+// ser2mqConnected ser2mq 的在线判定：MQTT 与串口同时在线。
+//
+// 收敛到一处的原因：该判定曾被两条状态收集路径各写一份而语义漂移
+// （collectTunnelStatuses 用合取、buildTunnelStatus 用 Running 锁存位），
+// 同一隧道在 admin 与节点本地页面显示不同的连通状态。
+// 不用 stats.Running：它是「曾启动成功」的锁存位（handler 无运行期失败
+// 回写），MQTT 掉线时仍为 true。
+func ser2mqConnected(stats ser2mq.Ser2MQStats) bool {
+	return stats.MQTTConnected && stats.SerialOpen
+}
+
 // collectTunnelStatuses 收集各 Manager 的隧道运行时状态
 func (c *Client) collectTunnelStatuses() []protocol.TunnelStatus {
 	c.mu.RLock()
@@ -757,7 +768,7 @@ func (c *Client) collectTunnelStatuses() []protocol.TunnelStatus {
 		case TunnelTypeSer2MQ:
 			if stats, err := c.ser2mqMgr.Status(t.Name); err == nil {
 				st.Running = stats.Running
-				st.Connected = stats.MQTTConnected && stats.SerialOpen
+				st.Connected = ser2mqConnected(stats)
 				st.SerialOpen = stats.SerialOpen
 				st.MQTTConnected = stats.MQTTConnected
 				st.BytesIn = stats.BytesIn
@@ -1393,11 +1404,9 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 		}
 	case TunnelTypeSer2MQ:
 		if stats, err := c.ser2mqMgr.Status(t.Name); err == nil {
-			// 与 collectTunnelStatuses 同一语义：MQTT 与串口同时在线才算连通。
-			// Running 是「曾启动成功」的锁存位（handler 无运行期失败回写），拿它
-			// 当在线标志会把 MQTT 掉线的链路显示成在线，并与同一响应里的
-			// mqtt_connected 徽章自相矛盾（ser2mq.js 的 onlineCount/运行中）
-			ts.Connected = stats.MQTTConnected && stats.SerialOpen
+			// 与 collectTunnelStatuses 同一语义（收敛于 ser2mqConnected，
+			// 曾因两处各写一份而语义漂移：本地路径用了 Running 锁存位）
+			ts.Connected = ser2mqConnected(stats)
 			ts.BytesIn = stats.BytesIn
 			ts.BytesOut = stats.BytesOut
 			ts.Status = stats

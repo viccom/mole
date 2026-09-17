@@ -179,10 +179,29 @@ func fromProtocols(tunnels []protocol.Tunnel) []Tunnel {
 // 刻意不做过滤：过滤会让被跳过的隧道在后续 sendTunnelUpdate 上报时从
 // 服务端持久化中消失——把「一条配置有问题」放大成「配置丢失」，
 // 而收益仅覆盖一个生产不可达的路径。
+//
+// 已知的两端分歧不告警（独立审查复核轮发现）：服务端对客户端本地类型
+// （ser2mq/ser2tcp/ser2udp/webssh）不校验 target——空 target 是服务端
+// 合法形态，而客户端 Validate 更严（要求非空）。对这类配置告警会在每次
+// 推送时重复出现并误归因于服务端；模块自身的问题会经各自错误路径暴露。
 func warnInvalidPushedTunnels(tunnels []Tunnel) {
 	for _, t := range tunnels {
+		if t.Target == "" && serverAllowsEmptyTarget(t.Type) {
+			continue
+		}
 		if err := t.Validate(); err != nil {
 			log.Printf("tunnel_push: server pushed invalid tunnel %q (type %s): %v", t.Name, t.Type, err)
 		}
 	}
+}
+
+// serverAllowsEmptyTarget 服务端 validateTunnel 对这些类型不做 target
+// 校验（空 target 合法落库）。与 moleAgent_Serv 的 clientLocalTypes 对应；
+// vpn-manager/p2p 客户端也豁免，无分歧，不在表内。
+func serverAllowsEmptyTarget(typ TunnelType) bool {
+	switch typ {
+	case TunnelTypeSer2MQ, TunnelTypeSer2TCP, TunnelTypeSer2UDP, TunnelTypeWebSSH:
+		return true
+	}
+	return false
 }

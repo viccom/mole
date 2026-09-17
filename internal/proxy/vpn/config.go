@@ -1,6 +1,9 @@
 package vpn
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // Config vpn-manager 隧道配置
 type Config struct {
@@ -180,15 +183,22 @@ var sensitiveVNTFlags = map[string]bool{"-k": true, "-w": true}
 //
 // 绝不修改入参：args 同时是 exec.Command 的真实 argv，就地改写会把
 // <redacted> 真的传给子进程。按「标志-值对」投影而非子串替换——令牌值
-// 恰好等于其他参数值时既不误伤也不漏伤。
+// 恰好等于其他参数值时既不误伤也不漏伤；连写形式 "-k=SECRET" 整 token 置换。
 //
 // 同时覆盖非 VNT 路径：BuildArgs 在 VNT 未启用时原样返回 c.Args，其中
 // 可能含手写的 -k/-w（filterUnmanagedArgs 只作用于 VNT 分支）。
 func redactedArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
-		out = append(out, args[i])
-		if sensitiveVNTFlags[args[i]] && i+1 < len(args) {
+		arg := args[i]
+		// 连写形式（复核轮发现）："-k=SECRET" / "-w=SECRET" 不带独立值位，
+		// 标志-值对投影会漏掉，须整 token 置换
+		if strings.HasPrefix(arg, "-k=") || strings.HasPrefix(arg, "-w=") {
+			out = append(out, arg[:3]+"<redacted>")
+			continue
+		}
+		out = append(out, arg)
+		if sensitiveVNTFlags[arg] && i+1 < len(args) {
 			i++
 			out = append(out, "<redacted>")
 		}

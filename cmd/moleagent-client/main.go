@@ -114,7 +114,8 @@ Examples:
 	}
 
 	// 创建客户端
-	if *verboseFlag {
+	// flag 或 MOLE_VERBOSE 环境变量任一生效（GUI 侧只有环境变量入口）
+	if *verboseFlag || os.Getenv("MOLE_VERBOSE") != "" {
 		moleAgent_client.EnableDebugLogging()
 	}
 
