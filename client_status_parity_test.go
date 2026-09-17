@@ -274,3 +274,35 @@ func TestEnableDebugLoggingRoutesSlogDebugToLog(t *testing.T) {
 		t.Fatalf("EnableDebugLogging() did not surface Debug output, got %q", buf.String())
 	}
 }
+
+// 接线守卫：buildTunnelStatus 的 ser2mq 分支必须调用 ser2mqConnected。
+// 行为层无法构造「Running=true 但 MQTT 掉线」的运行时状态（需要真串口
+// 与真 broker），未启动时两种语义都为 false——没有本断言，回退到
+// stats.Running 不会红。源码断言的脆弱性（重命名/重构会误报）是已知
+// 代价，换取回退保护。
+func TestBuildTunnelStatusWiresSer2MQConnectedHelper(t *testing.T) {
+	src, err := os.ReadFile("client.go")
+	if err != nil {
+		t.Fatalf("read client.go: %v", err)
+	}
+	text := string(src)
+	fnIdx := strings.Index(text, "func (c *Client) buildTunnelStatus(")
+	if fnIdx < 0 {
+		t.Fatal("buildTunnelStatus not found")
+	}
+	body := text[fnIdx:]
+	end := strings.Index(body, "\nfunc ")
+	if end > 0 {
+		body = body[:end]
+	}
+	seg := body[strings.Index(body, "case TunnelTypeSer2MQ:"):]
+	if next := strings.Index(seg, "case TunnelTypeSer2TCP"); next > 0 {
+		seg = seg[:next]
+	}
+	if !strings.Contains(seg, "ser2mqConnected(stats)") {
+		t.Fatal("buildTunnelStatus 的 ser2mq 分支未接线 ser2mqConnected（可能回退到了 Running 锁存位）")
+	}
+	if strings.Contains(seg, "stats.Running") {
+		t.Fatal("buildTunnelStatus 的 ser2mq 分支引用了 Running 锁存位")
+	}
+}
