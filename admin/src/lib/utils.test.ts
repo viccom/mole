@@ -31,19 +31,4 @@ describe('utils', () => {
       listen_port: 9000,
     })).toBe('tcp://localhost:9000')
   })
-
-  // p2p 不经网关、无接入地址；room 是配对唯一标识，展示它才能看出节点加入了哪个 room
-  it('shows room as access info for p2p tunnels', () => {
-    expect(tunnelAccessUrl({
-      type: 'p2p',
-      name: 'p2p-a',
-      node_id: 'node-a',
-      para: { room: 'myroom_2026_x' },
-    })).toBe('myroom_2026_x')
-  })
-
-  it('falls back to - for p2p without room', () => {
-    expect(tunnelAccessUrl({ type: 'p2p', name: 'p2p-a' })).toBe('-')
-    expect(tunnelAccessUrl({ type: 'p2p', name: 'p2p-a', para: { room: '' } })).toBe('-')
-  })
 })

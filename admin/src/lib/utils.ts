@@ -64,7 +64,7 @@ export function getDefaultDomain(): string | undefined {
   return cachedDefaultDomain || undefined
 }
 
-export function tunnelAccessUrl(tunnel: { type: string; domain?: string; name?: string; node_id?: string; listen_port?: number; para?: { room?: string } }, defaultDomain?: string): string {
+export function tunnelAccessUrl(tunnel: { type: string; domain?: string; name?: string; node_id?: string; listen_port?: number }, defaultDomain?: string): string {
   const dd = defaultDomain || cachedDefaultDomain
   if (tunnel.type === 'http' || tunnel.type === 'https') {
     const scheme = tunnel.type
@@ -72,12 +72,7 @@ export function tunnelAccessUrl(tunnel: { type: string; domain?: string; name?: 
     const base = dd || getGatewayBase()
     return `${scheme}://${tunnel.name}-${tunnel.node_id}.${base}`
   }
-  // p2p 无接入地址（两端打洞直连，不经网关）；room 才是配对的唯一业务标识，
-  // 展示它便于用户确认该节点加入了哪个 room
-  if (tunnel.type === 'p2p') {
-    const room = tunnel.para?.room
-    return typeof room === 'string' && room ? room : '-'
-  }  if (tunnel.listen_port) {
+  if (tunnel.listen_port) {
     const host = dd || window.location.hostname
     return `${tunnel.type}://${host}:${tunnel.listen_port}`
   }

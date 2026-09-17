@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Node, Tunnel, TunnelUsageItem } from '../types/api'
-import { buildTabStats, p2pClientStatus, tunnelMatchesKeyword } from './TunnelsPage'
+import { buildTabStats, p2pClientStatus, targetDisplay, tunnelMatchesKeyword } from './TunnelsPage'
 
 describe('buildTabStats', () => {
   it('将在线且启用的隧道计为活跃，而不是依赖当前连接数', () => {
@@ -96,6 +96,29 @@ describe('tunnelMatchesKeyword', () => {
     expect(tunnelMatchesKeyword(p2pTunnel, 'myroom_2026_x')).toBe(true)
     expect(tunnelMatchesKeyword(p2pTunnel, 'p2p')).toBe(true)
     expect(tunnelMatchesKeyword(p2pTunnel, 'other-room')).toBe(false)
+  })
+})
+
+describe('targetDisplay', () => {
+  // p2p 的 target 存映射展示串（host:port），对用户无意义；Room 才是配对标识
+  it('p2p 展示 Room 而非映射串', () => {
+    expect(targetDisplay({
+      name: 'p2p-a',
+      type: 'p2p',
+      target: '10.0.0.5:80, 10.0.0.5:53',
+      enabled: true,
+      node_id: 'node-1',
+      para: { room: 'myroom_2026_x' },
+    })).toBe('myroom_2026_x')
+  })
+
+  it('p2p 缺 room 回退 -，其他类型仍展示 target', () => {
+    expect(targetDisplay({
+      name: 'p2p-a', type: 'p2p', target: '10.0.0.5:80', enabled: true, node_id: 'node-1',
+    })).toBe('-')
+    expect(targetDisplay({
+      name: 'web', type: 'http', target: 'http://127.0.0.1:8080', enabled: true, node_id: 'node-1',
+    })).toBe('http://127.0.0.1:8080')
   })
 })
 

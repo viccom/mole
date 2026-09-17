@@ -89,6 +89,17 @@ export interface P2PConnBadge {
   title?: string
 }
 
+// targetDisplay 隧道列表「目标」列展示值。p2p 的 target 存的是映射展示串
+// （host:port，逗号连接），对用户无意义；Room 才是配对的唯一业务标识，
+// 展示它才能看出该节点加入了哪个 room
+export function targetDisplay(tunnel: Tunnel): string {
+  if (tunnel.type === 'p2p') {
+    const room = tunnel.para?.room
+    return typeof room === 'string' && room ? room : '-'
+  }
+  return tunnel.target || '-'
+}
+
 // p2pClientStatus 从节点的 client_statuses（客户端 tunnel_status 上报的平铺状态）
 // 推导 p2p 隧道的连接徽章。p2p 流量不过网关，网关侧统计恒为 0，客户端上报是
 // 唯一数据源；节点离线/未上报必须与「未连通」区分，否则会误报故障。
@@ -290,10 +301,6 @@ export function TunnelsPage() {
     return type.toUpperCase()
   }
 
-  const targetDisplay = (tunnel: Tunnel): string => {
-    return tunnel.target || '-'
-  }
-
   return (
     <div className="flex flex-col h-full">
       <PageHeader
@@ -459,9 +466,9 @@ export function TunnelsPage() {
                 <th className="px-6 py-3">名称</th>
                 <th className="px-6 py-3">状态</th>
                 <th className="px-6 py-3">类型</th>
-                <th className="px-6 py-3">目标</th>
-                {/* P2P 无接入地址，该列展示 Room（配对标识），列头随之改名 */}
-                <th className="px-6 py-3">{activeTab === 'p2p' ? 'Room' : '访问地址'}</th>
+                {/* P2P 的目标即配对 Room（target 字段存的是映射展示串，无意义） */}
+                <th className="px-6 py-3">{activeTab === 'p2p' ? 'Room' : '目标'}</th>
+                <th className="px-6 py-3">访问地址</th>
                 <th className="px-6 py-3">节点</th>
                 {showDetails && <th className="px-6 py-3">流量</th>}
                 {showDetails && <th className="px-6 py-3">连接</th>}
@@ -525,9 +532,6 @@ export function TunnelsPage() {
                         >
                           {url}
                         </a>
-                      ) : tunnel.type === 'p2p' ? (
-                        // p2p 无接入地址，展示 room（配对标识）便于确认该节点加入了哪个 room
-                        <span className="text-gray-600 font-mono" title="P2P Room（配对标识）">{url}</span>
                       ) : (
                         <span className="text-gray-500">{url}</span>
                       )}
