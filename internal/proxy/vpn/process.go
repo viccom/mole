@@ -193,7 +193,10 @@ func (pm *ProcessMgr) startLocked(ctx context.Context) error {
 
 	// 构建命令参数
 	args := cfg.BuildArgs()
-	log.Printf("vpn-manager: command: %s %v", binPath, args)
+	// 日志用脱敏副本：args 含 -k <令牌> / -w <密码>，原样打印会把凭据落到
+	// stderr/journald（client_notify_test.go 专门断言过这类密钥不得入日志，
+	// 但那个测试只覆盖 notifyManagers 路径，看不见此处）
+	log.Printf("vpn-manager: command: %s %v", binPath, redactedArgs(args))
 
 	// 创建命令
 	cmd := exec.Command(binPath, args...)

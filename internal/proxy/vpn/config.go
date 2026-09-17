@@ -171,3 +171,27 @@ func isManagedVNTFlag(arg string) bool {
 		return false
 	}
 }
+
+// sensitiveVNTFlags 值必须脱敏的 vnt-cli 参数：-k 连接令牌、-w 密码。
+// 新增敏感参数必须同时登记在此（与服务端/前端共享的 vnt-cli 契约）
+var sensitiveVNTFlags = map[string]bool{"-k": true, "-w": true}
+
+// redactedArgs 返回脱敏后的参数副本，供日志使用。
+//
+// 绝不修改入参：args 同时是 exec.Command 的真实 argv，就地改写会把
+// <redacted> 真的传给子进程。按「标志-值对」投影而非子串替换——令牌值
+// 恰好等于其他参数值时既不误伤也不漏伤。
+//
+// 同时覆盖非 VNT 路径：BuildArgs 在 VNT 未启用时原样返回 c.Args，其中
+// 可能含手写的 -k/-w（filterUnmanagedArgs 只作用于 VNT 分支）。
+func redactedArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		out = append(out, args[i])
+		if sensitiveVNTFlags[args[i]] && i+1 < len(args) {
+			i++
+			out = append(out, "<redacted>")
+		}
+	}
+	return out
+}

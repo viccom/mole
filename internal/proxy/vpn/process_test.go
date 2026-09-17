@@ -1,7 +1,12 @@
 package vpn
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,5 +79,61 @@ func TestCrashRestartInterruptedByStopDoesNotFatal(t *testing.T) {
 
 	if pm.IsRunning() {
 		t.Fatal("Stop 之后进程不得被迟到重启复活")
+	}
+}
+
+// Start 的日志不得泄漏 -k 令牌 / -w 密码。
+// 回归背景：process.go 直接打印 args（BuildArgs 产物含敏感项）。
+// 此测试在修复前必然失败——日志会原样吐出两个密钥。
+//
+// 注意：本测试替换全局 log 输出，不可 t.Parallel()，也不得与
+// 其它并行的、会写日志的测试共存（process_test.go 无并行用例）。
+func TestStartLogsRedactedArgs(t *testing.T) {
+	const name = "test-redacted-args-log"
+	// 用测试二进制自身作为「存在的可执行文件」：findBinary 走 cfg.Binary.Path
+	// 的绝对路径分支即返回，不会真的启动它之前失败——日志点在 findBinary 之后
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cfg := Config{
+		Binary: BinaryConfig{Name: filepath.Base(self), Path: self},
+		VNT: &VNTConfig{
+			Enabled:  true,
+			Token:    "LOG-LEAK-TOKEN-9d3f",
+			Password: "LOG-LEAK-PASS-a71c",
+		},
+	}
+	pm, err := NewProcessMgr(name, cfg)
+	if err != nil {
+		t.Fatalf("NewProcessMgr: %v", err)
+	}
+	t.Cleanup(func() { dropProcess(name) })
+
+	oldW, oldF := log.Writer(), log.Flags()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldW)
+		log.SetFlags(oldF)
+	})
+
+	// 启动会真实执行测试二进制（无参数、立即退出），不影响断言：
+	// 命令行日志在 exec 之前写出
+	_ = pm.Start(context.Background())
+	pm.Stop()
+
+	out := buf.String()
+	if out == "" {
+		t.Fatal("Start() produced no log output; the command log line is no longer reached")
+	}
+	for _, secret := range []string{"LOG-LEAK-TOKEN-9d3f", "LOG-LEAK-PASS-a71c"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("vpn Start() log leaked %q:\n%s", secret, out)
+		}
+	}
+	if !strings.Contains(out, "<redacted>") {
+		t.Fatalf("expected redaction marker in log output:\n%s", out)
 	}
 }
