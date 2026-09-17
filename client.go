@@ -1350,11 +1350,16 @@ func (c *Client) buildTunnelStatus(t Tunnel, connected bool, trafficStats map[st
 			ts.BytesOut = traffic.TCPBytesOut + traffic.HTTPBytesOut
 		}
 	case TunnelTypeSer2MQ:
-		stats, _ := c.ser2mqMgr.Status(t.Name)
-		ts.Connected = stats.Running
-		ts.BytesIn = stats.BytesIn
-		ts.BytesOut = stats.BytesOut
-		ts.Status = stats
+		if stats, err := c.ser2mqMgr.Status(t.Name); err == nil {
+			// 与 collectTunnelStatuses 同一语义：MQTT 与串口同时在线才算连通。
+			// Running 是「曾启动成功」的锁存位（handler 无运行期失败回写），拿它
+			// 当在线标志会把 MQTT 掉线的链路显示成在线，并与同一响应里的
+			// mqtt_connected 徽章自相矛盾（ser2mq.js 的 onlineCount/运行中）
+			ts.Connected = stats.MQTTConnected && stats.SerialOpen
+			ts.BytesIn = stats.BytesIn
+			ts.BytesOut = stats.BytesOut
+			ts.Status = stats
+		}
 	case TunnelTypeSer2TCP, TunnelTypeSer2UDP:
 		if stats, err := c.ser2netMgr.Status(t.Name); err == nil {
 			ts.Connected = stats.Running
