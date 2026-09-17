@@ -27,10 +27,8 @@ import (
 	"moleAgent_client/internal/proxy/vpn"
 	"moleAgent_client/internal/proxy/webssh"
 	"moleAgent_client/internal/transport"
+	"moleAgent_client/internal/version"
 )
-
-// Version 客户端版本，编译时通过 -ldflags 注入
-var Version = "dev"
 
 // EnableDebugLogging 让 slog.Debug 输出到标准 log（与全仓日志同一流向）。
 //
@@ -705,7 +703,7 @@ func collectSysInfo() *protocol.SysInfo {
 		Hostname:     hostname,
 		Uptime:       int64(time.Since(startTime).Seconds()),
 		GoVersion:    runtime.Version(),
-		AgentVersion: Version,
+		AgentVersion: version.Version,
 		NumCPU:       runtime.NumCPU(),
 		MemTotalMB:   int64(m.Sys / 1024 / 1024),
 		MemUsedMB:    int64(m.Alloc / 1024 / 1024),

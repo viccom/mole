@@ -12,6 +12,7 @@ import (
 
 	"moleAgent_client/internal/protocol"
 	"moleAgent_client/internal/proxy/ser2mq"
+	"moleAgent_client/internal/version"
 )
 
 // captureLog 捕获全局 log 输出，测试结束自动恢复。
@@ -304,5 +305,30 @@ func TestBuildTunnelStatusWiresSer2MQConnectedHelper(t *testing.T) {
 	}
 	if strings.Contains(seg, "stats.Running") {
 		t.Fatal("buildTunnelStatus 的 ser2mq 分支引用了 Running 锁存位")
+	}
+}
+
+// 上报给服务端的 agent_version 必须来自 ldflags 实际注入的那个变量。
+//
+// 回归背景：仓库里有两个同名 Version——根包 client.go 的 var Version
+// （从未被任何构建脚本注入）与 internal/version.Version（Makefile:34 /
+// build.ps1 / release.ps1 注入）。collectSysInfo 曾读根包变量，导致
+// 平台节点列表显示 agent_version="dev"，而 --version 却正确显示
+// v0.7.0——两个路径不同源，排查时极易误判为「已修好」。
+//
+// 本测试运行期改写 internal/version.Version：若上报路径挂回根包变量，
+// AgentVersion 不会随注入源变化，测试立即变红。
+// 全局状态改写不可与并行测试共存——不得 t.Parallel()。
+func TestCollectSysInfoReportsInjectedVersion(t *testing.T) {
+	old := version.Version
+	t.Cleanup(func() { version.Version = old })
+
+	const want = "v9.9.9-test-injected"
+	version.Version = want
+
+	if got := collectSysInfo().AgentVersion; got != want {
+		t.Fatalf("上报的 agent_version = %q, want %q；"+
+			"collectSysInfo 未读取 ldflags 注入的 internal/version.Version"+
+			"（是否又挂回了根包那个从未被注入的 Version？）", got, want)
 	}
 }
