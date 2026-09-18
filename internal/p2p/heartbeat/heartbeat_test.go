@@ -59,8 +59,9 @@ func TestTracker_IsDead(t *testing.T) {
 }
 
 func TestTracker_LastActivity(t *testing.T) {
-	// fork 修正（上游同款 flaky）：必须先取 before 再构造 Tracker——
-	// 原顺序下两次 time.Now() 的先后不受保证，构造时间可能早于 before
+	// 必须先取 before 再构造 Tracker——原顺序下两次 time.Now() 的先后不受保证，
+	// 构造时间可能早于 before，令 la.Before(before) 恒真而稳定失败。
+	// 上游 p2punch 已同步此修复（2026-09-18 回推），后续 fork 重同步时可去掉本注释
 	before := time.Now()
 	ht := NewTracker()
 	la := ht.LastActivity()

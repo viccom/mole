@@ -170,7 +170,15 @@ applyTunnelMutation() 在快照上执行增/删/替换
 13. **WebSSH 主机密钥**：优先加载可执行文件同目录 `config/known_hosts`；不存在时 TOFU（首次信任，缓存跨连接复用，进程重启首次仍信任）
 14. **WebSSH 消息协议**：`[type 1B][len 2B BE][payload]`，type 见 `handler.go` 常量（终端数据/resize/心跳/文件操作），payload 上限 65535 字节
 15. **WebSSH 凭据**：password/key 明文存于 Para 并发服务端（同 ser2mq secret 设计，私钥更敏感）
-16. **`internal/p2p/**` 是 fork 自 p2punch 的上游代码**：一行都不能改——多隧道/信令/打洞原生支持，集成 glue 全在 `proxy/p2p`；同步上游走专门流程
+16. **`internal/p2p/**` 是 fork 自 p2punch 的上游代码，可改但必须可回推上游**——多隧道/信令/打洞原生支持，集成 glue 全在 `proxy/p2p`
+
+    fork 的前提是**上游存在缺陷**：并发竞态、资源泄漏、协议正确性问题必须就地修复，不能等上游。但修改有硬边界，违反任一条即视为破坏 fork 契约：
+
+    - **只改缺陷，不重构**：改动限于并发安全/资源生命周期/安全/协议正确性。不做命名调整、目录重组、与上游无关的"顺手优化"——这类改动会让后续同步产生无谓冲突
+    - **每处修改必须留上游锚点**：注释说明「上游的什么问题 / 对应上游哪一处」，采用现有风格（如 `F13`/`F15`/`复审 R4` 标注）。无法说清上游问题出在哪的改动，说明不该改
+    - **保持 diff 最小且可分离**：一处缺陷一处修复，便于逐项回推；不要为图省事把独立修复揉成一个 commit
+    - **回推上游并重同步**：累积到一定量（或上游发版前）把修复推回 p2punch，然后重新 fork 同步，避免单向分叉。**2026-09-18 已回推** `mode_v6_tcp.go` 的 `preferDial` 确定性配对 + ECDHE 公钥序平局打破、`heartbeat` 的取时顺序。**剩余欠账**（上游缺、fork 有）：`session/session_secure.go` 入站流 deadline 加固、`netx`（`UDPConn`/`udp_bridge`/`race_conn` 的并发与资源修复）、`easyp2p` 的 `lan.go`/`p2p.go` 并发修复、`tunnel/tcp.go` accept 瞬态错误重试、`engine/mode_v4_relay.go` ctx 看门狗、`engine/mode_lan.go` socket 泄漏、`session/filetransfer.go` 截断检测。另有**合法 fork 扩展**（非欠账，不回推）：`easyp2p/mqtt_signal.go` + `engine/dep.go` 的 MQTT 信令凭据注入（moleAgent 节点级 token 鉴权所需）
+    - **不引入新的 gofmt 违规**：`make fmt-check` 豁免 `internal/p2p/**` 的既有原因见「构建」段
 17. **p2p Para 两层契约**：连接参数 + `mappings[]` 的 schema 与校验规则（§0.2/§0.3）和服务端逐字一致，共享测试向量 I1-I12/V1-V7 改契约时两端同步更新；映射变更 = Handler 重建 + 会话重打洞（对端零配置）；信令默认公共 MQTT broker 优先 + 服务端内嵌 broker 兜底
 18. **p2p 多隧道并行**：一个节点可同时运行多条 p2p 隧道（Manager 按隧道名分发，每条独立 Handler + session，fork 原生支持多隧道），但有两条硬约束：
     - **`local_port` 全节点唯一（跨隧道）**：`manager.go` 启动前登记所有在跑隧道已占端口，冲突的新隧道整条跳过（slog.Error 不启动）。服务端只保证同 para 内不重复（§0.3 I12），跨隧道唯一性仅客户端检查
@@ -190,15 +198,15 @@ applyTunnelMutation() 在快照上执行增/删/替换
 
 **P2P 已进入默认编译产物**：Makefile 的 `TAGS := p2p` 令 `build` / `build-desktop` /
 `release` / `publish` 全部带 `-tags p2p`，官方产物一律含 P2P 打洞代码
-（`/api/version` 的 `p2p` 标志为 true）。源码零改动——`internal/p2p/**` fork
-保持上游原样（rule 16），隔离全靠 build tag。
+（`/api/version` 的 `p2p` 标志为 true）。`internal/p2p/**` 的 fork 代码只在上游
+缺陷处修复、不改无关逻辑（rule 16），隔离全靠 build tag。
 
 ```bash
 make build         # 编译当前平台（含 p2p）
 make test          # 全部测试（默认 + -tags p2p 两种构建，约 42s）
 make test-race     # 竞态检测（-tags p2p，含 fork 并发测试；约 40s）
 make vet           # go vet 两种构建标签
-make fmt-check     # gofmt 合规（internal/p2p fork 豁免——rule 16 禁改）
+make fmt-check     # gofmt 合规（internal/p2p 豁免：上游原生就有 6 个文件不合规）
 make publish       # 交叉编译 + latest.json + 上传（需先打 tag，见下）
 
 # 裸 go build 不含 p2p（tag 未显式给出）——发布走 make，勿直接 go build
