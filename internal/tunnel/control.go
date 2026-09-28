@@ -176,6 +176,7 @@ type ControlServer struct {
 	nodeRepo         core.NodeRepo                              // 隧道持久化仓库
 	tunnelSvc        core.TunnelConfigManager
 	p2pIssuer        P2PSignalTokenIssuer // P2P 信令凭据签发（nil = 命令返回未配置）
+	authLimiter      *connAuthLimiter     // 认证失败 per-IP 限速（SEC-13，NewControlServer 默认启用）
 	// registerOwnerCheck register 时校验 node_id 归属（SEC-02，默认 true，kill-switch）
 	registerOwnerCheck bool
 	// legacyFormatEnabled 是否接受旧版明文 token 认证格式（SEC-01 兼容期，默认 true）
@@ -209,6 +210,7 @@ func NewControlServer(addr string, transport Transport, nodeMgr *node.ShardedNod
 		nodeRepo:            nodeRepo,
 		registerOwnerCheck:  true,
 		legacyFormatEnabled: true,
+		authLimiter:         newConnAuthLimiter(),
 	}
 }
 
@@ -352,6 +354,16 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	remoteAddr := conn.RemoteAddr().String()
 	slog.Info("Handling new connection", "remote", remoteAddr, "transport", transportName)
 
+	// SEC-13：认证失败 per-IP 限速——锁内 IP 在进入认证流程前直接断开
+	//（不发 challenge、不读 auth 行）。authLimiter 为 nil 仅出现在测试
+	// 直构 ControlServer 的场景，生产路径经 NewControlServer 默认启用
+	ip := connRemoteIP(remoteAddr)
+	if cs.authLimiter != nil && !cs.authLimiter.Allowed(ip) {
+		slog.Warn("Control connection dropped: auth failure lock active", "remote", remoteAddr, "transport", transportName)
+		conn.Close()
+		return
+	}
+
 	// KCP probe: client sends a probe byte to trigger Accept; discard it before auth.
 	if transportName == "kcp" {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -420,6 +432,9 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 			var authErr error
 			grant, authErr = cs.authenticator.AuthenticateNodeProof(ctx, authMsg.Proof, challenge)
 			if authErr != nil {
+				// 计数必须先于应答：客户端读到响应即可发起下一次连接，
+				// 若后计数，第 N+1 次连接可能赶在失败入账前通过锁检查
+				cs.authFail(ip)
 				writeControlResp(conn, "err", "invalid token")
 				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
 				conn.Close()
@@ -427,6 +442,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 			}
 		case authMsg.Token != "":
 			if !cs.legacyFormatEnabled {
+				cs.authFail(ip)
 				writeControlResp(conn, "err", "legacy auth disabled")
 				slog.Warn("Legacy node auth rejected", "remote", remoteAddr, "transport", transportName)
 				conn.Close()
@@ -435,6 +451,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 			var authErr error
 			grant, authErr = cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
 			if authErr != nil {
+				cs.authFail(ip)
 				writeControlResp(conn, "err", "invalid token")
 				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
 				conn.Close()
@@ -446,6 +463,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 			conn.Close()
 			return
 		}
+		cs.authOK(ip) // 同理：清零先于应答，防「成功后紧接的失败连接」误锁
 		writeControlResp(conn, "ok", "authenticated")
 		slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
 
@@ -456,6 +474,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 
 	// 无 authenticator 时回退到旧全局 token 直接比对（兼容未注入场景）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) == 1 {
+		cs.authOK(ip)
 		writeControlResp(conn, "ok", "authenticated")
 		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr, "transport", transportName)
 
@@ -466,9 +485,26 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		return
 	}
 
+	cs.authFail(ip)
 	writeControlResp(conn, "err", "invalid token")
 	slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName, "reason", "invalid token")
 	conn.Close()
+}
+
+// authFail/authOK 认证结果计入 per-IP 限速器（SEC-13）：
+// 仅「提交了凭据但被拒/通过」计入——载荷无法解析（invalid format）与
+// 读取失败不构成认证尝试，对齐 auth.LoginLimiter 只计 401 的语义；
+// limiter 未注入（测试直构）时为空操作
+func (cs *ControlServer) authFail(ip string) {
+	if cs.authLimiter != nil {
+		cs.authLimiter.RecordFailure(ip)
+	}
+}
+
+func (cs *ControlServer) authOK(ip string) {
+	if cs.authLimiter != nil {
+		cs.authLimiter.RecordSuccess(ip)
+	}
 }
 
 // setupSmuxAndAccept 建立 smux 会话并在独立 goroutine 中接收流。
