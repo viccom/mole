@@ -712,6 +712,33 @@ func TestHandleP2PSignalTokenTransientErrorRetryable(t *testing.T) {
 	}
 }
 
+// ===== SEC-03：节点持久化剥离接入 token =====
+
+// persistNode 落库内容不得包含明文 token（注册快照是控制面的独立落库点）
+func TestPersistNode_StripsToken(t *testing.T) {
+	nodeMgr := node.NewShardedNodeManager(4)
+	n := &core.Node{ID: "Node0001", Name: "n1", Token: "register-token-secret", Status: core.NodeStatusOnline}
+	if err := nodeMgr.Add(context.Background(), n); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	repo := newFakeControlNodeRepo()
+	cs := &ControlServer{nodeMgr: nodeMgr, nodeRepo: repo}
+
+	cs.persistNode(n)
+
+	got, err := repo.GetByID("Node0001")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Token != "" {
+		t.Fatalf("persistNode must strip Token before persisting, got %q", got.Token)
+	}
+	// 内存态节点保持原样（token 在内存中仍可用于鉴权语义判断）
+	if n.Token != "register-token-secret" {
+		t.Fatalf("persistNode must not mutate in-memory node, got %q", n.Token)
+	}
+}
+
 // TestReadBoundedLine 固化生产事故（conn 级 LimitedReader 吞掉 64KB 配额）
 // 的回归守卫：长度限制必须只作用于认证行本身，连接后续流量不受任何限制。
 func TestReadBoundedLine(t *testing.T) {

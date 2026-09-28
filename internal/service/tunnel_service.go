@@ -914,12 +914,14 @@ func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID st
 
 // persistableNode 返回面向持久化的节点副本：仅运行态的字段清零，
 // 避免 sysinfo/客户端状态列表随每次落库写进 blob 持续膨胀、重启后
-// 离线节点带着陈旧运行态"复活"
+// 离线节点带着陈旧运行态"复活"；接入 token 同样剥离（SEC-03），
+// 明文节点凭据不属于持久化契约
 func persistableNode(n *core.Node) core.Node {
 	cp := *n
 	cp.SysInfo = nil
 	cp.ClientStatuses = nil
 	cp.RTT = 0
+	cp.Token = ""
 	return cp
 }
 

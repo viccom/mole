@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"moleAgent_Serv/internal/core"
@@ -407,6 +408,85 @@ func (f *fakeP2PRevoker) RevokeNodeP2PTokens(nodeID string, tunnels []core.Tunne
 
 // 删除节点必须把其隧道列表交给凭据吊销器——否则被删节点的信令凭据
 // 存活到 TTL，恰好赶上被释放的 room 被新配对注册（审查 #5 场景）
+// ===== SEC-03：Node.Token 停存停回显 =====
+
+// GET /api/v1/nodes/{id} 响应不得回显接入 token（credential 泄露面）
+func TestNodeHandler_Get_ResponseOmitsToken(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
+
+	if err := nodeMgr.Add(ctx, &core.Node{
+		ID:     "Node0001",
+		Name:   "n1",
+		Token:  "super-secret-node-token",
+		Status: core.NodeStatusOnline,
+	}); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/nodes/Node0001", nil, claims)
+	w := httptest.NewRecorder()
+	handler.Get(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	if _, exists := data["token"]; exists {
+		t.Fatalf("GET /nodes/{id} response must not contain token field, got %v", data["token"])
+	}
+	if strings.Contains(w.Body.String(), "super-secret-node-token") {
+		t.Fatal("GET /nodes/{id} response must not leak token value")
+	}
+}
+
+// Create 的响应与落库内容都必须剥离 token：落库会让明文凭据进 blob，
+// 回显则把凭据暴露给所有有权读节点的账号
+func TestNodeHandler_Create_StripsTokenFromResponseAndPersist(t *testing.T) {
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
+
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	body, _ := json.Marshal(map[string]any{
+		"name":  "test-node-tok",
+		"token": "plain-text-token-from-request",
+	})
+	req := reqWithClaims(http.MethodPost, "/api/v1/nodes", body, claims)
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	if _, exists := data["token"]; exists {
+		t.Fatalf("Create response must not contain token field, got %v", data["token"])
+	}
+	if strings.Contains(w.Body.String(), "plain-text-token-from-request") {
+		t.Fatal("Create response must not echo token value")
+	}
+
+	persisted, err := nodeRepo.GetByID("test-node-tok")
+	if err != nil {
+		t.Fatalf("persisted node not found: %v", err)
+	}
+	if persisted.Token != "" {
+		t.Fatalf("persisted node must not store token, got %q", persisted.Token)
+	}
+}
+
 func TestNodeHandlerDelete_RevokesP2PTokens(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)

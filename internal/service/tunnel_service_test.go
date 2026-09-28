@@ -749,3 +749,25 @@ func TestApplyTunnelPreservesPersistedOnlyTunnels(t *testing.T) {
 		t.Fatalf("persisted-only tunnel must survive unrelated apply, got %+v", persisted.Tunnels)
 	}
 }
+
+// SEC-03：面向持久化的节点副本必须剥离接入 token——明文凭据不得进 blob
+func TestPersistableNode_StripsToken(t *testing.T) {
+	n := &core.Node{
+		ID:     "Node0001",
+		Name:   "n1",
+		Token:  "secret-node-token",
+		Status: core.NodeStatusOnline,
+	}
+	got := persistableNode(n)
+	if got.Token != "" {
+		t.Fatalf("persistableNode must strip Token, got %q", got.Token)
+	}
+	// 原节点不被就地篡改（调用方可能继续在内存态使用）
+	if n.Token != "secret-node-token" {
+		t.Fatalf("persistableNode must not mutate source node, got %q", n.Token)
+	}
+	// 其余持久化字段保持原样
+	if got.ID != "Node0001" || got.Name != "n1" {
+		t.Fatalf("unexpected persistableNode fields: %+v", got)
+	}
+}

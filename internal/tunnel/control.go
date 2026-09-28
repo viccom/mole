@@ -1012,11 +1012,13 @@ func (cs *ControlServer) persistNode(n *core.Node) {
 		return
 	}
 	// 运行态字段不属于持久化契约：清除后再落库，避免 sysinfo/状态列表随每次
-	// 持久化写入 blob 持续膨胀、重启后离线节点带陈旧运行态"复活"
+	// 持久化写入 blob 持续膨胀、重启后离线节点带陈旧运行态"复活"；
+	// 接入 token 同样剥离（SEC-03）——明文节点凭据不得进持久层
 	cp := *n
 	cp.SysInfo = nil
 	cp.ClientStatuses = nil
 	cp.RTT = 0
+	cp.Token = ""
 	// Create or Update：先尝试 GetByID 判断是否已存在
 	if existing, err := cs.nodeRepo.GetByID(n.ID); err != nil || existing == nil {
 		if err := cs.nodeRepo.Create(&cp); err != nil {

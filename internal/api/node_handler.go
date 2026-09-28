@@ -48,6 +48,14 @@ func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tu
 	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo, tunnelSvc: tunnelSvc, controlSrv: controlSrv}
 }
 
+// sanitizeNodeForResponse 返回剥离接入 token 的节点副本（SEC-03）：
+// token 是节点侧凭据，API 回显等于把凭据暴露给所有有权读节点的账号
+func sanitizeNodeForResponse(n *core.Node) *core.Node {
+	cp := *n
+	cp.Token = ""
+	return &cp
+}
+
 func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
 	nodes := h.nodeMgr.GetAll(r.Context())
 
@@ -124,7 +132,7 @@ func (h *NodeHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if !checkNodeOwnership(w, r, node) {
 		return
 	}
-	ResponseOK(w, node)
+	ResponseOK(w, sanitizeNodeForResponse(node))
 }
 
 func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -181,10 +189,11 @@ func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Persist pre-configured node to Redka
-	if err := h.nodeRepo.Create(node); err != nil {
+	// SEC-03：落库副本剥离 token——明文凭据不得进持久层 blob
+	if err := h.nodeRepo.Create(sanitizeNodeForResponse(node)); err != nil {
 		slog.Warn("Failed to persist node config", "error", err)
 	}
-	ResponseOK(w, node)
+	ResponseOK(w, sanitizeNodeForResponse(node))
 }
 
 func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -258,6 +267,7 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 			persisted.SysInfo = nil
 			persisted.ClientStatuses = nil
 			persisted.RTT = 0
+			persisted.Token = "" // SEC-03：顺带剥离历史遗留的明文 token
 			if err := h.nodeRepo.Update(persisted); err != nil {
 				slog.Warn("Failed to persist node update", "error", err)
 			}
@@ -268,12 +278,13 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 			cp.SysInfo = nil
 			cp.ClientStatuses = nil
 			cp.RTT = 0
+			cp.Token = "" // SEC-03
 			if err := h.nodeRepo.Create(&cp); err != nil {
 				slog.Warn("Failed to persist node create", "error", err)
 			}
 		}
 		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-			ResponseOK(w, node)
+			ResponseOK(w, sanitizeNodeForResponse(node))
 			return
 		}
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
@@ -281,7 +292,7 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-		ResponseOK(w, node)
+		ResponseOK(w, sanitizeNodeForResponse(node))
 	} else {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 	}
@@ -503,7 +514,7 @@ func (h *NodeHandler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-		ResponseOK(w, node)
+		ResponseOK(w, sanitizeNodeForResponse(node))
 	} else {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 	}
