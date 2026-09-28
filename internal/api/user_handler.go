@@ -65,8 +65,8 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ResponseError(w, http.StatusConflict, 409, "Username is reserved")
 		return
 	}
-	if len(req.Password) < 8 {
-		ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
+	if err := auth.ValidatePasswordStrength(req.Password); err != nil {
+		ResponseError(w, http.StatusUnprocessableEntity, 422, err.Error())
 		return
 	}
 
@@ -193,8 +193,8 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		user.Status = core.UserStatus(req.Status)
 	}
 	if req.Password != "" {
-		if len(req.Password) < 8 {
-			ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
+		if err := auth.ValidatePasswordStrength(req.Password); err != nil {
+			ResponseError(w, http.StatusUnprocessableEntity, 422, err.Error())
 			return
 		}
 		hash, err := auth.HashPassword(req.Password, h.bcryptCost)
@@ -386,9 +386,9 @@ func (h *UserHandler) resetPassword(w http.ResponseWriter, r *http.Request, user
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
-	// 与 Create 对称的最小长度校验（1 位密码重置成功 = 弱口令入口）
-	if len(req.Password) < 8 {
-		ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
+	// 与 Create 对称的强度校验（1 位密码重置成功 = 弱口令入口）
+	if err := auth.ValidatePasswordStrength(req.Password); err != nil {
+		ResponseError(w, http.StatusUnprocessableEntity, 422, err.Error())
 		return
 	}
 	hash, err := auth.HashPassword(req.Password, h.bcryptCost)

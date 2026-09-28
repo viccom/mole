@@ -128,6 +128,11 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID, oldPass, newPa
 	if !VerifyPassword(oldPass, hash) {
 		return core.ErrInvalidCredentials
 	}
+	// SEC-14：新密码与 Create/Update/resetPassword 同一强度校验，
+	// 自助路径不得成为弱口令入口
+	if err := ValidatePasswordStrength(newPass); err != nil {
+		return err
+	}
 	newHash, err := HashPassword(newPass, 12)
 	if err != nil {
 		return err

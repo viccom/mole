@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"moleAgent_Serv/internal/auth"
@@ -121,9 +122,12 @@ func (h *AuthHandler) ChangePass(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.ChangePassword(r.Context(), claims.UserID, req.OldPassword, req.NewPassword); err != nil {
-		switch err {
-		case core.ErrInvalidCredentials:
+		switch {
+		case errors.Is(err, core.ErrInvalidCredentials):
 			ResponseError(w, http.StatusUnauthorized, 401, "Old password is incorrect")
+		case errors.Is(err, core.ErrPasswordTooShort):
+			// SEC-14：弱口令是客户端错误，与其余改密路径同为 422
+			ResponseError(w, http.StatusUnprocessableEntity, 422, err.Error())
 		default:
 			ResponseError(w, http.StatusInternalServerError, 500, "Internal server error")
 		}

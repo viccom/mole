@@ -155,6 +155,47 @@ func TestAuthServiceRefreshToken_ReloadsRolesFromStore(t *testing.T) {
 	}
 }
 
+// SEC-14：自助改密对新密码执行与 Create/Update/resetPassword 相同的强度校验
+func TestAuthServiceChangePassword_EnforcesStrength(t *testing.T) {
+	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
+	if err != nil {
+		t.Fatalf("failed to open in-memory redka: %v", err)
+	}
+	defer db.Close()
+
+	userRepo := newMemoryUserRepo()
+	roleRepo := &mockRoleRepo{roles: map[string]*core.Role{}}
+	rbac := NewRBACEngine(db, roleRepo)
+	authSvc := NewAuthService(NewJWTManager("test-secret", time.Hour), userRepo, roleRepo, rbac, db)
+
+	hash, err := HashPassword("old-pass-123", 4)
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	if err := userRepo.Create(&core.User{ID: "u1", Username: "alice", Status: core.UserStatusActive}, hash); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// 3 位新密码 → 拒绝
+	if err := authSvc.ChangePassword(context.Background(), "u1", "old-pass-123", "abc"); err == nil {
+		t.Fatal("expected error for 3-char new password")
+	}
+	// 旧密码应仍然有效
+	gotHash, _ := userRepo.GetPasswordHash("u1")
+	if !VerifyPassword("old-pass-123", gotHash) {
+		t.Fatal("old password should remain effective after rejected change")
+	}
+
+	// 8+ 位 → 通过
+	if err := authSvc.ChangePassword(context.Background(), "u1", "old-pass-123", "good-pass-123"); err != nil {
+		t.Fatalf("expected success for 8+ char password, got %v", err)
+	}
+	gotHash, _ = userRepo.GetPasswordHash("u1")
+	if !VerifyPassword("good-pass-123", gotHash) {
+		t.Fatal("new password should be effective after change")
+	}
+}
+
 func TestAuthServiceLogin_PreservesUserIDAndUsernameSeparation(t *testing.T) {
 	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
 	if err != nil {

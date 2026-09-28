@@ -17,6 +17,9 @@ var (
 	ErrUserExists      = errors.New("user already exists")
 	ErrUserDisabled    = errors.New("user is disabled")
 
+	// 口令策略（Create/Update/resetPassword/ChangePassword 共用，SEC-14）
+	ErrPasswordTooShort = errors.New("Password must be at least 8 characters")
+
 	// 角色错误
 	ErrRoleNotFound    = errors.New("role not found")
 	ErrRoleExists      = errors.New("role already exists")
