@@ -95,6 +95,14 @@ func validateTunnel(t core.Tunnel) error {
 			return fmt.Errorf("%w: tunnel target port must be 1-65535, got %q", core.ErrTunnelInvalid, port)
 		}
 
+		// listen_port 只对 TCP/UDP 生效：HTTP/HTTPS 走域名路由不占系统端口，
+		// 零值合法；TCP/UDP 必须落在合法区间且避开服务自身保留端口（REL-01）
+		if t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP {
+			if err := core.ValidateTunnelListenPort(t.ListenPort); err != nil {
+				return err
+			}
+		}
+
 	// 客户端本地类型：服务端不验证 target 格式，只做基本校验
 	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp", "webssh":
 		// 这些类型的配置在 Para 字段中，客户端自己处理
@@ -120,6 +128,9 @@ func validateTunnel(t core.Tunnel) error {
 // validateTunnels 校验隧道列表
 func validateTunnels(tunnels []core.Tunnel) error {
 	names := make(map[string]bool, len(tunnels))
+	// listen_port -> 隧道名：TCP/UDP 网关监听是全局端口空间，
+	// 同一次提交的列表内 listen_port 必须唯一（对齐隧道名唯一机制，REL-01）
+	ports := make(map[int]string, len(tunnels))
 	for i := range tunnels {
 		if err := validateTunnel(tunnels[i]); err != nil {
 			return err
@@ -128,6 +139,12 @@ func validateTunnels(tunnels []core.Tunnel) error {
 			return fmt.Errorf("%w: duplicate tunnel name %q", core.ErrTunnelInvalid, tunnels[i].Name)
 		}
 		names[tunnels[i].Name] = true
+		if tunnels[i].Type == core.TunnelTypeTCP || tunnels[i].Type == core.TunnelTypeUDP {
+			if prev, dup := ports[tunnels[i].ListenPort]; dup {
+				return fmt.Errorf("%w: duplicate listen_port %d (tunnel %q and %q)", core.ErrTunnelInvalid, tunnels[i].ListenPort, prev, tunnels[i].Name)
+			}
+			ports[tunnels[i].ListenPort] = tunnels[i].Name
+		}
 	}
 	return nil
 }
@@ -720,21 +737,41 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		// 在线节点：启动 TCP/UDP 监听器
 		node, ok := s.nodeMgr.Get(ctx, nodeID)
 		if ok && node.Status == core.NodeStatusOnline {
+			var startErr error
 			for i := range tunnels {
 				t := tunnels[i]
 				if !t.IsEnabled() {
 					continue
 				}
+				if t.Type != core.TunnelTypeTCP && t.Type != core.TunnelTypeUDP {
+					continue
+				}
+				// 已在监听同一端口的同名隧道无需重启：对同端口二次 bind 必然
+				// 失败，历史上这类噪音错误被静默吞掉，上抛前必须先消除
+				if s.isListenerActive(t) {
+					continue
+				}
+				var err error
 				switch t.Type {
 				case core.TunnelTypeTCP:
-					if err := s.gateway.StartTCP(s.longLivedCtx, t); err != nil {
-						slog.Error("Failed to start TCP listener", "tunnel", t.Name, "error", err)
-					}
+					err = s.gateway.StartTCP(s.longLivedCtx, t)
 				case core.TunnelTypeUDP:
-					if err := s.gateway.StartUDP(s.longLivedCtx, t); err != nil {
-						slog.Error("Failed to start UDP listener", "tunnel", t.Name, "error", err)
-					}
+					err = s.gateway.StartUDP(s.longLivedCtx, t)
 				}
+				if err != nil {
+					slog.Error("Failed to start tunnel listener", "tunnel", t.Name, "type", t.Type, "error", err)
+					if startErr == nil {
+						startErr = fmt.Errorf("tunnel %s: %w", t.Name, err)
+					}
+					continue // 尽力启动其余隧道，失败汇总上抛
+				}
+			}
+			if startErr != nil {
+				// REL-01：监听失败必须上抛（ErrPortInUse 语义），不再静默继续。
+				// StartTCP/StartUDP 失败不触碰监听器注册表，同名旧监听器仍在
+				// 服务——配置失败可感知且既有服务不中断；跨隧道的已删除监听器
+				// 按配置语义停止，不受此影响
+				return fmt.Errorf("%w: %v", core.ErrPortInUse, startErr)
 			}
 		}
 	}
@@ -744,6 +781,32 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		"tunnels", len(tunnels),
 	)
 	return nil
+}
+
+// isListenerActive 判断隧道的监听器是否已注册且仍在监听同一端口：
+// 满足则跳过重复启动（避免对同端口二次 bind 的噪音失败），端口变更时
+// 仍会走 StartTCP/StartUDP（新监听成功后由注册表替换关闭旧监听）
+func (s *TunnelConfigService) isListenerActive(t core.Tunnel) bool {
+	if s.gateway == nil {
+		return false
+	}
+	reg := s.gateway.Registry()
+	if reg == nil {
+		return false
+	}
+	ln, ok := reg.Get(t.Name)
+	if !ok {
+		return false
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		return false
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	return portNum == t.ListenPort
 }
 
 func (s *TunnelConfigService) persistUpdatedNode(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"sync"
 	"testing"
 
@@ -300,7 +302,7 @@ func TestReplaceTunnels_DisabledTCPStopsListenerAndClearsStats(t *testing.T) {
 		Name:   "Node0005",
 		Status: core.NodeStatusOnline,
 		Tunnels: []core.Tunnel{
-			{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", Enabled: &enabled},
+			{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", ListenPort: 22022, Enabled: &enabled},
 		},
 	}
 	if err := nodeMgr.Add(ctx, n); err != nil {
@@ -308,7 +310,7 @@ func TestReplaceTunnels_DisabledTCPStopsListenerAndClearsStats(t *testing.T) {
 	}
 
 	_, err := svc.ReplaceTunnels(ctx, n.ID, []core.Tunnel{
-		{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", Enabled: &disabled},
+		{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", ListenPort: 22022, Enabled: &disabled},
 	})
 	if err != nil {
 		t.Fatalf("ReplaceTunnels failed: %v", err)
@@ -747,6 +749,119 @@ func TestApplyTunnelPreservesPersistedOnlyTunnels(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("persisted-only tunnel must survive unrelated apply, got %+v", persisted.Tunnels)
+	}
+}
+
+// ===== B1（REL-01）：listen_port 校验 =====
+
+// tcpTunnel 构造带监听端口的 TCP 隧道（测试辅助）
+func tcpTunnel(name string, port int) core.Tunnel {
+	return core.Tunnel{Name: name, Type: core.TunnelTypeTCP, Target: "127.0.0.1:8080", ListenPort: port}
+}
+
+// freePort 探测一个当前空闲的本地 TCP 端口
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe free port: %v", err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// TCP/UDP 隧道的 listen_port 必须落在 1-65535、避开服务自身保留端口，
+// 且同一次提交的列表内全局唯一（对齐隧道名唯一的检查机制）
+func TestValidateTunnelsListenPort(t *testing.T) {
+	t.Run("范围外端口拒绝", func(t *testing.T) {
+		for _, port := range []int{0, -1, 65536} {
+			if err := validateTunnels([]core.Tunnel{tcpTunnel("t1", port)}); err == nil {
+				t.Fatalf("listen_port=%d must be rejected", port)
+			}
+		}
+	})
+	t.Run("边界端口通过", func(t *testing.T) {
+		if err := validateTunnels([]core.Tunnel{tcpTunnel("lo", 1)}); err != nil {
+			t.Fatalf("listen_port=1 must be valid: %v", err)
+		}
+		if err := validateTunnels([]core.Tunnel{tcpTunnel("hi", 65535)}); err != nil {
+			t.Fatalf("listen_port=65535 must be valid: %v", err)
+		}
+	})
+	t.Run("保留端口拒绝", func(t *testing.T) {
+		for _, port := range []int{9980, 9981, 9982, 9983, 1882, 1883} {
+			if err := validateTunnels([]core.Tunnel{tcpTunnel("t1", port)}); err == nil {
+				t.Fatalf("reserved listen_port=%d must be rejected", port)
+			}
+		}
+	})
+	t.Run("列表内重复 listen_port 拒绝", func(t *testing.T) {
+		list := []core.Tunnel{tcpTunnel("a", 12345), tcpTunnel("b", 12345)}
+		if err := validateTunnels(list); err == nil {
+			t.Fatal("duplicate listen_port in one submission must be rejected")
+		}
+		// TCP 与 UDP 同端口同样冲突（网关监听是全局端口空间）
+		list = []core.Tunnel{
+			{Name: "a", Type: core.TunnelTypeTCP, Target: "127.0.0.1:8080", ListenPort: 12345},
+			{Name: "b", Type: core.TunnelTypeUDP, Target: "127.0.0.1:8080", ListenPort: 12345},
+		}
+		if err := validateTunnels(list); err == nil {
+			t.Fatal("duplicate listen_port across tcp/udp must be rejected")
+		}
+		// 不同端口合法
+		if err := validateTunnels([]core.Tunnel{tcpTunnel("a", 12345), tcpTunnel("b", 12346)}); err != nil {
+			t.Fatalf("distinct listen_ports must be valid: %v", err)
+		}
+	})
+	t.Run("非 TCP/UDP 类型不受 listen_port 校验", func(t *testing.T) {
+		// HTTP 隧道零值 listen_port（域名路由，不占系统端口）依旧合法
+		if err := validateTunnels([]core.Tunnel{{Name: "h", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:80"}}); err != nil {
+			t.Fatalf("http tunnel without listen_port must stay valid: %v", err)
+		}
+	})
+}
+
+// 监听失败必须上抛 ErrPortInUse（不再静默继续），且旧隧道监听器不受影响：
+// StartTCP 失败不触碰监听器注册表，同名/既有隧道继续服务（REL-01）
+func TestApplyTunnelListenFailureSurfacesPortInUse(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	repo := newMockNodeRepo()
+	gateway := tunnel.NewTunnelGateway(nodeMgr, 10, nil)
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, gateway, nil, nil, nil)
+
+	nodeID := "Node0099"
+	if err := nodeMgr.Add(ctx, &core.Node{ID: nodeID, Name: nodeID, Status: core.NodeStatusOnline}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// 旧隧道正常在跑
+	portA := freePort(t)
+	if _, err := svc.ApplyTunnel(ctx, nodeID, tcpTunnel("tcp-a", portA)); err != nil {
+		t.Fatalf("seed tcp-a: %v", err)
+	}
+
+	// 占住目标端口，制造监听失败（绑所有接口：Windows 上 127.0.0.1 与
+	// 0.0.0.0 同端口可共存，必须与 StartTCP 的 ":port" 绑定方式一致才会冲突）
+	portB := freePort(t)
+	blocker, err := net.Listen("tcp", fmt.Sprintf(":%d", portB))
+	if err != nil {
+		t.Fatalf("block port: %v", err)
+	}
+	defer blocker.Close()
+
+	_, err = svc.ApplyTunnel(ctx, nodeID, tcpTunnel("tcp-b", portB))
+	if !errors.Is(err, core.ErrPortInUse) {
+		t.Fatalf("expected ErrPortInUse, got %v", err)
+	}
+
+	// 旧隧道监听器仍在：配置失败可感知且既有服务不中断
+	if _, ok := gateway.Registry().Get("tcp-a"); !ok {
+		t.Fatal("old tunnel listener must survive a failed apply")
+	}
+	// 失败隧道不得留下监听器
+	if _, ok := gateway.Registry().Get("tcp-b"); ok {
+		t.Fatal("failed tunnel must not leave a listener behind")
 	}
 }
 
