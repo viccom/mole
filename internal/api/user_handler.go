@@ -12,13 +12,13 @@ import (
 )
 
 type UserHandler struct {
-	userRepo       core.UserRepo
-	rbac           *auth.RBACEngine
-	bcryptCost     int
-	nodeRepo       core.NodeRepo
-	accessTokenRepo core.AccessTokenRepo
-	nodeMgr        core.NodeManager // 运行态节点管理器（同步归属）
-	feishuBindings core.FeishuBindingRepo
+	userRepo         core.UserRepo
+	rbac             *auth.RBACEngine
+	bcryptCost       int
+	nodeRepo         core.NodeRepo
+	accessTokenRepo  core.AccessTokenRepo
+	nodeMgr          core.NodeManager // 运行态节点管理器（同步归属）
+	feishuBindings   core.FeishuBindingRepo
 	dingtalkBindings core.DingTalkBindingRepo
 }
 
@@ -387,9 +387,9 @@ func (h *UserHandler) setStatus(w http.ResponseWriter, r *http.Request, userID s
 	}
 	user.Status = core.UserStatus(req.Status)
 	if err := h.userRepo.Update(user); err != nil {
-			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update user")
-			return
-		}
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update user")
+		return
+	}
 	ResponseOK(w, user)
 }
 
@@ -438,4 +438,3 @@ func (h *UserHandler) revokeRole(w http.ResponseWriter, r *http.Request, userID,
 	}
 	ResponseOK(w, "role revoked")
 }
-
