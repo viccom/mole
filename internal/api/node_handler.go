@@ -248,7 +248,9 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 				ResponseError(w, http.StatusBadRequest, 400, err.Error())
 				return
 			}
-			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node tunnels: "+err.Error())
+			// QUA-02：内部错误细节（存储路径/驱动信息）进日志，对外 generic
+			slog.Error("Failed to update node tunnels", "nodeId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node tunnels")
 			return
 		}
 	}
@@ -466,7 +468,7 @@ func (h *NodeHandler) Restart(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.controlSrv.RestartNode(r.Context(), id, req.Delay, req.Reason); err != nil {
 		slog.Error("RestartNode failed", "node", id, "error", err)
-		ResponseError(w, http.StatusInternalServerError, 500, "Restart failed: "+err.Error())
+		ResponseError(w, http.StatusInternalServerError, 500, "Restart failed")
 		return
 	}
 	ResponseOK(w, map[string]any{"status": "ok", "node_id": id, "delay_seconds": req.Delay})
@@ -509,7 +511,8 @@ func (h *NodeHandler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, err.Error())
+		slog.Error("Failed to update node rate limit", "nodeId", id, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update rate limit")
 		return
 	}
 

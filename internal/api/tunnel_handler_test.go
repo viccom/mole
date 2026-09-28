@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"moleAgent_Serv/internal/core"
@@ -566,5 +569,38 @@ func TestTunnelHandlerStats_IncludesP2P(t *testing.T) {
 	}
 	if resp.Data["total_tunnels"].(float64) != 4 {
 		t.Fatalf("total_tunnels = %v, want 4", resp.Data["total_tunnels"])
+	}
+}
+
+// QUA-02：存储层错误细节不得回传客户端，真实错误进日志
+func TestTunnelHandlerCreate_SanitizesInternalErrors(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	if err := nodeMgr.Add(ctx, &core.Node{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "admin"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	sensitive := errors.New("open /var/lib/mole/redka.db: permission denied (sqlite: disk I/O error)")
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr, applyErr: sensitive}
+	handler := NewTunnelHandler(nodeMgr, tunnelSvc, nil, nil, nil, nil)
+
+	var logBuf strings.Builder
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	body := []byte(`{"name":"web","type":"http","target":"http://127.0.0.1:8080","node_id":"NodeA1"}`)
+	req := reqWithClaims(http.MethodPost, "/api/v1/tunnels", body,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "/var/lib/mole/redka.db") {
+		t.Fatalf("response must not leak internal storage error, body=%s", w.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), "/var/lib/mole/redka.db") {
+		t.Fatal("log must contain the real storage error")
 	}
 }

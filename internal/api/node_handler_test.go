@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +25,9 @@ type testTunnelConfigManager struct {
 	nodeRepo     core.NodeRepo
 	replaceCalls int
 	replacedTuns []core.Tunnel
+	// 错误注入（QUA-02 脱敏测试）：非 nil 时对应方法直接返回
+	applyErr   error
+	replaceErr error
 }
 
 func (m *testTunnelConfigManager) ActivateClientTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
@@ -72,6 +77,9 @@ func (r *testNodeRepo) Delete(id string) error {
 }
 
 func (m *testTunnelConfigManager) ApplyTunnel(context.Context, string, core.Tunnel) (core.TunnelChangeResult, error) {
+	if m.applyErr != nil {
+		return core.TunnelChangeResult{}, m.applyErr
+	}
 	return core.TunnelChangeResult{}, nil
 }
 
@@ -100,6 +108,9 @@ func (m *testTunnelConfigManager) RemoveTunnel(ctx context.Context, nodeID strin
 }
 
 func (m *testTunnelConfigManager) ReplaceTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) (core.TunnelChangeResult, error) {
+	if m.replaceErr != nil {
+		return core.TunnelChangeResult{}, m.replaceErr
+	}
 	m.replaceCalls++
 	m.replacedTuns = append([]core.Tunnel(nil), tunnels...)
 	if err := m.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
@@ -565,5 +576,41 @@ func TestNodeHandlerDelete_RevokesPersistedOnlyTunnels(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("revoker must receive persisted-only tunnels, got %+v", revoker.tunnels)
+	}
+}
+
+// QUA-02：存储层错误细节不得回传客户端，真实错误进日志
+func TestNodeHandlerUpdate_SanitizesInternalErrors(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	if err := nodeMgr.Add(ctx, &core.Node{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "admin"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	repo := newTestNodeRepo()
+	sensitive := errors.New("open /var/lib/mole/redka.db: permission denied (sqlite: disk I/O error)")
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: repo, replaceErr: sensitive}
+	handler := NewNodeHandler(nodeMgr, repo, tunnelSvc, nil)
+
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	body, _ := json.Marshal(map[string]any{
+		"tunnels": []map[string]any{{"name": "web", "type": "http", "target": "http://127.0.0.1:8080"}},
+	})
+	req := reqWithClaims(http.MethodPut, "/api/v1/nodes/NodeA1", body,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "/var/lib/mole/redka.db") {
+		t.Fatalf("response must not leak internal storage error, body=%s", w.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), "/var/lib/mole/redka.db") {
+		t.Fatal("log must contain the real storage error")
 	}
 }

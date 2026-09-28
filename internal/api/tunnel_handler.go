@@ -292,7 +292,9 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel: "+err.Error())
+		// QUA-02：内部错误细节（存储路径/驱动信息）进日志，对外 generic
+		slog.Error("Failed to apply tunnel", "nodeId", req.NodeID, "tunnel", req.Name, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel")
 		return
 	}
 	ResponseOK(w, map[string]any{
@@ -354,7 +356,8 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, "Failed to remove tunnel: "+err.Error())
+		slog.Error("Failed to remove tunnel", "nodeId", targetNodeID, "tunnel", name, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to remove tunnel")
 		return
 	}
 	ResponseOK(w, map[string]any{
@@ -528,7 +531,8 @@ func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, err.Error())
+		slog.Error("Failed to batch update rate limits", "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update rate limits")
 		return
 	}
 	ResponseOK(w, map[string]any{
@@ -585,7 +589,7 @@ func (h *TunnelHandler) Action(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.controlSrv.TriggerTunnelAction(r.Context(), req.NodeID, name, req.Action); err != nil {
 		slog.Error("TriggerTunnelAction failed", "node", req.NodeID, "tunnel", name, "action", req.Action, "error", err)
-		ResponseError(w, http.StatusInternalServerError, 500, "Action failed: "+err.Error())
+		ResponseError(w, http.StatusInternalServerError, 500, "Action failed")
 		return
 	}
 	ResponseOK(w, map[string]any{"status": "ok", "action": req.Action, "tunnel": name})
