@@ -103,19 +103,59 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 }
 
 func TestAdminUser(t *testing.T) {
+	t.Setenv("MA_ADMIN_USER", "")
+	t.Setenv("MA_ADMIN_PASS", "")
+
 	u, p := AdminUser()
-	if u != "admin" || p != "admin" {
-		t.Errorf("expected admin/admin, got %s/%s", u, p)
+	if u != "admin" {
+		t.Errorf("expected admin, got %s", u)
+	}
+	// SEC-05：MA_ADMIN_PASS 未设时不得回落公开默认口令 "admin"，
+	// 改为随机强口令（≥24 字符，含大小写与数字）
+	if p == "admin" || p == "" {
+		t.Fatalf("must not fall back to the well-known default password, got %q", p)
+	}
+	if len(p) < 24 {
+		t.Fatalf("random admin password must be at least 24 chars, got %d", len(p))
+	}
+	var hasUpper, hasLower, hasDigit bool
+	for _, c := range p {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		t.Fatalf("random admin password must contain upper/lower/digit, got %q", p)
+	}
+	// 同一启动周期内稳定（种子与修复路径必须落同一个哈希）
+	_, p2 := AdminUser()
+	if p != p2 {
+		t.Fatalf("random admin password must be stable within one process, got %q then %q", p, p2)
 	}
 
-	os.Setenv("MA_ADMIN_USER", "superuser")
-	os.Setenv("MA_ADMIN_PASS", "superpass")
-	defer os.Unsetenv("MA_ADMIN_USER")
-	defer os.Unsetenv("MA_ADMIN_PASS")
+	t.Setenv("MA_ADMIN_USER", "superuser")
+	t.Setenv("MA_ADMIN_PASS", "superpass")
 
 	u, p = AdminUser()
 	if u != "superuser" || p != "superpass" {
 		t.Errorf("expected superuser/superpass, got %s/%s", u, p)
+	}
+}
+
+// SEC-05：区分「用户显式指定口令」与「需要随机生成」
+func TestAdminPassConfigured(t *testing.T) {
+	t.Setenv("MA_ADMIN_PASS", "")
+	if AdminPassConfigured() {
+		t.Error("AdminPassConfigured must be false when MA_ADMIN_PASS unset")
+	}
+	t.Setenv("MA_ADMIN_PASS", "some-pass")
+	if !AdminPassConfigured() {
+		t.Error("AdminPassConfigured must be true when MA_ADMIN_PASS set")
 	}
 }
 

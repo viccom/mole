@@ -1,12 +1,14 @@
 package config
 
 import (
-	"time"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"moleAgent_Serv/internal/ratelimit"
 
@@ -328,7 +330,16 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// AdminUser 从环境变量获取种子管理员凭据
+// adminPassOnce/AdminUser 的随机口令包级缓存：同一启动周期内必须稳定，
+// 否则种子路径与修复路径各自拿到不同口令，落库哈希互相覆盖
+var (
+	adminPassOnce   sync.Once
+	randomAdminPass string
+)
+
+// AdminUser 从环境变量获取种子管理员凭据。
+// MA_ADMIN_PASS 未设时不再回落到公开默认口令 "admin"（SEC-05），改为生成
+// 随机强口令，由调用方打印给运维
 func AdminUser() (username, password string) {
 	u := os.Getenv("MA_ADMIN_USER")
 	p := os.Getenv("MA_ADMIN_PASS")
@@ -336,9 +347,70 @@ func AdminUser() (username, password string) {
 		u = "admin"
 	}
 	if p == "" {
-		p = "admin"
+		adminPassOnce.Do(func() {
+			pass, err := generateRandomAdminPassword()
+			if err != nil {
+				// crypto/rand 失败无法安全降级：直接终止启动
+				panic(fmt.Sprintf("generate random admin password: %v", err))
+			}
+			randomAdminPass = pass
+		})
+		p = randomAdminPass
 	}
 	return u, p
+}
+
+// AdminPassConfigured 报告 MA_ADMIN_PASS 是否已显式设置（SEC-05：
+// 区分「用户指定口令」与「需要随机生成的默认口令」）
+func AdminPassConfigured() bool {
+	return os.Getenv("MA_ADMIN_PASS") != ""
+}
+
+// generateRandomAdminPassword 生成 24 字符随机口令，保证含大写/小写/数字
+// 三类字符（字符集剔除易混淆的 0/O、1/l/I，便于打印誊抄）
+func generateRandomAdminPassword() (string, error) {
+	const (
+		upper   = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+		lower   = "abcdefghijkmnpqrstuvwxyz"
+		digit   = "23456789"
+		all     = upper + lower + digit
+		passLen = 24
+	)
+	classes := []string{upper, lower, digit}
+	buf := make([]byte, passLen)
+	// 前三位各取一类，保证字符类别齐备
+	for i, class := range classes {
+		idx, err := cryptoRandInt(len(class))
+		if err != nil {
+			return "", err
+		}
+		buf[i] = class[idx]
+	}
+	for i := len(classes); i < passLen; i++ {
+		idx, err := cryptoRandInt(len(all))
+		if err != nil {
+			return "", err
+		}
+		buf[i] = all[idx]
+	}
+	// Fisher-Yates 洗乱固定类别位，避免前三位类别可预测
+	for i := passLen - 1; i > 0; i-- {
+		j, err := cryptoRandInt(i + 1)
+		if err != nil {
+			return "", err
+		}
+		buf[i], buf[j] = buf[j], buf[i]
+	}
+	return string(buf), nil
+}
+
+// cryptoRandInt crypto/rand 均匀随机取 [0, n)
+func cryptoRandInt(n int) (int, error) {
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		return 0, err
+	}
+	return int(v.Int64()), nil
 }
 
 // generateRandomSecret 生成指定字节数的随机十六进制字符串

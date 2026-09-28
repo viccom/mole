@@ -151,15 +151,11 @@ func main() {
 	gateway.HyphenRouting = cfg.Server.Gateway.HyphenRouting
 
 	// --- 控制端口 ---
-	token := *nodeToken
-	if token == "" {
-		token = os.Getenv("MA_NODE_TOKEN")
-	}
-	if token == "" {
-		token = "default-node-token-change-me"
-		// 该默认值在公开仓库中可查：不配置即等于向所有能访问控制端口的人开放节点注册
-		fmt.Fprintf(os.Stderr, "[WARN] node access token not configured (-nodetoken / MA_NODE_TOKEN); using the well-known default token — anyone can register nodes!\n")
-		slog.Warn("Node access token is the well-known default; set -nodetoken or MA_NODE_TOKEN to secure the control port")
+	// SEC-05：token 未配置时拒绝启动（原为回落公开默认值 + WARN）
+	token, err := resolveNodeToken(*nodeToken)
+	if err != nil {
+		slog.Error("Node access token is not configured; refusing to start", "error", err)
+		os.Exit(1)
 	}
 	var tlsConfig *tls.Config
 	if cfg.Server.TLS.Enabled {
@@ -557,4 +553,18 @@ func parseExpiry(s string) time.Duration {
 		return 24 * time.Hour
 	}
 	return d
+}
+
+// resolveNodeToken 解析节点接入 token（flag > 环境变量）；两者均未设置时
+// 返回错误拒绝启动——公开仓库中的默认 token 等于向所有能访问控制端口的
+// 人开放节点注册（SEC-05）
+func resolveNodeToken(flagToken string) (string, error) {
+	token := flagToken
+	if token == "" {
+		token = os.Getenv("MA_NODE_TOKEN")
+	}
+	if token == "" {
+		return "", fmt.Errorf("node access token not configured: set the -nodetoken flag or MA_NODE_TOKEN environment variable")
+	}
+	return token, nil
 }

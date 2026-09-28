@@ -1,4 +1,12 @@
 # moleAgent_Serv 配置示例
+#
+# 节点接入 token（必配）：通过 -nodetoken 启动参数或 MA_NODE_TOKEN 环境变量设置；
+# 两者均未设置时服务拒绝启动（不再回落公开默认值，SEC-05）。推荐使用用户级
+# 接入 Token，全局 nodetoken 仅作兼容过渡保留。
+#
+# 管理员口令：MA_ADMIN_PASS 环境变量未设置时，首次种子/默认口令轮换会生成
+# 随机强口令并打印到 stderr 一次（SEC-05）；请用该口令登录后立即改密，
+# 或预先设置 MA_ADMIN_PASS 固定自己的口令。
 
 server:
   control_port: ":9981"    # Node 连接端口（TCP）

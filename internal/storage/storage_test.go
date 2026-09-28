@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"moleAgent_Serv/internal/auth"
+	"moleAgent_Serv/internal/config"
 	"moleAgent_Serv/internal/core"
 )
 
@@ -302,5 +304,99 @@ func TestSeedData(t *testing.T) {
 	// 验证幂等性 — 再次 seed 不应报错
 	if err := seedData(); err != nil {
 		t.Fatalf("seedData should be idempotent: %v", err)
+	}
+}
+
+// ===== SEC-05：默认口令强制轮换 =====
+
+// seedLegacyDefaultAdmin 构造历史遗留状态：admin 用户存在且哈希仍是
+// 公开默认口令 "admin"
+func seedLegacyDefaultAdmin(t *testing.T, password string) {
+	t.Helper()
+	user := core.User{ID: "admin", Username: "admin", Status: core.UserStatusActive}
+	data, err := json.Marshal(user)
+	if err != nil {
+		t.Fatalf("marshal admin user: %v", err)
+	}
+	if _, err := db.Hash().Set("users", "admin", string(data)); err != nil {
+		t.Fatalf("seed users: %v", err)
+	}
+	hash, err := auth.HashPassword(password, 4)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	if _, err := db.Hash().Set("passwords", "admin", hash); err != nil {
+		t.Fatalf("seed passwords: %v", err)
+	}
+}
+
+func readAdminHash(t *testing.T) string {
+	t.Helper()
+	val, err := db.Hash().Get("passwords", "admin")
+	if err != nil {
+		t.Fatalf("read admin hash: %v", err)
+	}
+	return val.String()
+}
+
+// 库内哈希仍是默认口令且 MA_ADMIN_PASS 未设 → 轮换为随机口令
+func TestSeedData_RotatesLegacyDefaultAdminPassword(t *testing.T) {
+	setupTestDB(t)
+	t.Setenv("MA_ADMIN_USER", "")
+	t.Setenv("MA_ADMIN_PASS", "")
+	seedLegacyDefaultAdmin(t, "admin")
+
+	if err := seedData(); err != nil {
+		t.Fatalf("seedData failed: %v", err)
+	}
+
+	hash := readAdminHash(t)
+	if auth.VerifyPassword("admin", hash) {
+		t.Fatal("legacy default password must be rotated away")
+	}
+	// 轮换后的哈希必须与本次启动生成的随机口令匹配（同一 once 值）
+	_, generated := config.AdminUser()
+	if !auth.VerifyPassword(generated, hash) {
+		t.Fatal("rotated hash must match the generated random password")
+	}
+}
+
+// 库内哈希仍是默认口令且 MA_ADMIN_PASS 已设 → 用环境值轮换（无缝换密通道）
+func TestSeedData_RotatesDefaultAdminPasswordFromEnv(t *testing.T) {
+	setupTestDB(t)
+	t.Setenv("MA_ADMIN_USER", "")
+	t.Setenv("MA_ADMIN_PASS", "env-chosen-pass")
+	seedLegacyDefaultAdmin(t, "admin")
+
+	if err := seedData(); err != nil {
+		t.Fatalf("seedData failed: %v", err)
+	}
+
+	hash := readAdminHash(t)
+	if auth.VerifyPassword("admin", hash) {
+		t.Fatal("default password must be rotated away")
+	}
+	if !auth.VerifyPassword("env-chosen-pass", hash) {
+		t.Fatal("rotated hash must match MA_ADMIN_PASS")
+	}
+}
+
+// 已改密用户（哈希非默认口令）→ 不动，即使 MA_ADMIN_PASS 已设
+func TestSeedData_KeepsCustomizedAdminPassword(t *testing.T) {
+	setupTestDB(t)
+	t.Setenv("MA_ADMIN_USER", "")
+	t.Setenv("MA_ADMIN_PASS", "env-pass-attempt")
+	seedLegacyDefaultAdmin(t, "custom-pass-by-user")
+
+	if err := seedData(); err != nil {
+		t.Fatalf("seedData failed: %v", err)
+	}
+
+	hash := readAdminHash(t)
+	if !auth.VerifyPassword("custom-pass-by-user", hash) {
+		t.Fatal("customized password must be left untouched")
+	}
+	if auth.VerifyPassword("env-pass-attempt", hash) {
+		t.Fatal("MA_ADMIN_PASS must not override a customized password")
 	}
 }
