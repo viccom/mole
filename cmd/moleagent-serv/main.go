@@ -363,10 +363,7 @@ func main() {
 		}
 	}()
 
-	gatewaySrv := &http.Server{
-		Addr:    cfg.Server.GatewayPort,
-		Handler: gateway,
-	}
+	gatewaySrv := newGatewayServer(cfg.Server.GatewayPort, gateway)
 	go func() {
 		slog.Info("Gateway server listening", "addr", cfg.Server.GatewayPort)
 		if err := gatewaySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -406,6 +403,20 @@ func main() {
 // maxAPIBodyBytes API 请求体统一上限：多数端点裸读 JSON 且无任何
 // MaxBytesReader，单请求无界解码可被用来耗尽内存
 const maxAPIBodyBytes = 16 << 20 // 16MB
+
+// newGatewayServer 构造网关 HTTP 服务（REL-05）：
+//   - ReadHeaderTimeout 10s：slowloris 防护，与 apiSrv 对齐
+//   - IdleTimeout 120s：空闲连接回收
+//   - 刻意不设 ReadTimeout：网关承载 WebSSH/WS 长连接，整体读超时会掐断
+//     正常长会话（头阶段的慢连接已由 ReadHeaderTimeout 覆盖）
+func newGatewayServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
 
 func buildAPIRouter(
 	mw *auth.AuthMiddleware,
