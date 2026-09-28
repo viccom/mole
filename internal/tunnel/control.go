@@ -882,11 +882,14 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 				cs.onNodeDisconnect(cmd.NodeID, oldTunnels)
 			}
 			if err2 := cs.nodeMgr.Add(ctx, node); err2 != nil {
-				writeControlResp(stream, "err", err2.Error())
+				// QUA-02：Add 失败属内部错误，对端回 generic，详情进日志
+				slog.Error("Register re-add after displacement failed", "nodeId", cmd.NodeID, "error", err2)
+				writeControlResp(stream, "err", "internal server error")
 				return
 			}
 		} else {
-			writeControlResp(stream, "err", err.Error())
+			slog.Error("Register node add failed", "nodeId", cmd.NodeID, "error", err)
+			writeControlResp(stream, "err", "internal server error")
 			return
 		}
 	}
@@ -995,6 +998,16 @@ func writeControlResp(w interface{ Write([]byte) (int, error) }, cmd, msg string
 	}
 }
 
+// sanitizeControlErr 控制面错误脱敏（QUA-02）：协议/业务校验错误（对端可
+// 理解并修正，如 ErrTunnelInvalid/ErrPortInUse）保留原文；内部错误（存储、
+// 内存态等）只回 generic 消息，真实详情由调用方记日志
+func sanitizeControlErr(err error) (msg string, internal bool) {
+	if errors.Is(err, core.ErrTunnelInvalid) || errors.Is(err, core.ErrPortInUse) {
+		return err.Error(), false
+	}
+	return "internal server error", true
+}
+
 // writeControlRespTs 向控制流写入带时间戳的 JSON 响应行（ping RTT 用）
 func writeControlRespTs(w interface{ Write([]byte) (int, error) }, cmd, msg string, ts int64) {
 	resp := ControlResponse{Cmd: cmd, Msg: msg, Ts: ts}
@@ -1095,13 +1108,21 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 		now := time.Now()
 		n.LastHeartbeat = &now
 	}); err != nil {
-		writeControlResp(stream, "err", err.Error())
+		// QUA-02：内部错误脱敏，详情进日志
+		slog.Error("tunnel_update heartbeat failed", "nodeId", nodeID, "error", err)
+		writeControlResp(stream, "err", "internal server error")
 		return
 	}
 
 	if cs.tunnelSvc != nil {
 		if err := cs.tunnelSvc.SyncFromClient(ctx, nodeID, cmd.Tunnels); err != nil {
-			writeControlResp(stream, "err", err.Error())
+			// QUA-02：业务校验错误（ErrTunnelInvalid/ErrPortInUse 等包装链）
+			// 保留原文供客户端修正；内部错误只回 generic、详情进日志
+			msg, internal := sanitizeControlErr(err)
+			if internal {
+				slog.Error("tunnel_update sync failed", "nodeId", nodeID, "error", err)
+			}
+			writeControlResp(stream, "err", msg)
 			return
 		}
 	} else {

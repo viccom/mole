@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"runtime"
 	"strings"
@@ -982,6 +983,115 @@ func TestControlServerShutdownClosesConnChan(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// ===== QUA-02：控制面错误脱敏 =====
+
+// sanitizeControlErr 语义：协议/业务校验错误（可修正）保留原文，
+// 内部错误（存储/内部态）回 generic 消息且不泄露细节
+func TestSanitizeControlErr(t *testing.T) {
+	// 业务校验错误保留原文（含 %w 包装链）
+	biz := fmt.Errorf("%w: duplicate listen_port 12345", core.ErrTunnelInvalid)
+	if msg, internal := sanitizeControlErr(biz); internal || msg != biz.Error() {
+		t.Fatalf("business error must pass through, internal=%v msg=%q", internal, msg)
+	}
+	wrapped := fmt.Errorf("sync: %w", core.ErrTunnelInvalid)
+	if _, internal := sanitizeControlErr(wrapped); internal {
+		t.Fatal("wrapped business error must pass through")
+	}
+	port := fmt.Errorf("%w: tunnel x: bind failed", core.ErrPortInUse)
+	if msg, internal := sanitizeControlErr(port); internal || msg != port.Error() {
+		t.Fatalf("port-in-use must pass through, internal=%v msg=%q", internal, msg)
+	}
+
+	// 内部错误脱敏为 generic 串
+	msg, internal := sanitizeControlErr(errors.New("sqlite disk i/o error"))
+	if !internal || msg != "internal server error" {
+		t.Fatalf("internal error must be sanitized, internal=%v msg=%q", internal, msg)
+	}
+}
+
+// fakeControlTunnelSvc 仅覆盖 handleTunnelUpdate 路径所需方法的桩
+type fakeControlTunnelSvc struct {
+	syncErr error
+}
+
+func (f *fakeControlTunnelSvc) ApplyTunnel(context.Context, string, core.Tunnel) (core.TunnelChangeResult, error) {
+	return core.TunnelChangeResult{}, nil
+}
+func (f *fakeControlTunnelSvc) MoveTunnel(context.Context, string, string, core.Tunnel) (core.TunnelChangeResult, error) {
+	return core.TunnelChangeResult{}, nil
+}
+func (f *fakeControlTunnelSvc) RemoveTunnel(context.Context, string, string) (core.TunnelChangeResult, error) {
+	return core.TunnelChangeResult{}, nil
+}
+func (f *fakeControlTunnelSvc) ReplaceTunnels(context.Context, string, []core.Tunnel) (core.TunnelChangeResult, error) {
+	return core.TunnelChangeResult{}, nil
+}
+func (f *fakeControlTunnelSvc) SyncFromClient(context.Context, string, []core.Tunnel) error {
+	return f.syncErr
+}
+func (f *fakeControlTunnelSvc) LoadPersisted(context.Context, string) ([]core.Tunnel, error) {
+	return nil, nil
+}
+func (f *fakeControlTunnelSvc) ActivateClientTunnels(context.Context, string, []core.Tunnel) error {
+	return nil
+}
+func (f *fakeControlTunnelSvc) UpdateNodeRateLimit(context.Context, string, *core.NodeRateLimit) error {
+	return nil
+}
+func (f *fakeControlTunnelSvc) BatchUpdateRateLimit(context.Context, []core.RateLimitItem) ([]core.TunnelChangeResult, error) {
+	return nil, nil
+}
+
+// runTunnelUpdate 在 smux 流对上执行一次 handleTunnelUpdate 并返回响应
+func runTunnelUpdate(t *testing.T, cs *ControlServer, tunnels []core.Tunnel) ControlResponse {
+	t.Helper()
+	srv, cli := newP2PTokenTestStream(t)
+	state := &connState{}
+	state.set(&core.Node{ID: "Node0001"})
+	go cs.handleTunnelUpdate(context.Background(), ControlCmd{Cmd: "tunnel_update", Tunnels: tunnels}, state, srv)
+	var resp ControlResponse
+	if err := json.NewDecoder(cli).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp
+}
+
+// 内部错误回对端 generic 串、详情进日志；业务校验错误保留原文
+func TestHandleTunnelUpdateErrSanitization(t *testing.T) {
+	newServer := func(syncErr error) *ControlServer {
+		nodeMgr := node.NewShardedNodeManager(4)
+		_ = nodeMgr.Add(context.Background(), &core.Node{ID: "Node0001", Status: core.NodeStatusOnline})
+		return &ControlServer{nodeMgr: nodeMgr, tunnelSvc: &fakeControlTunnelSvc{syncErr: syncErr}}
+	}
+
+	t.Run("内部错误脱敏且日志留详情", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		orig := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+		t.Cleanup(func() { slog.SetDefault(orig) })
+
+		cs := newServer(errors.New("sqlite disk i/o error"))
+		resp := runTunnelUpdate(t, cs, nil)
+		if resp.Cmd != "err" || resp.Msg != "internal server error" {
+			t.Fatalf("internal error must be generic, got %+v", resp)
+		}
+		if strings.Contains(logBuf.String(), "sqlite disk i/o error") {
+			t.Log("log contains detail")
+		} else {
+			t.Fatal("internal error detail must be logged")
+		}
+	})
+
+	t.Run("业务校验错误保留原文", func(t *testing.T) {
+		biz := fmt.Errorf("%w: duplicate listen_port 12345", core.ErrTunnelInvalid)
+		cs := newServer(biz)
+		resp := runTunnelUpdate(t, cs, nil)
+		if resp.Cmd != "err" || !strings.Contains(resp.Msg, "duplicate listen_port") {
+			t.Fatalf("business error must pass through, got %+v", resp)
+		}
+	})
 }
 
 // ===== SEC-01：控制面双格式认证 =====
