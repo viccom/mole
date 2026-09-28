@@ -3,7 +3,10 @@ package transport
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -201,8 +204,16 @@ func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 	}
 	log.Println("  auth: challenge received, sending credentials")
 
+	// proof 认证（防嗅探/防重放）：token 先做 sha256 得 32 字节原始 digest 作为
+	// HMAC key，对 challenge 计算 HMAC-SHA256 后 hex 编码发送——线上不出现明文
+	// token；challenge 由服务端每次随机下发，同一 token 的 proof 不可重放
+	h := sha256.Sum256([]byte(token))
+	mac := hmac.New(sha256.New, h[:])
+	mac.Write(challenge)
+	proof := hex.EncodeToString(mac.Sum(nil))
+
 	// 发送认证消息
-	authMsg, err := json.Marshal(map[string]string{"token": token})
+	authMsg, err := json.Marshal(map[string]string{"proof": proof})
 	if err != nil {
 		return nil, fmt.Errorf("marshal auth: %w", err)
 	}
