@@ -921,8 +921,15 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 	}
 }
 
+// probeOldSessionTimeout 旧会话判死阈值（REL-06）。
+// 原值 3s 在慢链路（高 RTT、瞬时拥塞、弱网移动端）下，探针响应稍慢即把
+// 真活的旧客户端误判为假死而强制置换——表现为在线节点被无谓断线重建。
+// 探针内容是幂等的 tunnel_push（推送的就是该节点现存隧道，重复应用无害），
+// 放宽到 8s 只增加罕见假死场景的重连等待，不引入正确性风险。
+const probeOldSessionTimeout = 8 * time.Second
+
 // probeOldSession 通过旧 smux session 向旧客户端发送 tunnel_push 并等待响应。
-// 3 秒内有响应说明旧客户端真活；否则判定为假死。
+// probeOldSessionTimeout 内有响应说明旧客户端真活；否则判定为假死。
 func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tunnels []core.Tunnel) bool {
 	sess, err := cs.nodeMgr.GetSession(ctx, nodeID)
 	if err != nil {
@@ -936,7 +943,7 @@ func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tun
 	defer stream.Close()
 
 	// 发送 tunnel_push 作为探测（客户端会回复 {"cmd":"ok",...}）
-	stream.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	stream.SetWriteDeadline(time.Now().Add(probeOldSessionTimeout))
 	cmd := ControlCmd{Cmd: "tunnel_push", Tunnels: tunnels}
 	data, _ := json.Marshal(cmd)
 	if _, err := stream.Write(append(data, '\n')); err != nil {
@@ -944,7 +951,7 @@ func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tun
 	}
 
 	// 等待客户端响应
-	stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+	stream.SetReadDeadline(time.Now().Add(probeOldSessionTimeout))
 	raw, err := readControlMsg(stream, maxControlMsgSize)
 	if err != nil {
 		return false

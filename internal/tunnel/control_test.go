@@ -911,6 +911,16 @@ func TestHandleRegisterTunnelListValidation(t *testing.T) {
 	})
 }
 
+// ===== REL-06：旧会话判死阈值 =====
+
+// 判死阈值不得回退到过短值：3s 在慢链路（高 RTT/瞬时拥塞）下会把真活的
+// 旧客户端误判为假死而强制置换，8s 是权衡误判与重连延迟后的下限
+func TestProbeOldSessionThresholdFloor(t *testing.T) {
+	if probeOldSessionTimeout < 8*time.Second {
+		t.Fatalf("probe threshold must stay >= 8s for slow links, got %v", probeOldSessionTimeout)
+	}
+}
+
 // ===== SEC-01：控制面双格式认证 =====
 
 // fakeNodeAuthenticator 记录调用路径的认证桩（control 层双格式分发测试用）
