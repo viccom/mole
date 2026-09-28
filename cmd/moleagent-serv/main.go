@@ -191,6 +191,8 @@ func main() {
 		transport = tunnel.NewTCPTransport(tlsConfig)
 	}
 	controlSrv := tunnel.NewControlServer(cfg.Server.ControlPort, transport, nodeMgr, token, nodeRepo)
+	// SEC-01/SEC-02：节点认证行为开关（register 归属校验 / 旧格式兼容期）
+	controlSrv.SetNodeAuthOptions(cfg.NodeAuth.RegisterOwnerCheck, cfg.NodeAuth.LegacyFormatEnabled)
 
 	// 额外传输层：WS、KCP 可与 TCP 同时监听
 	if cfg.Server.WSPort != "" {

@@ -45,6 +45,10 @@ auth:
   jwt_expiry: "24h"
   bcrypt_cost: 12
 
+node_auth:
+  register_owner_check: true   # register 时校验 node_id 归属：认证用户与节点持久化归属者不同则拒绝（SEC-02）。故障时可临时置 false（kill-switch）
+  legacy_format_enabled: true  # 是否接受旧版明文 token 认证格式（SEC-01 兼容期）。全部客户端升级到 proof 格式后置 false 收口，重启生效
+
 database:
   path: "data/config.db"
 

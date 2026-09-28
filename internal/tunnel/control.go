@@ -176,6 +176,10 @@ type ControlServer struct {
 	nodeRepo         core.NodeRepo                              // 隧道持久化仓库
 	tunnelSvc        core.TunnelConfigManager
 	p2pIssuer        P2PSignalTokenIssuer // P2P 信令凭据签发（nil = 命令返回未配置）
+	// registerOwnerCheck register 时校验 node_id 归属（SEC-02，默认 true，kill-switch）
+	registerOwnerCheck bool
+	// legacyFormatEnabled 是否接受旧版明文 token 认证格式（SEC-01 兼容期，默认 true）
+	legacyFormatEnabled bool
 }
 
 // P2PSignalTokenIssuer 签发 P2P 信令凭据（service 包实现；tunnel 包不依赖 service）
@@ -193,14 +197,18 @@ type listenTarget struct {
 	transport Transport
 }
 
-// NewControlServer 创建控制端口服务
+// NewControlServer 创建控制端口服务。
+// 两个安全开关默认开启（与 config.NodeAuthConfig 默认一致），
+// 经 SetNodeAuthOptions 由配置注入覆盖
 func NewControlServer(addr string, transport Transport, nodeMgr *node.ShardedNodeManager, nodeToken string, nodeRepo core.NodeRepo) *ControlServer {
 	return &ControlServer{
-		addr:      addr,
-		transport: transport,
-		nodeMgr:   nodeMgr,
-		nodeToken: nodeToken,
-		nodeRepo:  nodeRepo,
+		addr:                addr,
+		transport:           transport,
+		nodeMgr:             nodeMgr,
+		nodeToken:           nodeToken,
+		nodeRepo:            nodeRepo,
+		registerOwnerCheck:  true,
+		legacyFormatEnabled: true,
 	}
 }
 
@@ -233,6 +241,12 @@ func (cs *ControlServer) SetTunnelConfigManager(svc core.TunnelConfigManager) {
 // SetAuthenticator 设置节点接入认证服务
 func (cs *ControlServer) SetAuthenticator(auth core.NodeAccessAuthenticator) {
 	cs.authenticator = auth
+}
+
+// SetNodeAuthOptions 设置节点认证行为开关（来自 node_auth 配置节）
+func (cs *ControlServer) SetNodeAuthOptions(registerOwnerCheck, legacyFormatEnabled bool) {
+	cs.registerOwnerCheck = registerOwnerCheck
+	cs.legacyFormatEnabled = legacyFormatEnabled
 }
 
 // Start 启动控制端口监听（主传输层 + 额外传输层）
@@ -723,6 +737,24 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 	if !isValidNodeID(cmd.NodeID) {
 		writeControlResp(stream, "err", "node_id must be exactly 8 alphanumeric characters starting with a letter")
 		return
+	}
+
+	// SEC-02：注册归属校验——认证身份与 node_id 的持久化归属者不同时拒绝注册，
+	// 防止用户 B 的 token 抢注用户 A 的 node_id（覆盖隧道配置、劫持流量）。
+	// 放行：无持久记录（新节点）/ 同主 / 持久归属为 system（legacy 时代记录，
+	// 允许任意用户接管完成迁移）/ grant 为 legacy 全局 token（UserID=system）/
+	// 开关关闭（kill-switch）
+	if cs.registerOwnerCheck && cs.nodeRepo != nil {
+		if grant := state.grant; grant != nil {
+			if persisted, err := cs.nodeRepo.GetByID(cmd.NodeID); err == nil && persisted != nil &&
+				persisted.OwnerUserID != "" && persisted.OwnerUserID != "system" &&
+				persisted.OwnerUserID != grant.UserID && grant.UserID != "system" {
+				slog.Warn("Node register rejected: registered by another user",
+					"nodeId", cmd.NodeID, "grantUser", grant.UserID, "persistedOwner", persisted.OwnerUserID)
+				writeControlResp(stream, "err", "node registered by another user")
+				return
+			}
+		}
 	}
 
 	// 获取 Session：从 connState 获取（在 handleConnection 中建立 smux 会话时存入）

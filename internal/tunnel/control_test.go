@@ -739,6 +739,93 @@ func TestPersistNode_StripsToken(t *testing.T) {
 	}
 }
 
+// ===== SEC-02：register 归属校验 =====
+
+// runRegister 在 smux 流对上执行一次 handleRegister，返回服务端响应
+func runRegister(t *testing.T, cs *ControlServer, grant *core.NodeAccessGrant, nodeID string) ControlResponse {
+	t.Helper()
+	srv, cli := newP2PTokenTestStream(t)
+	state := &connState{grant: grant}
+	go cs.handleRegister(context.Background(), ControlCmd{Cmd: "register", NodeID: nodeID, Name: "test-node"}, state, srv)
+	var resp ControlResponse
+	if err := json.NewDecoder(cli).Decode(&resp); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	return resp
+}
+
+// newRegisterTestServer 构造带归属校验开关与 fake 持久层的 ControlServer
+func newRegisterTestServer(t *testing.T, ownerCheck bool, repo *fakeControlNodeRepo) (*ControlServer, *node.ShardedNodeManager) {
+	t.Helper()
+	nodeMgr := node.NewShardedNodeManager(4)
+	cs := &ControlServer{nodeMgr: nodeMgr, nodeRepo: repo, registerOwnerCheck: ownerCheck}
+	return cs, nodeMgr
+}
+
+// 认证身份与 node_id 持久化归属者的交叉校验：异主拒绝，其余四种情况放行
+func TestHandleRegisterOwnerCheck(t *testing.T) {
+	const nodeID = "Node0001"
+	grantA := &core.NodeAccessGrant{UserID: "user-a"}
+	grantB := &core.NodeAccessGrant{UserID: "user-b"}
+	legacyGrant := &core.NodeAccessGrant{UserID: "system", LegacyGlobal: true}
+
+	t.Run("异主拒绝", func(t *testing.T) {
+		repo := newFakeControlNodeRepo()
+		_ = repo.Create(&core.Node{ID: nodeID, OwnerUserID: "user-a"})
+		cs, nodeMgr := newRegisterTestServer(t, true, repo)
+
+		resp := runRegister(t, cs, grantB, nodeID)
+		if resp.Cmd != "err" || resp.Msg != "node registered by another user" {
+			t.Fatalf("expected rejection, got %+v", resp)
+		}
+		if _, ok := nodeMgr.Get(context.Background(), nodeID); ok {
+			t.Fatal("rejected register must not add node to manager")
+		}
+	})
+
+	t.Run("同主通过", func(t *testing.T) {
+		repo := newFakeControlNodeRepo()
+		_ = repo.Create(&core.Node{ID: nodeID, OwnerUserID: "user-a"})
+		cs, _ := newRegisterTestServer(t, true, repo)
+
+		if resp := runRegister(t, cs, grantA, nodeID); resp.Cmd != "ok" {
+			t.Fatalf("expected ok, got %+v", resp)
+		}
+	})
+
+	t.Run("system 归属通过", func(t *testing.T) {
+		// legacy 时代落库的记录 OwnerUserID=system：任意用户 token 可接管
+		repo := newFakeControlNodeRepo()
+		_ = repo.Create(&core.Node{ID: nodeID, OwnerUserID: "system"})
+		cs, _ := newRegisterTestServer(t, true, repo)
+
+		if resp := runRegister(t, cs, grantB, nodeID); resp.Cmd != "ok" {
+			t.Fatalf("expected ok (persisted owner is system), got %+v", resp)
+		}
+	})
+
+	t.Run("legacy grant 通过", func(t *testing.T) {
+		// 全局 token 认证（grant.UserID=system）：不受归属校验约束
+		repo := newFakeControlNodeRepo()
+		_ = repo.Create(&core.Node{ID: nodeID, OwnerUserID: "user-a"})
+		cs, _ := newRegisterTestServer(t, true, repo)
+
+		if resp := runRegister(t, cs, legacyGrant, nodeID); resp.Cmd != "ok" {
+			t.Fatalf("expected ok (legacy global grant), got %+v", resp)
+		}
+	})
+
+	t.Run("开关关闭通过", func(t *testing.T) {
+		repo := newFakeControlNodeRepo()
+		_ = repo.Create(&core.Node{ID: nodeID, OwnerUserID: "user-a"})
+		cs, _ := newRegisterTestServer(t, false, repo)
+
+		if resp := runRegister(t, cs, grantB, nodeID); resp.Cmd != "ok" {
+			t.Fatalf("expected ok (owner check disabled), got %+v", resp)
+		}
+	})
+}
+
 // TestReadBoundedLine 固化生产事故（conn 级 LimitedReader 吞掉 64KB 配额）
 // 的回归守卫：长度限制必须只作用于认证行本身，连接后续流量不受任何限制。
 func TestReadBoundedLine(t *testing.T) {

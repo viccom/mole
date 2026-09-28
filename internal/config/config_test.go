@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -219,5 +220,66 @@ func TestConfigValidation_InvalidTransport(t *testing.T) {
 	cfg.Server.Transport = "quic"
 	if err := cfg.validate(); err == nil {
 		t.Error("should reject unknown transport")
+	}
+}
+
+// ===== SEC-01/SEC-02：node_auth 配置节 =====
+
+// 安全开关默认必须开启（DefaultConfig 预填 + yaml 合并的模式保证零值歧义不出现）
+func TestNodeAuthConfig_Defaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.NodeAuth.RegisterOwnerCheck {
+		t.Error("node_auth.register_owner_check should default to true")
+	}
+	if !cfg.NodeAuth.LegacyFormatEnabled {
+		t.Error("node_auth.legacy_format_enabled should default to true")
+	}
+}
+
+// 配置文件未提 node_auth 节时保持默认；显式 false 可关闭（kill-switch）
+func TestNodeAuthConfig_YAMLMerge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// 未提 node_auth：保持默认 true
+	if err := os.WriteFile(path, []byte("auth:\n  jwt_secret: valid-secret-key-for-testing-12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.NodeAuth.RegisterOwnerCheck {
+		t.Error("register_owner_check must stay true when node_auth section absent")
+	}
+	if !cfg.NodeAuth.LegacyFormatEnabled {
+		t.Error("legacy_format_enabled must stay true when node_auth section absent")
+	}
+
+	// 只关其中一个：另一个保持默认
+	if err := os.WriteFile(path, []byte("auth:\n  jwt_secret: valid-secret-key-for-testing-12345\nnode_auth:\n  register_owner_check: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NodeAuth.RegisterOwnerCheck {
+		t.Error("register_owner_check must be overridable to false")
+	}
+	if !cfg.NodeAuth.LegacyFormatEnabled {
+		t.Error("legacy_format_enabled must stay true when not set in yaml")
+	}
+
+	// 两者都显式关闭
+	if err := os.WriteFile(path, []byte("auth:\n  jwt_secret: valid-secret-key-for-testing-12345\nnode_auth:\n  register_owner_check: false\n  legacy_format_enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NodeAuth.RegisterOwnerCheck || cfg.NodeAuth.LegacyFormatEnabled {
+		t.Errorf("both switches must be overridable to false, got %+v", cfg.NodeAuth)
 	}
 }
