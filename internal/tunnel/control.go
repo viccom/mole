@@ -254,40 +254,66 @@ func (cs *ControlServer) Start(ctx context.Context) error {
 	// Worker pool（所有 listener 共用）
 	connChan := make(chan connEntry, 1000)
 	workerCount := runtime.NumCPU() * 2
+	var workers sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
-		go cs.connectionWorker(ctx, connChan)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			cs.connectionWorker(ctx, connChan)
+		}()
+	}
+
+	// acceptLoop 追踪：关闭序列必须等所有 acceptLoop 退出后再 close(connChan)，
+	// 否则残留的发送分支会向已关闭 channel 写入而 panic（QUA-11a）
+	var acceptors sync.WaitGroup
+
+	// shutdown 统一关闭序列（QUA-11a）：关 listener → 等 acceptLoop 全部退出 →
+	// close(connChan)（connectionWorker 的 range 自然退出）→ 等 worker 排空。
+	// close 仅存在于这一条路径（每次 Start 持有独立 connChan，无 double-close）
+	shutdown := func() {
+		for _, ln := range cs.listeners {
+			ln.Close()
+		}
+		acceptors.Wait()
+		close(connChan)
+		workers.Wait()
 	}
 
 	// 启动主 listener
 	primaryLn, err := cs.transport.Listen(cs.addr)
 	if err != nil {
+		shutdown()
 		return fmt.Errorf("control listen on %s (%s): %w", cs.addr, cs.transport.Name(), err)
 	}
 	cs.listener = primaryLn
 	cs.listeners = append(cs.listeners, primaryLn)
 	slog.Info("Control server listening", "addr", cs.addr, "transport", cs.transport.Name())
-	go cs.acceptLoop(ctx, primaryLn, connChan, cs.transport.Name())
+	acceptors.Add(1)
+	go func() {
+		defer acceptors.Done()
+		cs.acceptLoop(ctx, primaryLn, connChan, cs.transport.Name())
+	}()
 
 	// 启动额外 listener（WS、KCP 等）
 	for _, lt := range cs.extraTargets {
 		ln, err := lt.transport.Listen(lt.addr)
 		if err != nil {
-			// 清理已启动的 listener
-			for _, l := range cs.listeners {
-				l.Close()
-			}
+			// 清理已启动的 listener 与 worker 池
+			shutdown()
 			return fmt.Errorf("control listen on %s (%s): %w", lt.addr, lt.transport.Name(), err)
 		}
 		cs.listeners = append(cs.listeners, ln)
 		slog.Info("Control server listening", "addr", lt.addr, "transport", lt.transport.Name())
-		go cs.acceptLoop(ctx, ln, connChan, lt.transport.Name())
+		acceptors.Add(1)
+		go func(ln net.Listener, name string) {
+			defer acceptors.Done()
+			cs.acceptLoop(ctx, ln, connChan, name)
+		}(ln, lt.transport.Name())
 	}
 
 	// 等待关闭
 	<-ctx.Done()
-	for _, ln := range cs.listeners {
-		ln.Close()
-	}
+	shutdown()
 	slog.Info("Control server stopped")
 	return nil
 }

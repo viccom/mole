@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -918,6 +919,68 @@ func TestHandleRegisterTunnelListValidation(t *testing.T) {
 func TestProbeOldSessionThresholdFloor(t *testing.T) {
 	if probeOldSessionTimeout < 8*time.Second {
 		t.Fatalf("probe threshold must stay >= 8s for slow links, got %v", probeOldSessionTimeout)
+	}
+}
+
+// ===== QUA-11a：关闭时 connChan 关闭、worker 退出 =====
+
+// ControlServer 关闭路径必须 close(connChan) 让 connectionWorker 的 range
+// 自然退出，且 Start 在 workers/acceptLoops 全部排空后返回（不泄漏 goroutine）
+func TestControlServerShutdownClosesConnChan(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe port: %v", err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	nodeMgr := node.NewShardedNodeManager(4)
+	cs := NewControlServer(addr, NewTCPTransport(nil), nodeMgr, "test-token", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan error, 1)
+	go func() { started <- cs.Start(ctx) }()
+
+	// 等 listener 就绪
+	dialAddr := addr
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		c, derr := net.DialTimeout("tcp", dialAddr, 200*time.Millisecond)
+		if derr == nil {
+			c.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("control server did not start listening: %v", derr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case serr := <-started:
+		if serr != nil {
+			t.Fatalf("Start returned error: %v", serr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after cancel (acceptLoop/worker blocked)")
+	}
+
+	// Start 返回即蕴含 worker 排空；再以 goroutine 栈扫描兜底确认
+	// connectionWorker 无存活实例
+	stackDeadline := time.Now().Add(2 * time.Second)
+	for {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		if !strings.Contains(string(buf[:n]), "connectionWorker") {
+			return
+		}
+		if time.Now().After(stackDeadline) {
+			t.Fatal("connectionWorker goroutines still alive after shutdown (connChan not closed)")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
