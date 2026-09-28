@@ -886,3 +886,46 @@ func TestPersistableNode_StripsToken(t *testing.T) {
 		t.Fatalf("unexpected persistableNode fields: %+v", got)
 	}
 }
+
+// 端口冲突必须在持久化前拒绝（ErrTunnelInvalid → API 400），不得先落库
+// 再在监听阶段失败留下脏配置；同节点与跨节点端口均不得重复（REL-01 补强）
+func TestApplyTunnelRejectsDuplicateListenPortBeforePersist(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	repo := newMockNodeRepo()
+	gateway := tunnel.NewTunnelGateway(nodeMgr, 10, nil)
+	svc := NewTunnelConfigService(nil, nodeMgr, repo, gateway, nil, nil, nil)
+
+	nodeID := "Node0096"
+	if err := nodeMgr.Add(ctx, &core.Node{ID: nodeID, Name: nodeID, Status: core.NodeStatusOnline}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	port := freePort(t)
+	if _, err := svc.ApplyTunnel(ctx, nodeID, tcpTunnel("tcp-a", port)); err != nil {
+		t.Fatalf("seed tcp-a: %v", err)
+	}
+
+	// 同节点另一条隧道复用端口：必须拒绝
+	if _, err := svc.ApplyTunnel(ctx, nodeID, tcpTunnel("tcp-b", port)); !errors.Is(err, core.ErrTunnelInvalid) {
+		t.Fatalf("same-node duplicate port: expected ErrTunnelInvalid, got %v", err)
+	}
+	// 脏配置不得落库：持久层只有 tcp-a
+	persisted, err := repo.GetByID(nodeID)
+	if err != nil || persisted == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	for _, tt := range persisted.Tunnels {
+		if tt.Name == "tcp-b" {
+			t.Fatal("rejected tunnel must not be persisted")
+		}
+	}
+
+	// 跨节点复用端口：同样拒绝（服务端监听端口全局唯一）
+	nodeID2 := "Node0095"
+	if err := nodeMgr.Add(ctx, &core.Node{ID: nodeID2, Name: nodeID2, Status: core.NodeStatusOnline}); err != nil {
+		t.Fatalf("Add node2: %v", err)
+	}
+	if _, err := svc.ApplyTunnel(ctx, nodeID2, tcpTunnel("tcp-x", port)); !errors.Is(err, core.ErrTunnelInvalid) {
+		t.Fatalf("cross-node duplicate port: expected ErrTunnelInvalid, got %v", err)
+	}
+}

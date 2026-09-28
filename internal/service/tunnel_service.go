@@ -184,6 +184,9 @@ func (s *TunnelConfigService) applyTunnelChangeLocked(ctx context.Context, nodeI
 	if err := s.validateCrossNodeTunnelNames(ctx, nodeID, next); err != nil {
 		return nil, nil, err
 	}
+	if err := s.validateListenPortConflicts(ctx, nodeID, next); err != nil {
+		return nil, nil, err
+	}
 	if err := s.persistUpdatedNode(ctx, nodeID, next); err != nil {
 		return nil, nil, err
 	}
@@ -220,6 +223,63 @@ func (s *TunnelConfigService) validateCrossNodeTunnelNames(ctx context.Context, 
 		all, err := s.nodeRepo.GetAll()
 		if err != nil {
 			return fmt.Errorf("scan persisted nodes for tunnel name conflicts: %w", err)
+		}
+		for _, n := range all {
+			if n == nil || n.ID == nodeID {
+				continue
+			}
+			if err := conflict(n.ID, n.Tunnels); err != nil {
+				return err
+			}
+		}
+	}
+	for _, n := range s.nodeMgr.GetAll(ctx) {
+		if n == nil || n.ID == nodeID {
+			continue
+		}
+		if err := conflict(n.ID, n.Tunnels); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateListenPortConflicts 拒绝启用态 TCP/UDP 隧道的 listen_port 重复
+// （本节点变更集内 + 跨节点）。服务端监听端口全局唯一，冲突若放到监听阶段
+// 才暴露（ErrPortInUse），配置已先行落库，留下「已持久化却无法监听」的脏
+// 状态；在写路径统一入口以 ErrTunnelInvalid 拒绝，落库前拦截（REL-01）。
+func (s *TunnelConfigService) validateListenPortConflicts(ctx context.Context, nodeID string, next []core.Tunnel) error {
+	isRoutable := func(t core.Tunnel) bool {
+		return t.IsEnabled() && (t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP) && t.ListenPort > 0
+	}
+	// 本节点变更集内（next 已含既有基线）：同端口不同名即冲突
+	owner := map[int]string{}
+	for _, t := range next {
+		if !isRoutable(t) {
+			continue
+		}
+		if prev, dup := owner[t.ListenPort]; dup && prev != t.Name {
+			return fmt.Errorf("%w: listen_port %d already used by tunnel %q on node %s",
+				core.ErrTunnelInvalid, t.ListenPort, prev, nodeID)
+		}
+		owner[t.ListenPort] = t.Name
+	}
+	if len(owner) == 0 {
+		return nil
+	}
+	conflict := func(other string, tunnels []core.Tunnel) error {
+		for _, t := range tunnels {
+			if isRoutable(t) && owner[t.ListenPort] != "" && owner[t.ListenPort] != t.Name {
+				return fmt.Errorf("%w: listen_port %d already used by tunnel %q on node %s (server listen ports are globally unique)",
+					core.ErrTunnelInvalid, t.ListenPort, t.Name, other)
+			}
+		}
+		return nil
+	}
+	if s.nodeRepo != nil {
+		all, err := s.nodeRepo.GetAll()
+		if err != nil {
+			return fmt.Errorf("scan persisted nodes for listen port conflicts: %w", err)
 		}
 		for _, n := range all {
 			if n == nil || n.ID == nodeID {
