@@ -1,11 +1,15 @@
 package tunnel
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xtaci/smux"
 
@@ -500,5 +504,192 @@ func TestServeHTTP_PathRewriteOnVhostMatch(t *testing.T) {
 	body := w.Body.String()
 	if strings.Contains(body, "No tunnel matched") {
 		t.Error("vhost routing should have matched")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// REL-08：HTTP 代理剔除 hop-by-hop 头（响应方向 + 请求方向）
+// ---------------------------------------------------------------------------
+
+func httpsTunnel(name, domain string) core.Tunnel {
+	return core.Tunnel{
+		Name:   name,
+		Type:   core.TunnelTypeHTTPS,
+		Target: "127.0.0.1:8443",
+		Domain: domain,
+	}
+}
+
+// fakeUpstreamSession 在 mock provider 上挂一个真实 smux 会话（net.Pipe），
+// 节点侧收到请求后以 buildResp 的内容应答；captured 回传收到的请求
+func fakeUpstreamSession(t *testing.T, mp *mockNodeProvider, nodeID string, buildResp func() *http.Response) chan *http.Request {
+	t.Helper()
+	gwEnd, nodeEnd := net.Pipe()
+	gwSess, err := smux.Server(gwEnd, nil)
+	if err != nil {
+		t.Fatalf("smux server: %v", err)
+	}
+	nodeSess, err := smux.Client(nodeEnd, nil)
+	if err != nil {
+		t.Fatalf("smux client: %v", err)
+	}
+	t.Cleanup(func() { gwSess.Close(); nodeSess.Close() })
+	mp.sessions[nodeID] = gwSess
+
+	captured := make(chan *http.Request, 1)
+	go func() {
+		stream, err := nodeSess.AcceptStream()
+		if err != nil {
+			return
+		}
+		defer stream.Close()
+		req, err := http.ReadRequest(bufio.NewReader(stream))
+		if err != nil {
+			return
+		}
+		captured <- req
+		resp := buildResp()
+		resp.ProtoMajor, resp.ProtoMinor = 1, 1
+		if resp.StatusCode == 0 {
+			resp.StatusCode = http.StatusOK
+		}
+		if err := resp.Write(stream); err != nil {
+			t.Errorf("write upstream response: %v", err)
+		}
+	}()
+	return captured
+}
+
+// TestServeHTTP_ProxyStripsHopByHopHeaders 经真实 smux 会话走完整代理路径：
+// 上游响应回 Connection/Keep-Alive/自定义逐跳头，客户端响应不得包含；
+// 客户端请求携带的逐跳头（含 Connection 指名的自定义头）不得到达上游
+func TestServeHTTP_ProxyStripsHopByHopHeaders(t *testing.T) {
+	mp := newMockNodeProvider()
+	mp.addNode(onlineNode("node1", httpTunnel("web", "")))
+	captured := fakeUpstreamSession(t, mp, "node1", func() *http.Response {
+		resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok"))}
+		// 显式 Content-Length：未知长度时 Response.Write 会自行注入
+		// Connection: close，stdlib 解析时随之把整个 Connection 头删掉，
+		// token 机制就无法被测到（该边界与 ReverseProxy 一致，另测）
+		resp.ContentLength = 2
+		resp.Header.Set("Connection", "X-Hop-Marker") // Connection 指名的自定义逐跳头
+		resp.Header.Set("Keep-Alive", "timeout=5")
+		resp.Header.Set("X-Hop-Marker", "hop")
+		resp.Header.Set("X-End-To-End", "keep")
+		return resp
+	})
+
+	tg := NewTunnelGateway(mp, 10, nil)
+	tg.HyphenRouting = false
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/node1/web/page", nil)
+	req.Header.Add("Connection", "X-Custom-Hop-Req")
+	req.Header.Set("X-Custom-Hop-Req", "hop")
+	req.Header.Set("Proxy-Authorization", "Basic zzz")
+	req.Header.Set("X-End-To-End-Req", "keep")
+
+	w := httptest.NewRecorder()
+	tg.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if got := resp.Header.Get("Connection"); got != "" {
+		t.Errorf("client response must not contain Connection, got %q", got)
+	}
+	if got := resp.Header.Get("Keep-Alive"); got != "" {
+		t.Errorf("client response must not contain Keep-Alive, got %q", got)
+	}
+	if got := resp.Header.Get("X-Hop-Marker"); got != "" {
+		t.Errorf("header named by upstream Connection must be stripped, got %q", got)
+	}
+	if got := resp.Header.Get("X-End-To-End"); got != "keep" {
+		t.Errorf("end-to-end header must pass through, got %q", got)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	select {
+	case creq := <-captured:
+		if got := creq.Header.Get("Connection"); got != "" {
+			t.Errorf("forwarded request must not contain Connection, got %q", got)
+		}
+		if got := creq.Header.Get("X-Custom-Hop-Req"); got != "" {
+			t.Errorf("header named by client Connection must be stripped, got %q", got)
+		}
+		if got := creq.Header.Get("Proxy-Authorization"); got != "" {
+			t.Errorf("forwarded request must not contain Proxy-Authorization, got %q", got)
+		}
+		if got := creq.Header.Get("X-End-To-End-Req"); got != "keep" {
+			t.Errorf("end-to-end request header must pass through, got %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream did not receive the request")
+	}
+}
+
+// TestServeHTTP_ProxyStripsHopByHopOnClose：上游回 Connection: close 时，
+// stdlib 解析已把 Connection 头整体删除，固定集合（Keep-Alive 等）仍必须剔除
+func TestServeHTTP_ProxyStripsHopByHopOnClose(t *testing.T) {
+	mp := newMockNodeProvider()
+	mp.addNode(onlineNode("node1", httpTunnel("web", "")))
+	fakeUpstreamSession(t, mp, "node1", func() *http.Response {
+		resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok"))}
+		resp.Header.Set("Connection", "close")
+		resp.Header.Set("Keep-Alive", "timeout=5")
+		resp.Header.Set("X-End-To-End", "keep")
+		return resp
+	})
+
+	tg := NewTunnelGateway(mp, 10, nil)
+	tg.HyphenRouting = false
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/node1/web/page", nil)
+	w := httptest.NewRecorder()
+	tg.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if got := resp.Header.Get("Connection"); got != "" {
+		t.Errorf("client response must not contain Connection, got %q", got)
+	}
+	if got := resp.Header.Get("Keep-Alive"); got != "" {
+		t.Errorf("client response must not contain Keep-Alive, got %q", got)
+	}
+	if got := resp.Header.Get("X-End-To-End"); got != "keep" {
+		t.Errorf("end-to-end header must pass through, got %q", got)
+	}
+}
+
+// TestServeHTTP_HTTPSDomainIndexRouting：HTTPS 隧道配 domain 参与域名
+// 索引路由（REL-08：与 HTTP 类型一致）
+func TestServeHTTP_HTTPSDomainIndexRouting(t *testing.T) {
+	mp := newMockNodeProvider()
+	mp.addNode(onlineNode("node1", httpsTunnel("secure", "sec.example.com")))
+
+	tg := NewTunnelGateway(mp, 10, nil)
+	tg.RebuildIndex(context.Background())
+
+	req := httptest.NewRequest(http.MethodGet, "http://sec.example.com/hello", nil)
+	w := httptest.NewRecorder()
+	tg.ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), "No tunnel matched") {
+		t.Fatal("HTTPS tunnel with domain must be routable via domain index")
+	}
+}
+
+// TestServeHTTP_HTTPSDomainFallbackScan：索引未重建窗口内的全量扫描兜底
+// 同样收录 HTTPS+domain（REL-08）
+func TestServeHTTP_HTTPSDomainFallbackScan(t *testing.T) {
+	mp := newMockNodeProvider()
+	mp.addNode(onlineNode("node1", httpsTunnel("secure", "sec.example.com")))
+
+	tg := NewTunnelGateway(mp, 10, nil) // 不调 RebuildIndex，走兜底扫描
+
+	req := httptest.NewRequest(http.MethodGet, "http://sec.example.com/hello", nil)
+	w := httptest.NewRecorder()
+	tg.ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), "No tunnel matched") {
+		t.Fatal("HTTPS tunnel with domain must be routable via fallback scan")
 	}
 }

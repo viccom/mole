@@ -240,7 +240,7 @@ func (tg *TunnelGateway) RebuildIndex(ctx context.Context) {
 				continue
 			}
 			newTunnel[t.Name] = &tunnelRoute{nodeID: n.ID}
-			if t.Type == core.TunnelTypeHTTP && t.Domain != "" {
+			if isDomainRoutable(t) {
 				newDomain[t.Domain] = &domainRoute{nodeID: n.ID, tunnelName: t.Name}
 			}
 		}

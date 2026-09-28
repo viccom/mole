@@ -131,6 +131,51 @@ func (tg *TunnelGateway) RegisterHTTP(ctx context.Context, tunnel core.Tunnel) e
 	return nil
 }
 
+// fixedHopByHopHeaders 逐跳头固定集合（RFC 7230 §6.1 + 常见实现扩展）
+var fixedHopByHopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// stripHopByHopHeaders 原地剔除头集合中的逐跳头（REL-08）：固定集合 +
+// Connection 头声明的所有 token 指名的头（与 httputil.ReverseProxy 的
+// removeHopByHopHeaders 同算法）。逐跳头描述「本段连接」的语义，代理不得
+// 原样转发给另一侧——上游的 Keep-Alive/连接策略对客户端连接毫无意义，
+// 客户端的 Proxy-* 凭据也不应泄漏给隧道后端。
+// 已知边界（与 ReverseProxy 一致）：响应的 Connection 含 close 时，
+// net/http 解析阶段会把该头整体删除，其声明的自定义 token 届时不可见，
+// 固定集合仍然生效
+func stripHopByHopHeaders(h http.Header) {
+	drop := make(map[string]struct{}, len(fixedHopByHopHeaders)+2)
+	for _, name := range fixedHopByHopHeaders {
+		drop[http.CanonicalHeaderKey(name)] = struct{}{}
+	}
+	for _, v := range h.Values("Connection") {
+		for _, tok := range strings.Split(v, ",") {
+			if tok = strings.TrimSpace(tok); tok != "" {
+				drop[http.CanonicalHeaderKey(tok)] = struct{}{}
+			}
+		}
+	}
+	for name := range drop {
+		h.Del(name)
+	}
+}
+
+// isDomainRoutable 域名路由收录判定（REL-08）：HTTP 与 HTTPS 同为
+// HTTP 家族（HTTPS 由接入侧终结 TLS 后走同一代理路径，findNodeTunnel
+// 亦同时接受两者）；此前索引与兜底扫描只收录 HTTP，HTTPS 隧道配置了
+// domain 也无法按域名路由
+func isDomainRoutable(t core.Tunnel) bool {
+	return (t.Type == core.TunnelTypeHTTP || t.Type == core.TunnelTypeHTTPS) && t.Domain != ""
+}
+
 // ServeHTTP 实现 http.Handler，作为 HTTP 网关入口
 func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := tg.sem.Acquire(r.Context()); err != nil {
@@ -186,7 +231,7 @@ func (tg *TunnelGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			for _, t := range n.Tunnels {
-				if t.IsEnabled() && t.Type == core.TunnelTypeHTTP && t.Domain == host {
+				if t.IsEnabled() && isDomainRoutable(t) && t.Domain == host {
 					node = n
 					tunnelName = t.Name
 					break
@@ -261,6 +306,10 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		bwLimiter: tg.limiter.BWLimiterFor(sKey),
 	}
 
+	// REL-08：请求方向同样剔除逐跳头后再转发——原样透传会把客户端的
+	// Connection/Proxy-* 等连接级语义强加给隧道后端。Upgrade 类需求走
+	// 上方的 WS 分支（该路径必须保留 Connection/Upgrade 供后端识别升级）
+	stripHopByHopHeaders(r.Header)
 	if err := r.Write(trackedStream); err != nil {
 		slog.Error("Failed to write request to stream", "error", err)
 		http.Error(w, "Upstream error", http.StatusBadGateway)
@@ -291,6 +340,9 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
+	// REL-08：上游响应中的逐跳头不得透传给客户端——连接级语义由本网关
+	// 与客户端的连接自行协商
+	stripHopByHopHeaders(resp.Header)
 	for key, values := range resp.Header {
 		w.Header()[key] = values
 	}
@@ -347,6 +399,9 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
+		// REL-08：WS 升级失败的兜底响应同样剔除逐跳头（101 成功路径在
+		// hijack 裸流上原样回写，Connection/Upgrade 是升级语义的一部分）
+		stripHopByHopHeaders(resp.Header)
 		for key, values := range resp.Header {
 			w.Header()[key] = values
 		}
