@@ -86,6 +86,9 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			s.stream.Close()
 			tg.stats.ConnClosed(s.sKey)
 			tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
+			// REL-04：会话占用的网关并发额度随销毁归还（过期/流死/写失败/
+			// 回插败者/隧道停止全部经由此处或下方停止清理路径释放）
+			tg.sem.Release()
 		}
 
 		// 会话清理协程
@@ -136,9 +139,18 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			if !ok {
 				mu.Unlock()
 
+				// REL-04：会话级并发信号量（与 TCP 连接同语义）：拿不到额度
+				// 即丢弃本包——UDP 无连接语义，客户端自然重传或放弃
+				if err := tg.sem.Acquire(tunnelCtx); err != nil {
+					slog.Warn("UDP session concurrency limit reached, dropping packet",
+						"tunnel", tunnel.Name, "src", key)
+					continue
+				}
+
 				// 在锁外执行耗时操作：查找节点 + 打开 stream
 				node := tg.findNodeForTunnel(tunnelCtx, tunnel.Name)
 				if node == nil {
+					tg.sem.Release()
 					slog.Debug("No node for UDP tunnel", "tunnel", tunnel.Name)
 					continue
 				}
@@ -152,28 +164,33 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					}
 				}
 				if !tunnelEnabled {
+					tg.sem.Release()
 					slog.Debug("UDP tunnel disabled", "tunnel", tunnel.Name)
 					continue
 				}
 
 				session, err := tg.nodeMgr.GetSession(tunnelCtx, node.ID)
 				if err != nil {
+					tg.sem.Release()
 					slog.Error("Failed to get session for UDP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
 					continue
 				}
 				newStream, err := session.OpenStream()
 				if err != nil {
+					tg.sem.Release()
 					slog.Error("Failed to open smux stream for UDP", "tunnel", tunnel.Name, "error", err)
 					continue
 				}
 
 				// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
 				if _, err := newStream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
+					tg.sem.Release()
 					slog.Error("Failed to send UDP proxy header", "tunnel", tunnel.Name, "error", err)
 					newStream.Close()
 					continue
 				}
 				if _, err := newStream.Write([]byte{'\n'}); err != nil {
+					tg.sem.Release()
 					slog.Error("Failed to send UDP proxy header newline", "tunnel", tunnel.Name, "error", err)
 					newStream.Close()
 					continue
@@ -183,6 +200,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				newSKey := statsKey(node.ID, tunnel.Name)
 				ok, gen := tg.limiter.AcquireConn(node.ID, newSKey)
 				if !ok {
+					tg.sem.Release()
 					slog.Warn("UDP connection limit exceeded", "tunnel", tunnel.Name)
 					newStream.Close()
 					continue
@@ -287,6 +305,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 			s.stream.Close()
 			tg.stats.ConnClosed(s.sKey)
 			tg.limiter.ReleaseConn(s.nodeID, s.sKey, s.gen)
+			tg.sem.Release() // REL-04：隧道停止路径的并发额度归还
 		}
 		sessions = make(map[string]*udpSession)
 		mu.Unlock()
