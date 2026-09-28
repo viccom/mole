@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -193,6 +194,63 @@ func TestAuthServiceChangePassword_EnforcesStrength(t *testing.T) {
 	gotHash, _ = userRepo.GetPasswordHash("u1")
 	if !VerifyPassword("good-pass-123", gotHash) {
 		t.Fatal("new password should be effective after change")
+	}
+}
+
+// QUA-06：用户不存在与密码错误必须返回同一错误文案（防用户名枚举）
+func TestAuthServiceLogin_UserNotFoundAndWrongPasswordSameError(t *testing.T) {
+	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
+	if err != nil {
+		t.Fatalf("failed to open in-memory redka: %v", err)
+	}
+	defer db.Close()
+
+	userRepo := newMemoryUserRepo()
+	roleRepo := &mockRoleRepo{roles: map[string]*core.Role{}}
+	authSvc := NewAuthService(NewJWTManager("test-secret", time.Hour), userRepo, roleRepo, NewRBACEngine(db, roleRepo), db)
+
+	hash, err := HashPassword("secret-pass", 4)
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	if err := userRepo.Create(&core.User{ID: "u1", Username: "alice", Status: core.UserStatusActive}, hash); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, _, errNotFound := authSvc.Login(context.Background(), "no-such-user", "whatever-pass")
+	_, _, errWrongPass := authSvc.Login(context.Background(), "alice", "wrong-pass")
+	if errNotFound == nil || errWrongPass == nil {
+		t.Fatalf("both paths must fail: notFound=%v wrongPass=%v", errNotFound, errWrongPass)
+	}
+	if !errors.Is(errNotFound, core.ErrInvalidCredentials) || !errors.Is(errWrongPass, core.ErrInvalidCredentials) {
+		t.Fatalf("both paths must return ErrInvalidCredentials: %v / %v", errNotFound, errWrongPass)
+	}
+	if errNotFound.Error() != errWrongPass.Error() {
+		t.Fatalf("error text must be identical to prevent enumeration: %q vs %q", errNotFound.Error(), errWrongPass.Error())
+	}
+}
+
+// QUA-06：用户不存在路径必须执行一次等价 bcrypt 比较——无比较时该路径
+// 微秒级返回，cost 12 的比较至少数十毫秒（下界 10ms 断言，防快路径泄露）
+func TestAuthServiceLogin_UserNotFoundPerformsBcryptWork(t *testing.T) {
+	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
+	if err != nil {
+		t.Fatalf("failed to open in-memory redka: %v", err)
+	}
+	defer db.Close()
+
+	userRepo := newMemoryUserRepo()
+	roleRepo := &mockRoleRepo{roles: map[string]*core.Role{}}
+	authSvc := NewAuthService(NewJWTManager("test-secret", time.Hour), userRepo, roleRepo, NewRBACEngine(db, roleRepo), db)
+
+	start := time.Now()
+	_, _, err = authSvc.Login(context.Background(), "no-such-user", "whatever-pass")
+	elapsed := time.Since(start)
+	if !errors.Is(err, core.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+	if elapsed < 10*time.Millisecond {
+		t.Fatalf("user-not-found path should perform bcrypt work, returned in %v", elapsed)
 	}
 }
 

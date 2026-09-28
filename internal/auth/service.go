@@ -7,9 +7,21 @@ import (
 	"time"
 
 	"github.com/nalgeon/redka"
+	"golang.org/x/crypto/bcrypt"
 
 	"moleAgent_Serv/internal/core"
 )
+
+// dummyBcryptHash 登录时序防用户名枚举（QUA-06）：包初始化时按生产默认
+// cost（12，与 config 默认一致）生成一次，用户不存在路径对输入口令执行
+// 等价 bcrypt 比较，消除与「密码错误」路径的响应时序差
+var dummyBcryptHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("timing-equalizer-dummy-password"), 12)
+	if err != nil {
+		panic("auth: generate dummy bcrypt hash: " + err.Error())
+	}
+	return h
+}()
 
 type AuthService struct {
 	jwtMgr   *JWTManager
@@ -33,6 +45,9 @@ func NewAuthService(jwtMgr *JWTManager, userRepo core.UserRepo, roleRepo core.Ro
 func (s *AuthService) Login(ctx context.Context, username, password string) (string, string, error) {
 	user, err := s.userRepo.GetByUsername(username)
 	if err != nil {
+		// QUA-06：执行一次注定失败的 bcrypt 比较，让本路径与「密码错误」
+		// 路径做等量哈希功（快路径的响应时序差会被用来枚举用户名）
+		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 		slog.Warn("User login failed", "username", username, "reason", "user not found")
 		return "", "", core.ErrInvalidCredentials
 	}
