@@ -102,35 +102,6 @@ func (tg *TunnelGateway) findNodeTunnel(ctx context.Context, nodeID, mappingName
 	return nil, ""
 }
 
-// RegisterHTTP 注册 HTTP 隧道网关
-func (tg *TunnelGateway) RegisterHTTP(ctx context.Context, tunnel core.Tunnel) error {
-	listenAddr := fmt.Sprintf(":%d", tunnel.ListenPort)
-	if tunnel.ListenPort == 0 {
-		listenAddr = ""
-	}
-
-	if listenAddr != "" {
-		listener, err := net.Listen("tcp", listenAddr)
-		if err != nil {
-			return fmt.Errorf("http listen %s: %w", listenAddr, err)
-		}
-		tg.registry.Register(tunnel.Name, listener)
-
-		srv := &http.Server{
-			Handler: tg,
-		}
-		go func() {
-			<-ctx.Done()
-			srv.Close()
-			tg.registry.Unregister(tunnel.Name)
-		}()
-		go srv.Serve(listener)
-		slog.Info("HTTP tunnel listening", "tunnel", tunnel.Name, "addr", listenAddr)
-	}
-
-	return nil
-}
-
 // fixedHopByHopHeaders 逐跳头固定集合（RFC 7230 §6.1 + 常见实现扩展）
 var fixedHopByHopHeaders = []string{
 	"Connection",

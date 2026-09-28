@@ -18,15 +18,15 @@ var _ core.TunnelStatsReader = (*StatsTracker)(nil)
 
 // tunnelRuntime 隧道运行时生命周期句柄
 type tunnelRuntime struct {
-	cancel func()       // 取消隧道级 context
+	cancel func()        // 取消隧道级 context
 	done   chan struct{} // 运行循环退出信号
 }
 
 // ListenerRegistry 管理所有隧道的监听器和运行时
 type ListenerRegistry struct {
 	mu        sync.RWMutex
-	listeners map[string]net.Listener    // tunnelName -> listener
-	runtimes  map[string]*tunnelRuntime  // tunnelName -> runtime handle
+	listeners map[string]net.Listener   // tunnelName -> listener
+	runtimes  map[string]*tunnelRuntime // tunnelName -> runtime handle
 }
 
 func NewListenerRegistry() *ListenerRegistry {

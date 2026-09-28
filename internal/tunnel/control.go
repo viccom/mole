@@ -137,18 +137,6 @@ type connState struct {
 	remoteAddr string                // 客户端连接地址
 }
 
-func (s *connState) setGrant(grant *core.NodeAccessGrant) {
-	s.mu.Lock()
-	s.grant = grant
-	s.mu.Unlock()
-}
-
-func (s *connState) getGrant() *core.NodeAccessGrant {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.grant
-}
-
 func (s *connState) set(node *core.Node) {
 	s.mu.Lock()
 	s.node = node
