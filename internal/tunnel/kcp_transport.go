@@ -181,7 +181,7 @@ func (l *kcpListener) Accept() (net.Conn, error) {
 		}
 	}
 
-	tc := &trackedConn{Conn: conn, remoteAddr: remoteAddr, listener: l}
+	tc := &trackedConn{Conn: conn, remoteAddr: remoteAddr, listener: l, created: time.Now().UnixNano()}
 	l.connMap.Store(remoteAddr, tc)
 	l.connCount.Add(1)
 	slog.Info("KCP accepted", "remote", remoteAddr, "active", l.connCount.Load())
@@ -210,6 +210,6 @@ func (c *trackedConn) Close() error {
 }
 
 func (c *trackedConn) age() int64 {
-	// simple age in seconds
-	return 0
+	// 连接建立至今的秒数（诊断同源地址陈旧连接的存活时长）
+	return int64(time.Since(time.Unix(0, c.created)).Seconds())
 }
