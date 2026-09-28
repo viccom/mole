@@ -107,6 +107,14 @@ func (s *AuthService) RefreshToken(tokenStr string) (string, error) {
 	if user.Status == core.UserStatusDisabled {
 		return "", core.ErrUserDisabled
 	}
+	// 角色同样必须回库重查：旧 claims 的 Roles 是签发时快照，撤销/变更后
+	// 照抄续期会让权限收回形同虚设（与 Login 同源重建，风格一致）
+	roles, _ := s.rbac.GetUserRoles(claims.UserID)
+	roleNames := make([]string, len(roles))
+	for i, r := range roles {
+		roleNames[i] = r.Name
+	}
+	claims.Roles = roleNames
 	token, _, err := s.jwtMgr.GenerateToken(claims)
 	return token, err
 }
