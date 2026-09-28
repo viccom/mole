@@ -71,88 +71,22 @@ func (s *TunnelConfigService) SetP2PSignalTokenService(svc *P2PSignalTokenServic
 	s.p2pTokens = svc
 }
 
-// validateTunnel 校验单条隧道配置的合法性
+// validateTunnel 校验单条隧道配置的合法性。
+// 实现在 core（与 control 面 register 校验共用同一规则，REL-02），此处保留
+// 包内别名以维持既有调用点
 func validateTunnel(t core.Tunnel) error {
-	if t.Name == "" {
-		return fmt.Errorf("%w: tunnel name is required", core.ErrTunnelInvalid)
-	}
-
-	switch t.Type {
-	case core.TunnelTypeHTTP, core.TunnelTypeHTTPS, core.TunnelTypeTCP, core.TunnelTypeUDP:
-		// target 统一为 host:port 格式
-		if t.Target == "" {
-			return fmt.Errorf("%w: tunnel target is required", core.ErrTunnelInvalid)
-		}
-		host, port, err := net.SplitHostPort(t.Target)
-		if err != nil {
-			return fmt.Errorf("%w: tunnel target must be host:port format (e.g. 127.0.0.1:8080), got %q", core.ErrTunnelInvalid, t.Target)
-		}
-		if host == "" {
-			return fmt.Errorf("%w: tunnel target host is required", core.ErrTunnelInvalid)
-		}
-		portNum, err := strconv.Atoi(port)
-		if err != nil || portNum < 1 || portNum > 65535 {
-			return fmt.Errorf("%w: tunnel target port must be 1-65535, got %q", core.ErrTunnelInvalid, port)
-		}
-
-		// listen_port 只对 TCP/UDP 生效：HTTP/HTTPS 走域名路由不占系统端口，
-		// 零值合法；TCP/UDP 必须落在合法区间且避开服务自身保留端口（REL-01）
-		if t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP {
-			if err := core.ValidateTunnelListenPort(t.ListenPort); err != nil {
-				return err
-			}
-		}
-
-	// 客户端本地类型：服务端不验证 target 格式，只做基本校验
-	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp", "webssh":
-		// 这些类型的配置在 Para 字段中，客户端自己处理
-		// 服务端只需要确保 Name 不为空即可
-
-	case core.TunnelTypeP2P:
-		// p2p 与上述本地类型同类（仅客户端处理），但 room 是密钥材料，Para 必须严格校验
-		if err := core.ValidateP2PPara(t.Para); err != nil {
-			return err
-		}
-
-	default:
-		return fmt.Errorf("%w: unknown tunnel type %q", core.ErrTunnelInvalid, t.Type)
-	}
-
-	if err := validateRateLimit(t.RateLimit); err != nil {
-		return err
-	}
-
-	return nil
+	return core.ValidateTunnel(t)
 }
 
-// validateTunnels 校验隧道列表
+// validateTunnels 校验隧道列表（别名，实现在 core）
 func validateTunnels(tunnels []core.Tunnel) error {
-	names := make(map[string]bool, len(tunnels))
-	// listen_port -> 隧道名：TCP/UDP 网关监听是全局端口空间，
-	// 同一次提交的列表内 listen_port 必须唯一（对齐隧道名唯一机制，REL-01）
-	ports := make(map[int]string, len(tunnels))
-	for i := range tunnels {
-		if err := validateTunnel(tunnels[i]); err != nil {
-			return err
-		}
-		if names[tunnels[i].Name] {
-			return fmt.Errorf("%w: duplicate tunnel name %q", core.ErrTunnelInvalid, tunnels[i].Name)
-		}
-		names[tunnels[i].Name] = true
-		if tunnels[i].Type == core.TunnelTypeTCP || tunnels[i].Type == core.TunnelTypeUDP {
-			if prev, dup := ports[tunnels[i].ListenPort]; dup {
-				return fmt.Errorf("%w: duplicate listen_port %d (tunnel %q and %q)", core.ErrTunnelInvalid, tunnels[i].ListenPort, prev, tunnels[i].Name)
-			}
-			ports[tunnels[i].ListenPort] = tunnels[i].Name
-		}
-	}
-	return nil
+	return core.ValidateTunnels(tunnels)
 }
 
-const (
-	maxConnsUpperBound           = 100000
-	maxBandwidthUpperBound int64 = 10737418240 // 10 GB/s (显式 int64，避免 32-bit 平台 int 溢出)
-)
+// validateRateLimit 校验限速配置（别名，实现在 core）
+func validateRateLimit(rl *core.TunnelRateLimit) error {
+	return core.ValidateRateLimit(rl)
+}
 
 // validateP2PRoomPairing 校验 p2p 隧道 room 的跨记录配对不变量：
 // 同一 room 全局最多 2 条记录且分属 2 个不同节点。
@@ -369,30 +303,13 @@ func (s *TunnelConfigService) revokeRemovedP2PTokens(nodeID string, oldTunnels, 
 	}
 }
 
-// validateRateLimit 校验限速配置（拒绝零值/负值/极大值）
-func validateRateLimit(rl *core.TunnelRateLimit) error {
-	if rl == nil {
-		return nil
-	}
-	if rl.MaxConns < 0 || rl.MaxConns > maxConnsUpperBound {
-		return fmt.Errorf("%w: max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, maxConnsUpperBound, rl.MaxConns)
-	}
-	if rl.MaxBandwidth < 0 || rl.MaxBandwidth > maxBandwidthUpperBound {
-		return fmt.Errorf("%w: max_bandwidth must be 1-%d bytes/sec, got %d", core.ErrTunnelInvalid, maxBandwidthUpperBound, rl.MaxBandwidth)
-	}
-	if rl.MaxConns == 0 && rl.MaxBandwidth == 0 {
-		return fmt.Errorf("%w: rate_limit must have at least one non-zero field, use null to clear", core.ErrTunnelInvalid)
-	}
-	return nil
-}
-
 // validateNodeRateLimit 校验节点级限速配置
 func validateNodeRateLimit(rl *core.NodeRateLimit) error {
 	if rl == nil {
 		return nil
 	}
-	if rl.MaxConns < 0 || rl.MaxConns > maxConnsUpperBound {
-		return fmt.Errorf("%w: node max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, maxConnsUpperBound, rl.MaxConns)
+	if rl.MaxConns < 0 || rl.MaxConns > core.MaxConnsUpperBound {
+		return fmt.Errorf("%w: node max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, core.MaxConnsUpperBound, rl.MaxConns)
 	}
 	if rl.MaxConns == 0 {
 		return fmt.Errorf("%w: node max_conns must be > 0, use null to clear", core.ErrTunnelInvalid)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -822,6 +823,90 @@ func TestHandleRegisterOwnerCheck(t *testing.T) {
 
 		if resp := runRegister(t, cs, grantB, nodeID); resp.Cmd != "ok" {
 			t.Fatalf("expected ok (owner check disabled), got %+v", resp)
+		}
+	})
+}
+
+// ===== REL-02：register 隧道列表校验 =====
+
+// runRegisterWithTunnels 在 smux 流对上执行一次携带隧道列表的 handleRegister
+func runRegisterWithTunnels(t *testing.T, cs *ControlServer, nodeID string, tunnels []core.Tunnel) ControlResponse {
+	t.Helper()
+	srv, cli := newP2PTokenTestStream(t)
+	state := &connState{}
+	go cs.handleRegister(context.Background(), ControlCmd{
+		Cmd: "register", NodeID: nodeID, Name: "test-node", Tunnels: tunnels,
+	}, state, srv)
+	var resp ControlResponse
+	if err := json.NewDecoder(cli).Decode(&resp); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	return resp
+}
+
+// register 携带的隧道列表必须先过服务端校验（条数上限 + 与 REST 入口同规则），
+// 拒绝非法配置进入内存运行态
+func TestHandleRegisterTunnelListValidation(t *testing.T) {
+	newServer := func() (*ControlServer, *node.ShardedNodeManager) {
+		nodeMgr := node.NewShardedNodeManager(4)
+		return &ControlServer{nodeMgr: nodeMgr}, nodeMgr
+	}
+	const nodeID = "Node0100"
+
+	t.Run("超上限拒绝", func(t *testing.T) {
+		cs, nodeMgr := newServer()
+		list := make([]core.Tunnel, core.MaxRegisterTunnels+1)
+		for i := range list {
+			list[i] = core.Tunnel{Name: fmt.Sprintf("t-%d", i), Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8080"}
+		}
+		resp := runRegisterWithTunnels(t, cs, nodeID, list)
+		if resp.Cmd != "err" {
+			t.Fatalf("oversized list must be rejected, got %+v", resp)
+		}
+		if _, ok := nodeMgr.Get(context.Background(), nodeID); ok {
+			t.Fatal("rejected register must not add node to manager")
+		}
+	})
+
+	t.Run("含保留端口拒绝", func(t *testing.T) {
+		cs, nodeMgr := newServer()
+		list := []core.Tunnel{
+			{Name: "ok", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8080"},
+			{Name: "bad", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", ListenPort: 9983},
+		}
+		resp := runRegisterWithTunnels(t, cs, nodeID, list)
+		if resp.Cmd != "err" {
+			t.Fatalf("reserved listen_port must be rejected, got %+v", resp)
+		}
+		if _, ok := nodeMgr.Get(context.Background(), nodeID); ok {
+			t.Fatal("rejected register must not add node to manager")
+		}
+	})
+
+	t.Run("非法 target 拒绝", func(t *testing.T) {
+		cs, _ := newServer()
+		list := []core.Tunnel{
+			{Name: "bad", Type: core.TunnelTypeTCP, Target: "not-a-host-port"},
+		}
+		resp := runRegisterWithTunnels(t, cs, nodeID, list)
+		if resp.Cmd != "err" {
+			t.Fatalf("invalid target must be rejected, got %+v", resp)
+		}
+	})
+
+	t.Run("合法列表注册成功", func(t *testing.T) {
+		cs, nodeMgr := newServer()
+		list := []core.Tunnel{
+			{Name: "web", Type: core.TunnelTypeHTTP, Target: "127.0.0.1:8080", Domain: "a.example.com"},
+			{Name: "ssh", Type: core.TunnelTypeTCP, Target: "127.0.0.1:22", ListenPort: 22023},
+		}
+		resp := runRegisterWithTunnels(t, cs, nodeID, list)
+		if resp.Cmd != "ok" {
+			t.Fatalf("valid list must register, got %+v", resp)
+		}
+		n, ok := nodeMgr.Get(context.Background(), nodeID)
+		if !ok || len(n.Tunnels) != 2 {
+			t.Fatalf("registered node must carry the tunnels, ok=%v tunnels=%d", ok, len(n.Tunnels))
 		}
 	})
 }

@@ -769,6 +769,24 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		return
 	}
 
+	// REL-02：register 携带的隧道列表必须先过服务端校验（与 REST 落库入口
+	// 同一规则，含 listen_port 范围/保留端口/唯一性）+ 条数上限，任一失败
+	// 即拒绝注册——阻止非法配置进入内存运行态（注册竞态产物的源头）
+	if len(cmd.Tunnels) > core.MaxRegisterTunnels {
+		slog.Warn("Register rejected: tunnel list exceeds limit",
+			"nodeId", cmd.NodeID, "tunnels", len(cmd.Tunnels), "limit", core.MaxRegisterTunnels)
+		writeControlResp(stream, "err", fmt.Sprintf("tunnel list exceeds limit of %d", core.MaxRegisterTunnels))
+		return
+	}
+	if len(cmd.Tunnels) > 0 {
+		if err := core.ValidateTunnels(cmd.Tunnels); err != nil {
+			slog.Warn("Register rejected: invalid tunnel list",
+				"nodeId", cmd.NodeID, "tunnels", len(cmd.Tunnels), "error", err)
+			writeControlResp(stream, "err", err.Error())
+			return
+		}
+	}
+
 	// SEC-02：注册归属校验——认证身份与 node_id 的持久化归属者不同时拒绝注册，
 	// 防止用户 B 的 token 抢注用户 A 的 node_id（覆盖隧道配置、劫持流量）。
 	// 放行：无持久记录（新节点）/ 同主 / 持久归属为 system（legacy 时代记录，
