@@ -13,6 +13,19 @@ import (
 
 const udpSessionTimeout = 60 * time.Second
 
+// claimUDPSession 持锁把新建会话回插 sessions[key]（REL-03 的 CAS 语义）：
+// 同 key 已有并发创建者时，新会话是败者——不落 map，返回既有会话，
+// 由调用方负责关闭败者资源（cancel/读协程退出/配额释放）
+func claimUDPSession(mu *sync.Mutex, sessions map[string]*udpSession, key string, s *udpSession) (winner *udpSession, inserted bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	if existing, ok := sessions[key]; ok && existing != s {
+		return existing, false
+	}
+	sessions[key] = s
+	return s, true
+}
+
 // udpSession tracks a UDP source address session
 type udpSession struct {
 	srcAddr   *net.UDPAddr
@@ -222,11 +235,19 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					}
 				}()
 
-				mu.Lock()
-				sessions[key] = sess
-				fwdStream = sess.stream
-				curSKey = newSKey
-				mu.Unlock()
+				// REL-03：回插前持锁检查同 key 是否已有并发创建的会话。
+				// 败者（本会话）被销毁回收资源（读协程经 cancel 退出、流关闭、
+				// 配额释放），本包改经既有会话转发
+				if winner, inserted := claimUDPSession(&mu, sessions, key, sess); inserted {
+					fwdStream = sess.stream
+					curSKey = newSKey
+				} else {
+					destroySession(key, sess)
+					slog.Debug("UDP session lost insert race, using existing", "tunnel", tunnel.Name, "src", key)
+					winner.lastSeen = time.Now()
+					fwdStream = winner.stream
+					curSKey = winner.sKey
+				}
 
 				slog.Debug("UDP session created", "tunnel", tunnel.Name, "src", key)
 			} else {
