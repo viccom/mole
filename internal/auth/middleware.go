@@ -71,6 +71,38 @@ func (am *AuthMiddleware) RequirePermission(resource, action string) func(http.H
 	}
 }
 
+// RequirePermissionNoAccessKey 需要特定权限且拒绝 AccessKey 旁路的中间件。
+// AccessKey 是全权限的共享密钥身份，用于高危路由（删用户/AccessKey 管理/
+// 自更新）时，等于把最敏感操作交给了可被暴力破解、无法按人追责的凭据（SEC-06）
+func (am *AuthMiddleware) RequirePermissionNoAccessKey(resource, action string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := am.authenticate(r)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, 401, "Unauthorized")
+				return
+			}
+			if claims.UserID == "access_key" {
+				writeError(w, http.StatusForbidden, 403, "Forbidden: access key is not allowed for this operation")
+				return
+			}
+
+			allowed, err := am.rbac.CheckPermission(claims.UserID, resource, action)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, 500, "Internal server error")
+				return
+			}
+			if !allowed {
+				writeError(w, http.StatusForbidden, 403, "Forbidden: insufficient permissions")
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), claimsCtxKey, claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 func (am *AuthMiddleware) authenticate(r *http.Request) (*core.Claims, bool) {
 	// 1. AccessKey
 	if key := r.Header.Get("W-Access-Key"); key != "" {

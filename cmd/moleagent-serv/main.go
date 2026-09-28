@@ -490,7 +490,8 @@ func buildAPIRouter(
 	router.Register("POST", "/api/v1/users", userH.Create, "users", "write")
 	router.Register("GET", "/api/v1/users/", userH.Get, "users", "read")
 	router.Register("PUT", "/api/v1/users/", userH.Update, "users", "write")
-	router.Register("DELETE", "/api/v1/users/", userH.Delete, "users", "delete")
+	// 删除用户属高危操作：拒绝 AccessKey 旁路（SEC-06）
+	router.RegisterStrict("DELETE", "/api/v1/users/", userH.Delete, "users", "delete")
 	router.Register("POST", "/api/v1/users/", userH.AssignRole, "users", "admin")
 
 	// === 角色管理 ===
@@ -530,13 +531,16 @@ func buildAPIRouter(
 	// === 系统管理 ===
 	router.Register("GET", "/api/v1/metrics", sysH.Metrics, "system", "read")
 	router.Register("GET", "/api/v1/config", sysH.GetConfig, "system", "admin")
-	router.Register("GET", "/api/v1/accesskey", sysH.GetAccessKey, "accesskey", "read")
-	router.Register("PUT", "/api/v1/accesskey", sysH.SetAccessKey, "accesskey", "admin")
-	router.Register("DELETE", "/api/v1/accesskey", sysH.DeleteAccessKey, "accesskey", "admin")
+	// AccessKey 管理本身不允许用 AccessKey 执行（SEC-06）：否则持有旧密钥
+	// 者可自行轮换/删除密钥抹去痕迹
+	router.RegisterStrict("GET", "/api/v1/accesskey", sysH.GetAccessKey, "accesskey", "read")
+	router.RegisterStrict("PUT", "/api/v1/accesskey", sysH.SetAccessKey, "accesskey", "admin")
+	router.RegisterStrict("DELETE", "/api/v1/accesskey", sysH.DeleteAccessKey, "accesskey", "admin")
 
 	// === 版本升级 ===
 	router.Register("GET", "/api/v1/check-update", updateH.CheckUpdate, "system", "read")
-	router.Register("POST", "/api/v1/self-update", updateH.SelfUpdate, "system", "admin")
+	// 自更新会替换二进制：拒绝 AccessKey 旁路（SEC-06）
+	router.RegisterStrict("POST", "/api/v1/self-update", updateH.SelfUpdate, "system", "admin")
 	router.Register("GET", "/api/v1/update-progress", updateH.UpdateProgress, "system", "read")
 
 	// === WebSSH 终端 ===
