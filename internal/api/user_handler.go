@@ -357,6 +357,14 @@ func (h *UserHandler) setStatus(w http.ResponseWriter, r *http.Request, userID s
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
+	// QUA-07：状态值白名单——core.UserStatus 是字符串类型，任意值会被
+	// 原样落库并回显（如 "hacked"），下游按 Status 分支的语义被污染
+	switch core.UserStatus(req.Status) {
+	case core.UserStatusActive, core.UserStatusDisabled:
+	default:
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid status: must be one of: active, disabled")
+		return
+	}
 	user.Status = core.UserStatus(req.Status)
 	if err := h.userRepo.Update(user); err != nil {
 			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update user")

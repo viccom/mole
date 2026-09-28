@@ -220,6 +220,44 @@ func TestUserHandler_ResetPassword_Unauthenticated_401(t *testing.T) {
 	}
 }
 
+// QUA-07：状态子路径仅接受 core 定义的合法 UserStatus 常量
+func TestUserHandler_SetStatus_RejectsUnknownStatus(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "userA", Username: "alice", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "hash")
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
+
+	// 非法状态 → 400，且不落库
+	req := reqWithClaims(http.MethodPut, "/api/v1/users/userA/status",
+		[]byte(`{"status":"hacked"}`), &core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown status, got %d, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := userRepo.GetByID("userA")
+	if u.Status != core.UserStatusActive {
+		t.Fatalf("status must not be persisted for invalid value, got %s", u.Status)
+	}
+
+	// 合法值 active / disabled → 200
+	for _, status := range []string{"active", "disabled"} {
+		req := reqWithClaims(http.MethodPut, "/api/v1/users/userA/status",
+			[]byte(`{"status":"`+status+`"}`), &core.Claims{UserID: "admin", Roles: []string{"admin"}})
+		w := httptest.NewRecorder()
+		handler.Update(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for valid status %q, got %d, body=%s", status, w.Code, w.Body.String())
+		}
+		u, _ := userRepo.GetByID("userA")
+		if string(u.Status) != status {
+			t.Fatalf("expected status %q persisted, got %q", status, u.Status)
+		}
+	}
+}
+
 // --- tests ---
 
 func TestUserHandler_Delete_DisablesAccessTokens(t *testing.T) {
