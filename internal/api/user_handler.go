@@ -366,6 +366,19 @@ func (h *UserHandler) setStatus(w http.ResponseWriter, r *http.Request, userID s
 }
 
 func (h *UserHandler) resetPassword(w http.ResponseWriter, r *http.Request, userID string) {
+	// SEC-08：重置密码按 users:admin 收口——路由仅挂 users:write，旧逻辑让
+	// 任意 users:write 操作者可改任何人（含 admin）的密码完成提权。自助改密
+	// 请走 /auth/changepass（校验旧密码），本接口不做自助
+	claims := auth.GetClaims(r.Context())
+	if claims == nil || h.rbac == nil {
+		ResponseError(w, http.StatusForbidden, 403, "Forbidden: password reset requires users:admin permission")
+		return
+	}
+	allowed, err := h.rbac.CheckPermission(claims.UserID, "users", "admin")
+	if err != nil || !allowed {
+		ResponseError(w, http.StatusForbidden, 403, "Forbidden: password reset requires users:admin permission")
+		return
+	}
 	var req struct {
 		Password string `json:"password"`
 	}
