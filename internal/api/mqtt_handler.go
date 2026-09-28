@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/mqtt"
 )
@@ -57,6 +58,19 @@ func (h *MQTTHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.broker == nil {
 		ResponseError(w, http.StatusServiceUnavailable, 503, "MQTT broker not enabled")
+		return
+	}
+	// SEC-09：Publish 走 broker inline client，不经 aclHook——发布前必须按
+	// aclHook 同规则校验调用者对该 topic 的归属（admin 放行；其余身份须为
+	// 节点归属者且持 mqtt:write；access_key 对齐 aclHook 语义按无 RBAC
+	// 记录处理，同样被拒）
+	claims := auth.GetClaims(r.Context())
+	if claims == nil {
+		ResponseError(w, http.StatusUnauthorized, 401, "Unauthorized")
+		return
+	}
+	if !h.broker.CheckTopicACL(claims.UserID, req.Topic, true) {
+		ResponseError(w, http.StatusForbidden, 403, "Forbidden: topic not permitted")
 		return
 	}
 	if err := h.broker.Publish(req.Topic, []byte(req.Payload), req.Retain, req.QoS); err != nil {
