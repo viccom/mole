@@ -2,7 +2,9 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/nalgeon/redka"
@@ -94,6 +96,39 @@ func TestUserRepoCRUD(t *testing.T) {
 	_, err = repo.GetByID("test1")
 	if err == nil {
 		t.Error("should fail after delete")
+	}
+}
+
+// REL-07：级联删除（passwords/user_roles/usernames）单步失败必须上抛
+// ——旧实现忽略这些错误，静默留下指向已删用户的孤儿数据
+func TestUserRepoDelete_PropagatesCascadeErrors(t *testing.T) {
+	setupTestDB(t)
+	repo := NewUserRepo(db).(*userRepo)
+
+	if err := repo.Create(&core.User{ID: "u1", Username: "alice", Status: "active"}, "hash"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// 注入 user_roles 删除失败
+	inner := repo.deleteField
+	repo.deleteField = func(key, field string) error {
+		if key == "user_roles" {
+			return errors.New("simulated storage failure: disk full")
+		}
+		return inner(key, field)
+	}
+
+	err := repo.Delete("u1")
+	if err == nil {
+		t.Fatal("expected error when user_roles deletion fails")
+	}
+	if !strings.Contains(err.Error(), "simulated storage failure") {
+		t.Fatalf("error should wrap the underlying failure, got: %v", err)
+	}
+
+	// users/passwords 在失败步骤之前，应已完成删除
+	if _, err := repo.GetByID("u1"); err == nil {
+		t.Fatal("user record should already be deleted")
 	}
 }
 

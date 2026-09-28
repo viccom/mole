@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,8 @@ type mockAccessTokenRepo struct {
 	tokens  map[string]*core.AccessToken
 	hashIdx map[string]string // hash → tokenID
 	updates []*core.AccessToken
+	// failUpdate 注入 Update 失败（REL-07 级联错误上抛测试）
+	failUpdate bool
 }
 
 func newMockAccessTokenRepo() *mockAccessTokenRepo {
@@ -82,6 +85,9 @@ func (m *mockAccessTokenRepo) ListAll() ([]*core.AccessToken, error) {
 }
 
 func (m *mockAccessTokenRepo) Update(t *core.AccessToken) error {
+	if m.failUpdate {
+		return errors.New("simulated storage failure: cannot update access token")
+	}
 	c := *t
 	m.updates = append(m.updates, &c)
 	m.tokens[t.ID] = &c

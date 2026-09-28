@@ -258,6 +258,33 @@ func TestUserHandler_SetStatus_RejectsUnknownStatus(t *testing.T) {
 	}
 }
 
+// REL-07：级联步骤（AccessToken 禁用）失败时 Delete 返回 500，
+// 不静默继续删除用户
+func TestUserHandler_Delete_AccessTokenDisableFailure_500(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "userA", Username: "alice", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "fake-hash")
+	atRepo := newMockAccessTokenRepo()
+	atRepo.failUpdate = true
+	atRepo.Create(newTestAccessToken("userA", "token1"))
+
+	handler := NewUserHandler(userRepo, nil, 10, newTestNodeRepo(), atRepo, nil)
+	req := reqWithClaims(http.MethodDelete, "/api/v1/users/userA", nil,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Delete(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when access token disable fails, got %d, body=%s", w.Code, w.Body.String())
+	}
+	// 用户不得被删除（静默继续会留下已失效归属/凭据的半删状态）
+	if len(userRepo.deleteCalls) != 0 {
+		t.Fatalf("user must not be deleted on cascade failure, deleteCalls=%v", userRepo.deleteCalls)
+	}
+}
+
 // --- tests ---
 
 func TestUserHandler_Delete_DisablesAccessTokens(t *testing.T) {

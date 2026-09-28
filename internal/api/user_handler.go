@@ -233,53 +233,69 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	// 级联处理 SSO 绑定：不清理则用户名回收后，原飞书/钉钉身份的 SSO 回调
 	// 会命中残留绑定、直接给同名的重建账号签发 JWT（账号接管）
+	// REL-07：级联步骤失败记日志并 500 中止，不再静默继续
 	if h.feishuBindings != nil {
-		if err := h.feishuBindings.DeleteByUserID(id); err == nil {
-			slog.Info("Deleted feishu binding for deleted user", "userId", id)
+		if err := h.feishuBindings.DeleteByUserID(id); err != nil {
+			slog.Error("Failed to delete feishu binding on user delete", "userId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
 		}
+		slog.Info("Deleted feishu binding for deleted user", "userId", id)
 	}
 	if h.dingtalkBindings != nil {
-		if err := h.dingtalkBindings.DeleteByUserID(id); err == nil {
-			slog.Info("Deleted dingtalk binding for deleted user", "userId", id)
+		if err := h.dingtalkBindings.DeleteByUserID(id); err != nil {
+			slog.Error("Failed to delete dingtalk binding on user delete", "userId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
 		}
+		slog.Info("Deleted dingtalk binding for deleted user", "userId", id)
 	}
 
 	// 级联处理：禁用该用户的 AccessToken，节点归属改为 system
 	if h.accessTokenRepo != nil {
 		tokens, err := h.accessTokenRepo.ListByUser(id)
-		if err == nil {
-			for _, t := range tokens {
-				t.Status = core.AccessTokenDisabled
-				if updateErr := h.accessTokenRepo.Update(t); updateErr != nil {
-					slog.Warn("Failed to disable access token on user delete", "tokenId", t.ID, "error", updateErr)
-				}
+		if err != nil {
+			slog.Error("Failed to list access tokens on user delete", "userId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
+		}
+		for _, t := range tokens {
+			t.Status = core.AccessTokenDisabled
+			if updateErr := h.accessTokenRepo.Update(t); updateErr != nil {
+				slog.Error("Failed to disable access token on user delete", "tokenId", t.ID, "error", updateErr)
+				ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+				return
 			}
-			if len(tokens) > 0 {
-				slog.Info("Disabled access tokens for deleted user", "userId", id, "count", len(tokens))
-			}
+		}
+		if len(tokens) > 0 {
+			slog.Info("Disabled access tokens for deleted user", "userId", id, "count", len(tokens))
 		}
 	}
 	if h.nodeRepo != nil {
 		nodes, err := h.nodeRepo.GetAll()
-		if err == nil {
-			migrated := 0
-			for _, n := range nodes {
-				if n.OwnerUserID == id {
-					n.OwnerUserID = "system"
-					// 落库前清运行态字段：这些字段不属于持久化契约
-					n.SysInfo = nil
-					n.ClientStatuses = nil
-					n.RTT = 0
-					if updateErr := h.nodeRepo.Update(n); updateErr != nil {
-						slog.Warn("Failed to reassign node owner", "nodeId", n.ID, "error", updateErr)
-					} else {
-						migrated++
-					}
+		if err != nil {
+			slog.Error("Failed to list nodes on user delete", "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
+		}
+		migrated := 0
+		for _, n := range nodes {
+			if n.OwnerUserID == id {
+				n.OwnerUserID = "system"
+				// 落库前清运行态字段：这些字段不属于持久化契约
+				n.SysInfo = nil
+				n.ClientStatuses = nil
+				n.RTT = 0
+				if updateErr := h.nodeRepo.Update(n); updateErr != nil {
+					slog.Error("Failed to reassign node owner", "nodeId", n.ID, "error", updateErr)
+					ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+					return
 				}
+				migrated++
 			}
-			if migrated > 0 {
-				slog.Info("Reassigned nodes from deleted user to system (persisted)", "userId", id, "count", migrated)
-			}
+		}
+		if migrated > 0 {
+			slog.Info("Reassigned nodes from deleted user to system (persisted)", "userId", id, "count", migrated)
 		}
 	}
 
@@ -289,9 +305,13 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		runtimeUpdated := 0
 		for _, n := range runtimeNodes {
 			if n.OwnerUserID == id {
-				h.nodeMgr.Update(r.Context(), n.ID, func(rn *core.Node) {
+				if updateErr := h.nodeMgr.Update(r.Context(), n.ID, func(rn *core.Node) {
 					rn.OwnerUserID = "system"
-				})
+				}); updateErr != nil {
+					slog.Error("Failed to reassign runtime node owner", "nodeId", n.ID, "error", updateErr)
+					ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+					return
+				}
 				runtimeUpdated++
 			}
 		}
