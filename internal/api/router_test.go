@@ -134,6 +134,67 @@ func TestRouterRegisterStrict_RejectsAccessKey(t *testing.T) {
 	}
 }
 
+// QUA-12：OPTIONS 预检命中权限路由时直接 204 + CORS 头——预检不携带
+// 凭据，旧逻辑把预检送进认证中间件（401）或真的执行 handler（副作用）
+func TestRouterOptionsPreflight_PermissionRoute(t *testing.T) {
+	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
+	if err != nil {
+		t.Fatalf("failed to open in-memory redka: %v", err)
+	}
+	defer db.Close()
+	mw := auth.NewAuthMiddleware(auth.NewJWTManager("test-secret", time.Hour), auth.NewRBACEngine(db, &stubRoleRepo{}), func() string { return "" })
+
+	invoked := false
+	router := NewRouter(mw, nil)
+	router.Register("PUT", "/api/v1/users/", func(w http.ResponseWriter, r *http.Request) {
+		invoked = true
+		ResponseOK(w, "updated")
+	}, "users", "write")
+
+	handler := router.Build()
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/users/someone/status", nil)
+	req.Header.Set("Origin", "https://console.example.com")
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for OPTIONS preflight, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if invoked {
+		t.Fatal("real handler must not be invoked for OPTIONS preflight")
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got == "" {
+		t.Fatal("preflight response must carry Access-Control-Allow-Origin")
+	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); got == "" {
+		t.Fatal("preflight response must echo Access-Control-Allow-Headers")
+	}
+}
+
+// QUA-12：公共路由（会改状态的 login）的 OPTIONS 预检同样不执行 handler
+func TestRouterOptionsPreflight_PublicRoute_NoSideEffect(t *testing.T) {
+	invoked := false
+	router := setupTestRouter()
+	router.RegisterPublic("POST", "/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		invoked = true
+		ResponseOK(w, "logged-in")
+	})
+
+	handler := router.Build()
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/auth/login", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for OPTIONS preflight on exact route, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if invoked {
+		t.Fatal("real handler must not be invoked for OPTIONS preflight")
+	}
+}
+
 func TestDomainTypes(t *testing.T) {
 	// 验证核心领域类型
 	node := core.Node{
