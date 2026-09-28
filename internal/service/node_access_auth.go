@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
@@ -60,6 +62,67 @@ func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawT
 			AccessTokenID: "",
 			LegacyGlobal:  true,
 		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid token")
+}
+
+// AuthenticateNodeProof 校验 challenge-response proof（SEC-01 新格式）：
+// 客户端公式 proof = hex(HMAC-SHA256(key=sha256(token), msg=challenge))，
+// 不发送任何标识符；服务端遍历全部 active access token 逐候选复算比对，
+// legacy 全局 token 作为追加候选（key = sha256(legacy 明文) 原始字节）。
+// 候选数量小，O(n) HMAC 可接受；全部比对走常量时间比较；
+// 错误不区分「候选不存在」与「proof 不符」（同旧路径文案，避免探测面）
+func (s *accessTokenAuthService) AuthenticateNodeProof(ctx context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, error) {
+	proof, err := hex.DecodeString(proofHex)
+	if err != nil || len(proof) != sha256.Size {
+		return nil, fmt.Errorf("invalid token")
+	}
+
+	// 1. 遍历全部 active access token：key = TokenHash 解码出的 32 字节原始值
+	// （= sha256(token 明文)，与客户端公式一致）
+	tokens, err := s.tokenRepo.ListAll()
+	if err != nil {
+		slog.Warn("Failed to list access tokens for proof auth", "error", err)
+		return nil, fmt.Errorf("invalid token")
+	}
+	for _, token := range tokens {
+		if token.Status != core.AccessTokenActive {
+			continue
+		}
+		key, keyErr := hex.DecodeString(token.TokenHash)
+		if keyErr != nil || len(key) != sha256.Size {
+			continue
+		}
+		mac := hmac.New(sha256.New, key)
+		mac.Write(challenge)
+		if subtle.ConstantTimeCompare(mac.Sum(nil), proof) == 1 {
+			// 命中：更新 last_used_at（照旧路径，重读最新记录只改该字段）
+			if updateErr := s.tokenRepo.TouchLastUsed(token.ID, time.Now().UTC()); updateErr != nil {
+				slog.Warn("Failed to update token last_used_at", "tokenId", token.ID, "error", updateErr)
+			}
+			slog.Info("Node authenticated via access token proof", "tokenId", token.ID, "userId", token.UserID)
+			return &core.NodeAccessGrant{
+				UserID:        token.UserID,
+				AccessTokenID: token.ID,
+				LegacyGlobal:  false,
+			}, nil
+		}
+	}
+
+	// 2. legacy 全局 token 追加候选：key = sha256(legacy 明文) 原始字节
+	if s.legacyToken != "" {
+		key := sha256.Sum256([]byte(s.legacyToken))
+		mac := hmac.New(sha256.New, key[:])
+		mac.Write(challenge)
+		if subtle.ConstantTimeCompare(mac.Sum(nil), proof) == 1 {
+			slog.Info("Node authenticated via legacy global token proof")
+			return &core.NodeAccessGrant{
+				UserID:        "system",
+				AccessTokenID: "",
+				LegacyGlobal:  true,
+			}, nil
+		}
 	}
 
 	return nil, fmt.Errorf("invalid token")

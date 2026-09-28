@@ -167,6 +167,48 @@ func TestAccessTokenRepo_ListByUser_Empty(t *testing.T) {
 	}
 }
 
+// SEC-01：proof 认证需要全量候选列举（跨用户、含禁用记录由调用方过滤）
+func TestAccessTokenRepo_ListAll(t *testing.T) {
+	setupTestDB(t)
+	repo := NewAccessTokenRepo(db)
+
+	// 空库：返回空集
+	all, err := repo.ListAll()
+	if err != nil {
+		t.Fatalf("ListAll on empty db failed: %v", err)
+	}
+	if len(all) != 0 {
+		t.Errorf("expected empty result, got %d items", len(all))
+	}
+
+	tokens := []*core.AccessToken{
+		newTestToken("userA", "token-a1"),
+		newTestToken("userB", "token-b1"),
+	}
+	for _, tk := range tokens {
+		if err := repo.Create(tk); err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+	}
+
+	all, err = repo.ListAll()
+	if err != nil {
+		t.Fatalf("ListAll failed: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tokens across users, got %d", len(all))
+	}
+	gotIDs := map[string]bool{}
+	for _, tk := range all {
+		gotIDs[tk.ID] = true
+	}
+	for _, tk := range tokens {
+		if !gotIDs[tk.ID] {
+			t.Errorf("token %s missing from ListAll result", tk.ID)
+		}
+	}
+}
+
 func TestAccessTokenRepo_Update(t *testing.T) {
 	setupTestDB(t)
 	repo := NewAccessTokenRepo(db)

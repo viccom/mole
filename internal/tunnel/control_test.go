@@ -826,6 +826,152 @@ func TestHandleRegisterOwnerCheck(t *testing.T) {
 	})
 }
 
+// ===== SEC-01：控制面双格式认证 =====
+
+// fakeNodeAuthenticator 记录调用路径的认证桩（control 层双格式分发测试用）
+type fakeNodeAuthenticator struct {
+	grant     *core.NodeAccessGrant
+	tokenErr  error
+	proofErr  error
+	tokenCalls int
+	proofCalls int
+	lastToken   string
+	lastProof   string
+	lastChallenge []byte
+}
+
+func (f *fakeNodeAuthenticator) AuthenticateNodeToken(_ context.Context, rawToken string) (*core.NodeAccessGrant, error) {
+	f.tokenCalls++
+	f.lastToken = rawToken
+	if f.tokenErr != nil {
+		return nil, f.tokenErr
+	}
+	return f.grant, nil
+}
+
+func (f *fakeNodeAuthenticator) AuthenticateNodeProof(_ context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, error) {
+	f.proofCalls++
+	f.lastProof = proofHex
+	f.lastChallenge = append([]byte(nil), challenge...)
+	if f.proofErr != nil {
+		return nil, f.proofErr
+	}
+	return f.grant, nil
+}
+
+// runAuthHandshake 在 net.Pipe 上模拟客户端：读 32 字节 challenge、发送 auth 行，
+// 返回服务端响应与读到的 challenge
+func runAuthHandshake(t *testing.T, cs *ControlServer, authLine string) (ControlResponse, []byte) {
+	t.Helper()
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	go cs.handleConnection(context.Background(), server, "tcp")
+
+	challenge := make([]byte, 32)
+	if _, err := io.ReadFull(client, challenge); err != nil {
+		t.Fatalf("read challenge: %v", err)
+	}
+	if _, err := client.Write([]byte(authLine + "\n")); err != nil {
+		t.Fatalf("write auth line: %v", err)
+	}
+	line, err := bufio.NewReader(client).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var resp ControlResponse
+	if err := json.Unmarshal([]byte(strings.TrimRight(line, "\n")), &resp); err != nil {
+		t.Fatalf("parse response %q: %v", line, err)
+	}
+	return resp, challenge
+}
+
+// 双格式分发：proof 优先、legacy token 受 legacy_format_enabled 开关控制、空载荷拒绝
+func TestHandleConnectionDualAuthFormat(t *testing.T) {
+	grant := &core.NodeAccessGrant{UserID: "user-x"}
+	proofHex := "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+
+	newServer := func(legacyEnabled bool, auth *fakeNodeAuthenticator) *ControlServer {
+		nodeMgr := node.NewShardedNodeManager(4)
+		return &ControlServer{
+			nodeMgr:             nodeMgr,
+			authenticator:       auth,
+			legacyFormatEnabled: legacyEnabled,
+		}
+	}
+
+	t.Run("开关关闭时旧格式被拒", func(t *testing.T) {
+		auth := &fakeNodeAuthenticator{grant: grant}
+		cs := newServer(false, auth)
+		resp, _ := runAuthHandshake(t, cs, `{"token":"legacy-plaintext-token"}`)
+		if resp.Cmd != "err" || resp.Msg != "legacy auth disabled" {
+			t.Fatalf("expected legacy auth disabled, got %+v", resp)
+		}
+		if auth.tokenCalls != 0 {
+			t.Errorf("legacy path must not reach authenticator, calls=%d", auth.tokenCalls)
+		}
+	})
+
+	t.Run("开关关闭时 proof 正常", func(t *testing.T) {
+		auth := &fakeNodeAuthenticator{grant: grant}
+		cs := newServer(false, auth)
+		resp, challenge := runAuthHandshake(t, cs, `{"proof":"`+proofHex+`"}`)
+		if resp.Cmd != "ok" {
+			t.Fatalf("proof must pass with legacy disabled, got %+v", resp)
+		}
+		if auth.proofCalls != 1 || auth.tokenCalls != 0 {
+			t.Fatalf("dispatch mismatch: proof=%d token=%d", auth.proofCalls, auth.tokenCalls)
+		}
+		if auth.lastProof != proofHex {
+			t.Errorf("proof forwarded mismatch: %q", auth.lastProof)
+		}
+		if !bytes.Equal(auth.lastChallenge, challenge) {
+			t.Errorf("challenge forwarded mismatch: %x vs %x", auth.lastChallenge, challenge)
+		}
+	})
+
+	t.Run("开关开启时旧格式可用", func(t *testing.T) {
+		auth := &fakeNodeAuthenticator{grant: grant}
+		cs := newServer(true, auth)
+		resp, _ := runAuthHandshake(t, cs, `{"token":"legacy-plaintext-token"}`)
+		if resp.Cmd != "ok" {
+			t.Fatalf("legacy format must pass when enabled, got %+v", resp)
+		}
+		if auth.tokenCalls != 1 || auth.lastToken != "legacy-plaintext-token" {
+			t.Fatalf("legacy dispatch mismatch: calls=%d token=%q", auth.tokenCalls, auth.lastToken)
+		}
+	})
+
+	t.Run("两者皆空拒绝", func(t *testing.T) {
+		auth := &fakeNodeAuthenticator{grant: grant}
+		cs := newServer(true, auth)
+		resp, _ := runAuthHandshake(t, cs, `{}`)
+		if resp.Cmd != "err" || resp.Msg != "invalid auth format" {
+			t.Fatalf("expected invalid auth format, got %+v", resp)
+		}
+		if auth.tokenCalls != 0 || auth.proofCalls != 0 {
+			t.Errorf("empty payload must not reach authenticator")
+		}
+	})
+
+	t.Run("proof 失败回 invalid token", func(t *testing.T) {
+		auth := &fakeNodeAuthenticator{grant: grant, proofErr: errors.New("no match")}
+		cs := newServer(true, auth)
+		resp, _ := runAuthHandshake(t, cs, `{"proof":"deadbeef"}`)
+		if resp.Cmd != "err" || resp.Msg != "invalid token" {
+			t.Fatalf("expected invalid token, got %+v", resp)
+		}
+	})
+
+	t.Run("旧格式失败回 invalid token", func(t *testing.T) {
+		auth := &fakeNodeAuthenticator{grant: grant, tokenErr: errors.New("no match")}
+		cs := newServer(true, auth)
+		resp, _ := runAuthHandshake(t, cs, `{"token":"whatever"}`)
+		if resp.Cmd != "err" || resp.Msg != "invalid token" {
+			t.Fatalf("expected invalid token, got %+v", resp)
+		}
+	})
+}
+
 // TestReadBoundedLine 固化生产事故（conn 级 LimitedReader 吞掉 64KB 配额）
 // 的回归守卫：长度限制必须只作用于认证行本身，连接后续流量不受任何限制。
 func TestReadBoundedLine(t *testing.T) {

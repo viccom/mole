@@ -72,6 +72,15 @@ func (m *mockAccessTokenRepo) ListByUser(userID string) ([]*core.AccessToken, er
 	return out, nil
 }
 
+func (m *mockAccessTokenRepo) ListAll() ([]*core.AccessToken, error) {
+	var out []*core.AccessToken
+	for _, t := range m.tokens {
+		c := *t
+		out = append(out, &c)
+	}
+	return out, nil
+}
+
 func (m *mockAccessTokenRepo) Update(t *core.AccessToken) error {
 	c := *t
 	m.updates = append(m.updates, &c)

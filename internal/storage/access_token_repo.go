@@ -120,6 +120,23 @@ func (r *accessTokenRepo) ListByUser(userID string) ([]*core.AccessToken, error)
 	return tokens, nil
 }
 
+// ListAll 全量列举全部 access token（跨用户，供 proof 认证遍历候选）
+func (r *accessTokenRepo) ListAll() ([]*core.AccessToken, error) {
+	items, err := r.db.Hash().Items("access_tokens")
+	if err != nil {
+		return nil, err
+	}
+	var tokens []*core.AccessToken
+	for _, v := range items {
+		var token core.AccessToken
+		if err := json.Unmarshal([]byte(v.String()), &token); err != nil {
+			continue
+		}
+		tokens = append(tokens, &token)
+	}
+	return tokens, nil
+}
+
 func (r *accessTokenRepo) Update(token *core.AccessToken) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

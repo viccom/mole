@@ -373,6 +373,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 
 	var authMsg struct {
 		Token string `json:"token"`
+		Proof string `json:"proof"`
 	}
 	if err := json.Unmarshal([]byte(authLine), &authMsg); err != nil {
 		writeControlResp(conn, "err", "invalid auth format")
@@ -381,12 +382,41 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		return
 	}
 
-	// 统一走 authenticator 认证（内部实现：用户级 token 优先 → legacy 兜底）
+	// 统一走 authenticator 认证（内部实现：用户级 token 优先 → legacy 兜底）。
+	// 双格式（SEC-01）：新客户端发 {"proof"}（challenge-response HMAC，proof 绑定
+	// 本次连接的一次性 challenge，明文 token 不上线，客户端不发任何标识符）；
+	// 旧客户端发 {"token"}（明文格式，legacy_format_enabled 关闭后拒绝，
+	// 全部客户端升级到 proof 格式后由 R2 配置收口）
 	if cs.authenticator != nil {
-		grant, err := cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
-		if err != nil {
-			writeControlResp(conn, "err", "invalid token")
-			slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
+		var grant *core.NodeAccessGrant
+		switch {
+		case authMsg.Proof != "":
+			var authErr error
+			grant, authErr = cs.authenticator.AuthenticateNodeProof(ctx, authMsg.Proof, challenge)
+			if authErr != nil {
+				writeControlResp(conn, "err", "invalid token")
+				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
+				conn.Close()
+				return
+			}
+		case authMsg.Token != "":
+			if !cs.legacyFormatEnabled {
+				writeControlResp(conn, "err", "legacy auth disabled")
+				slog.Warn("Legacy node auth rejected", "remote", remoteAddr, "transport", transportName)
+				conn.Close()
+				return
+			}
+			var authErr error
+			grant, authErr = cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
+			if authErr != nil {
+				writeControlResp(conn, "err", "invalid token")
+				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
+				conn.Close()
+				return
+			}
+		default:
+			writeControlResp(conn, "err", "invalid auth format")
+			slog.Warn("Node auth format invalid", "remote", remoteAddr, "transport", transportName)
 			conn.Close()
 			return
 		}

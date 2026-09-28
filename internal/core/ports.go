@@ -120,6 +120,8 @@ type AccessTokenRepo interface {
 	GetByID(id string) (*AccessToken, error)
 	GetByHash(hash string) (*AccessToken, error)
 	ListByUser(userID string) ([]*AccessToken, error)
+	// ListAll 全量列举（SEC-01 proof 认证需要跨用户遍历全部候选）
+	ListAll() ([]*AccessToken, error)
 	Update(token *AccessToken) error
 	Delete(id string) error
 	// TouchLastUsed 仅更新 last_used_at：必须重读最新记录后合并写入，
@@ -127,9 +129,13 @@ type AccessTokenRepo interface {
 	TouchLastUsed(id string, ts time.Time) error
 }
 
-// NodeAccessAuthenticator 节点接入认证接口
+// NodeAccessAuthenticator 节点接入认证接口。
+// 双格式（SEC-01）：AuthenticateNodeToken 接受旧版明文 token（兼容期）；
+// AuthenticateNodeProof 接受 challenge-response proof——proof 绑定本次连接的
+// 一次性 challenge，明文 token 不再上线
 type NodeAccessAuthenticator interface {
 	AuthenticateNodeToken(ctx context.Context, rawToken string) (*NodeAccessGrant, error)
+	AuthenticateNodeProof(ctx context.Context, proofHex string, challenge []byte) (*NodeAccessGrant, error)
 }
 
 // TunnelStatsReader 隧道运行时统计读取接口（解耦 api 层与 tunnel 层）
