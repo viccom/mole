@@ -319,3 +319,142 @@ func TestHandleServerCmd_BareJSONNoNewlineCompat(t *testing.T) {
 		}
 	})
 }
+
+// dispatchOversizeProbe 跑一次"假服务端经 dispatchStream 推超限头"的探测：
+// firstByte 为协议头首字节（\x00 隧道名 / \x01 WebSSH），写侧共备 4MB
+// 无换行垃圾数据。返回 dispatchStream 耗时与写侧成功写入量。
+// 共用断言逻辑：超限必须立即断开本流（不等满 5s deadline）且读侧停止
+// 消费（写侧被 smux v2 按流窗口反压）——防内存尖峰的核心可观测。
+func dispatchOversizeProbe(t *testing.T, c *Client, firstByte byte) (elapsed time.Duration, total int) {
+	t.Helper()
+	cliStream, srvStream, teardown := newSmuxStreamPair(t)
+
+	const totalSend = 4 << 20
+	written := make(chan int, 1)
+	go func() {
+		chunk := bytes.Repeat([]byte{'a'}, 64*1024)
+		chunk[0] = firstByte
+		var n int
+		for n < totalSend {
+			w, err := srvStream.Write(chunk)
+			n += w
+			if err != nil {
+				break
+			}
+		}
+		written <- n
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		c.dispatchStream(cliStream)
+		close(done)
+	}()
+
+	// 旧实现里头读取超时后还会落入 http.ReadRequest（其重置新的 5s
+	// deadline），全程 ~10s；20s 上限只为兜底挂死，正常路径远快于此
+	start := time.Now()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("dispatchStream 未返回")
+	}
+	elapsed = time.Since(start)
+	teardown() // 关闭会话解除写侧阻塞，取回实际写入量
+	return elapsed, <-written
+}
+
+// TestDispatchStream_OversizeTunnelNameHeaderRejected \x00 隧道名头超过
+// 上限仍无换行——协议违规，dispatchStream 必须断开本流。
+func TestDispatchStream_OversizeTunnelNameHeaderRejected(t *testing.T) {
+	c := newStatusTestClient(t)
+	elapsed, total := dispatchOversizeProbe(t, c, 0x00)
+	if total > 2*maxCmdLineBytes {
+		t.Fatalf("读侧应在 1MB 上限处停止消费，写侧却成功写入 %d 字节", total)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("超限应立即断开而不是等满 5s deadline，耗时 %v", elapsed)
+	}
+}
+
+// TestDispatchStream_OversizeWebSSHHeaderRejected \x01 WebSSH 名头超过
+// 上限仍无换行——协议违规，dispatchStream 必须断开本流。
+func TestDispatchStream_OversizeWebSSHHeaderRejected(t *testing.T) {
+	c := newStatusTestClient(t)
+	elapsed, total := dispatchOversizeProbe(t, c, 0x01)
+	if total > 2*maxCmdLineBytes {
+		t.Fatalf("读侧应在 1MB 上限处停止消费，写侧却成功写入 %d 字节", total)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("超限应立即断开而不是等满 5s deadline，耗时 %v", elapsed)
+	}
+}
+
+// TestDispatchStream_NormalTunnelNameHeaderForwards 正常短隧道名头
+// （\x00<name>\n + 负载）必须按名路由转发——上限不得误伤正常路径。
+func TestDispatchStream_NormalTunnelNameHeaderForwards(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { backend.Close() })
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if conn, err := backend.Accept(); err == nil {
+			accepted <- conn
+		}
+	}()
+
+	c := newStatusTestClient(t)
+	enabled := true
+	c.mu.Lock()
+	c.tunnels = []Tunnel{{Name: "t1", Type: TunnelTypeTCP, Target: backend.Addr().String(), Enabled: &enabled}}
+	c.mu.Unlock()
+
+	cliStream, srvStream, _ := newSmuxStreamPair(t)
+	go c.dispatchStream(cliStream)
+
+	if _, err := srvStream.Write([]byte("\x00t1\nhello-proxy")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case conn := <-accepted:
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 64)
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatalf("backend read: %v", err)
+		}
+		if string(buf[:n]) != "hello-proxy" {
+			t.Fatalf("backend got %q, want %q", buf[:n], "hello-proxy")
+		}
+		_ = conn.Close()
+	case <-time.After(3 * time.Second):
+		t.Fatal("backend 未收到连接：正常短名头未被转发")
+	}
+}
+
+// TestDispatchStream_NormalWebSSHHeaderRouted 正常短 WebSSH 名头
+// （\x01<name>\n）必须路由进 websshMgr：未注册名会留 "not found" 告警
+// 并关闭流（EOF）——证明头被完整解析而不是被上限拦截。
+func TestDispatchStream_NormalWebSSHHeaderRouted(t *testing.T) {
+	buf := captureLog(t) // 替换全局 log 输出，不可并行
+	c := newStatusTestClient(t)
+	cliStream, srvStream, _ := newSmuxStreamPair(t)
+
+	go c.dispatchStream(cliStream)
+	if _, err := srvStream.Write([]byte("\x01web1\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_ = srvStream.SetReadDeadline(time.Now().Add(2 * time.Second))
+	tmp := make([]byte, 16)
+	if _, err := srvStream.Read(tmp); err != io.EOF {
+		t.Fatalf("websshMgr 关闭流后服务端应收到 EOF，got %v", err)
+	}
+	if !strings.Contains(buf.String(), "webssh tunnel not found") {
+		t.Fatalf("正常短名头必须路由到 websshMgr（未见 not found 告警）:\n%s", buf.String())
+	}
+}

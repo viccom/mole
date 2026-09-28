@@ -906,7 +906,12 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 
 	// 检查 TCP/UDP 代理协议头：\x00<tunnel-name>\n
 	if peek[0] == 0x00 {
-		line, err := br.ReadBytes('\n')
+		line, err := readBoundedCmdLine(br, maxCmdLineBytes)
+		if errors.Is(err, errCmdLineTooLarge) {
+			// 隧道名以 \n 定界且远短于上限——超限即协议违规，断开本流
+			log.Printf("tunnel name header exceeds %d bytes without newline, dropping stream", maxCmdLineBytes)
+			return
+		}
 		if err == nil && len(line) > 1 {
 			tunnelName := string(line[1 : len(line)-1]) // 跳过 \x00 和 \n
 			stream.SetReadDeadline(time.Time{})
@@ -927,7 +932,12 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	// 检查 WebSSH 代理协议头：<tunnel-name>
 
 	if peek[0] == 0x01 {
-		line, err := br.ReadBytes('\n')
+		line, err := readBoundedCmdLine(br, maxCmdLineBytes)
+		if errors.Is(err, errCmdLineTooLarge) {
+			// 同 \x00 头：WebSSH 隧道名远短于上限，超限即协议违规，断开本流
+			log.Printf("webssh tunnel name header exceeds %d bytes without newline, dropping stream", maxCmdLineBytes)
+			return
+		}
 		if err == nil && len(line) > 1 {
 			tunnelName := string(line[1 : len(line)-1])
 			stream.SetReadDeadline(time.Time{})
