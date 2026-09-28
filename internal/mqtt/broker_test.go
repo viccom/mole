@@ -227,6 +227,26 @@ func newACLTestRBAC(t *testing.T) *auth.RBACEngine {
 	return rbac
 }
 
+// QUA-09：rbac 未注入时 fail-closed——此前 nil 兜底放行会把无 RBAC 的
+// 部署（仅测试场景，生产 main 必接 rbac）变成全量放行
+func TestCheckTopicACLNilRBACFailClosed(t *testing.T) {
+	b := NewEmbeddedBroker("", "", nil, nil) // rbac == nil
+
+	if b.CheckTopicACL("user1", "/mole/nodeA/cmd", true) {
+		t.Fatal("nil rbac must deny (fail-closed)")
+	}
+	if b.CheckTopicACL("user1", "some/other/topic", true) {
+		t.Fatal("nil rbac must deny non-node topics too")
+	}
+
+	// aclHook 路径同样拒绝（p2p 哨兵与空身份分支不受影响，另行测试）
+	h := &aclHook{} // rbac == nil
+	cl := &mqtt.Client{ID: "cli1", Properties: mqtt.ClientProperties{Username: []byte("user1")}}
+	if h.OnACLCheck(cl, "/mole/nodeA/cmd", false) {
+		t.Fatal("aclHook with nil rbac must deny normal users")
+	}
+}
+
 func TestCheckTopicACL(t *testing.T) {
 	b := NewEmbeddedBroker("", "", nil, newACLTestRBAC(t))
 	// 节点归属仲裁：nodeA 归 user1

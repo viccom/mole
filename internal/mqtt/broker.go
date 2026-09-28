@@ -330,8 +330,12 @@ func checkTopicACL(rbac *auth.RBACEngine, nodeAuthz func(userID, nodeID string) 
 		action = "write" // publish = write
 	}
 
+	// QUA-09：rbac 未注入时 fail-closed——nil 兜底放行会把无 RBAC 的部署
+	// 变成全量放行。生产 main 必接 rbac，nil 仅测试场景；需要放行的旧
+	// 测试应显式注入 rbac fake 而非依赖此分支
 	if rbac == nil {
-		return true // fallback: allow if no RBAC engine
+		slog.Warn("MQTT ACL denied: RBAC engine not configured (fail-closed)", "source", source, "userID", userID, "topic", topic)
+		return false
 	}
 
 	// 管理员（*/* 权限）不受 topic 级约束
@@ -380,8 +384,9 @@ func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 		return false
 	}
 
-	// P2P 信令哨兵分支：必须置于 rbac == nil 兜底放行之前，否则 RBAC 未配置时
-	// P2P 客户端可订阅任意 topic。仅放行 nat-exchange/ 精确前缀（read/write），
+	// P2P 信令哨兵分支：必须置于 rbac == nil fail-closed 兜底之前——p2p
+	// 信令路由不依赖 RBAC，nil 场景（测试直构 hook）下也要照常工作。
+	// 仅放行 nat-exchange/ 精确前缀（read/write），
 	// 通配符（+/#）一律拒绝——防 nat-exchange/# 全域订阅窃取其他配对信令。
 	if auth.IsP2PSignalUsername(userID) {
 		if strings.ContainsAny(topic, "+#") {
