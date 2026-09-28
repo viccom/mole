@@ -454,7 +454,9 @@ func buildAPIRouter(
 	websshH := api.NewWebSSHHandler(nodeMgr)
 
 	// === 公开端点 ===
-	router.RegisterPublic("POST", "/api/v1/auth/login", authH.Login)
+	// 登录端点套独立失败限速（SEC-07）：不受 ratelimit.api.enabled 总开关影响
+	loginLimiter := auth.NewLoginLimiter()
+	router.RegisterPublic("POST", "/api/v1/auth/login", loginLimiter.Wrap(authH.Login))
 	router.RegisterPublic("GET", "/api/v1/health", sysH.Health)
 	router.RegisterPublic("GET", "/api/v1/version", sysH.Version)
 	router.RegisterPublic("POST", "/api/v1/auth/feishu/callback", feishuH.Callback)
