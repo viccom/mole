@@ -1,12 +1,17 @@
 package moleAgent_client
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xtaci/smux"
 
 	"moleAgent_client/internal/protocol"
 )
@@ -130,4 +135,187 @@ func TestReadControlMsg_OversizeRejected(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("expected oversize error, got %v", err)
 	}
+}
+
+// countingReader 统计底层实际被消费的字节数（bufio 会整块预读，
+// consumed 即"读路径总共从流里拿走了多少"）。
+type countingReader struct {
+	r        io.Reader
+	consumed int64
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.consumed += int64(n)
+	return n, err
+}
+
+// TestReadBoundedCmdLine_OversizeStopsConsuming 单元级精确度量：超过上限
+// 仍无换行时，读路径从流里消费的字节数必须停在上限 + 单次 bufio 预读
+// 余量处，而不是把发送方备好的数据全部读入。
+func TestReadBoundedCmdLine_OversizeStopsConsuming(t *testing.T) {
+	junk := strings.Repeat("a", maxCmdLineBytes+256*1024) // 无换行
+	cr := &countingReader{r: &chunkReader{chunks: splitChunks(junk, 64*1024)}}
+
+	_, err := readBoundedCmdLine(bufio.NewReader(cr), maxCmdLineBytes)
+	if !errors.Is(err, errCmdLineTooLarge) {
+		t.Fatalf("expected errCmdLineTooLarge, got %v", err)
+	}
+	// 上限 + bufio 默认缓冲（4096）是停止消费的确定性上界
+	if cr.consumed > int64(maxCmdLineBytes+bufio.NewReader(nil).Size()) {
+		t.Fatalf("读侧应在上限处停止消费，实际消费 %d 字节（上限 %d）", cr.consumed, maxCmdLineBytes)
+	}
+}
+
+// TestReadBoundedCmdLine_ExactLimitWithNewlineAccepted 恰好等于上限且以
+// 换行结尾的行是合法的——上限判断是 > 而非 >=，不得误伤边界行。
+func TestReadBoundedCmdLine_ExactLimitWithNewlineAccepted(t *testing.T) {
+	line := strings.Repeat("a", maxCmdLineBytes-1) + "\n" // 含 \n 共 maxCmdLineBytes 字节
+	got, err := readBoundedCmdLine(bufio.NewReader(strings.NewReader(line)), maxCmdLineBytes)
+	if err != nil {
+		t.Fatalf("exact-limit line must be accepted, got %v", err)
+	}
+	if len(got) != maxCmdLineBytes {
+		t.Fatalf("line length = %d, want %d", len(got), maxCmdLineBytes)
+	}
+}
+
+// newSmuxStreamPair 经 net.Pipe 建立一对 smux 会话并开好一条流：
+// 服务端侧模拟"假服务端"向客户端推流。返回 teardown 关闭全部会话
+// （幂等，可先于 t.Cleanup 手动调用以解除写侧阻塞）。
+// Version 2 与生产 DefaultSmuxVersion 一致；MaxStreamBuffer 特意取小
+// （生产为 RDP 流畅开到 4MB）——v2 有按流窗口流控，读侧停止消费后
+// 写侧随即被反压，"读侧不再吞数据"才能被写侧写入量度量。
+func newSmuxStreamPair(t *testing.T) (cliStream, srvStream *smux.Stream, teardown func()) {
+	t.Helper()
+	cliConn, srvConn := net.Pipe()
+	cfg := &smux.Config{
+		Version:           2,
+		KeepAliveDisabled: true,
+		MaxFrameSize:      32768,
+		MaxReceiveBuffer:  1 << 20,
+		MaxStreamBuffer:   64 * 1024,
+	}
+	srvSess, err := smux.Server(srvConn, cfg)
+	if err != nil {
+		t.Fatalf("smux.Server: %v", err)
+	}
+	cliSess, err := smux.Client(cliConn, cfg)
+	if err != nil {
+		t.Fatalf("smux.Client: %v", err)
+	}
+	srv, err := srvSess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	cli, err := cliSess.AcceptStream()
+	if err != nil {
+		t.Fatalf("AcceptStream: %v", err)
+	}
+	teardown = func() {
+		cliSess.Close()
+		srvSess.Close()
+	}
+	t.Cleanup(teardown)
+	return cli, srv, teardown
+}
+
+// TestHandleServerCmd_OversizeLineRejected 恶意/故障服务端在 5s deadline 内
+// 灌入超过上限的无换行数据——handleServerCmd 必须视为协议违规返回 false，
+// 且读侧必须在上限处停止消费（写侧因 smux v2 按流窗口被反压），而不是
+// 把数据全部吞进内存。防内存尖峰是本修复的全部意义，故除 false 外还
+// 断言写侧成功写入量与耗时。
+func TestHandleServerCmd_OversizeLineRejected(t *testing.T) {
+	c := newStatusTestClient(t)
+	cliStream, srvStream, teardown := newSmuxStreamPair(t)
+
+	// 写侧共备 4MB 无换行垃圾数据，远超 1MB 上限；首字节 '{' 与
+	// dispatchStream 的 peek 分发判定保持一致
+	const totalSend = 4 << 20
+	written := make(chan int, 1)
+	go func() {
+		chunk := bytes.Repeat([]byte{'a'}, 64*1024)
+		chunk[0] = '{'
+		var total int
+		for total < totalSend {
+			n, err := srvStream.Write(chunk)
+			total += n
+			if err != nil {
+				break
+			}
+		}
+		written <- total
+	}()
+
+	start := time.Now()
+	ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream))
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("超过上限的无换行数据必须判协议违规（返回 false），got true")
+	}
+	teardown() // 关闭会话解除写侧阻塞，取回实际写入量
+	total := <-written
+	if total > 2*maxCmdLineBytes {
+		t.Fatalf("读侧应在上限处停止消费，写侧却成功写入 %d 字节（上限 %d）", total, maxCmdLineBytes)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("超限应立即断开而不是等满 5s deadline，耗时 %v", elapsed)
+	}
+}
+
+// TestHandleServerCmd_NormalCommandStillWorks 带换行、小于上限的正常命令
+// 行为不变：tunnel_push 被处理（true）并回 ok 应答。
+func TestHandleServerCmd_NormalCommandStillWorks(t *testing.T) {
+	c := newStatusTestClient(t)
+	cliStream, srvStream, _ := newSmuxStreamPair(t)
+
+	cmd := `{"cmd":"tunnel_push","tunnels":[]}` + "\n"
+	if _, err := srvStream.Write([]byte(cmd)); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+
+	if ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); !ok {
+		t.Fatal("正常 tunnel_push 命令必须被处理（返回 true）")
+	}
+
+	// 成功路径必须回 ok 应答（writeResp 走 JSON Lines 约定）
+	_ = srvStream.SetReadDeadline(time.Now().Add(2 * time.Second))
+	line, err := bufio.NewReader(srvStream).ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var resp struct {
+		Cmd string `json:"cmd"`
+		Msg string `json:"msg"`
+	}
+	if json.Unmarshal(line, &resp) != nil || resp.Cmd != "ok" {
+		t.Fatalf("expected ok response, got %q", line)
+	}
+}
+
+// TestHandleServerCmd_BareJSONNoNewlineCompat 兼容旧服务端无换行的裸 JSON：
+// 读失败（EOF/deadline）时"取已有内容、TrimRight \x00、空则 false"的兜底
+// 语义必须保持。子用例二覆盖空数据路径（直接断开 → false）。
+func TestHandleServerCmd_BareJSONNoNewlineCompat(t *testing.T) {
+	t.Run("裸JSON无换行EOF", func(t *testing.T) {
+		c := newStatusTestClient(t)
+		cliStream, srvStream, _ := newSmuxStreamPair(t)
+		if _, err := srvStream.Write([]byte(`{"cmd":"tunnel_push","tunnels":[]}`)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_ = srvStream.Close() // 触发读侧 EOF
+		if ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); !ok {
+			t.Fatal("无换行裸 JSON 的兼容语义回退（应取已有内容继续解析）")
+		}
+	})
+
+	t.Run("空数据EOF", func(t *testing.T) {
+		c := newStatusTestClient(t)
+		cliStream, srvStream, _ := newSmuxStreamPair(t)
+		_ = srvStream.Close()
+		if ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); ok {
+			t.Fatal("空数据 EOF 必须返回 false")
+		}
+	})
 }

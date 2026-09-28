@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -990,7 +991,13 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 // handleServerCmd 处理服务端推送的控制命令（tunnel_push / tunnel_action / restart）
 func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
-	line, err := br.ReadBytes('\n')
+	line, err := readBoundedCmdLine(br, maxCmdLineBytes)
+	if errors.Is(err, errCmdLineTooLarge) {
+		// 超过上限仍未遇换行——视为协议违规，断开本流。
+		// 正常控制命令（KB 级 JSON）远小于 1MB 上限，无误伤面。
+		log.Printf("server command line exceeds %d bytes without newline, dropping stream", maxCmdLineBytes)
+		return false
+	}
 	if err != nil {
 		// No newline found — use whatever we have so far (trimmed).
 		// Don't wait for \x00 which would block until deadline.
@@ -1246,6 +1253,11 @@ func (c *Client) sleep(ctx context.Context, d time.Duration) {
 // maxControlMsgSize 单条控制消息的大小上限
 const maxControlMsgSize = 1 << 20 // 1MB
 
+// maxCmdLineBytes 服务端控制命令行（tunnel_push 等 JSON 行）的长度上限。
+// 与 readControlMsg 的 maxControlMsgSize 同量级：合法控制命令远小于此值；
+// 恶意/故障服务端在 deadline 内灌入超大无换行数据时在此截断（防内存尖峰）。
+const maxCmdLineBytes = 1 << 20 // 1MB
+
 // readControlMsg 从流中读取一条完整的 JSON 控制消息。
 // 每条流仅承载一条消息；服务端响应以 '\n' 结尾（writeJSONLine），
 // 同时兼容无换行的裸 JSON：每读到一批数据就尝试解析，解析成功即视为
@@ -1267,6 +1279,34 @@ func readControlMsg(r io.Reader, maxSize int) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+}
+
+// errCmdLineTooLarge 命令行超过长度上限（协议违规，调用方应断开）
+var errCmdLineTooLarge = errors.New("control command line too large")
+
+// readBoundedCmdLine 读取以 '\n' 定界的一条服务端命令行，累计超限即报
+// errCmdLineTooLarge。不能拿 io.LimitedReader 包 br：br 由 dispatchStream
+// 创建，handleServerCmd 返回 false 后还要继续喂给代理转发路径复用，包装层
+// 的 N 计数/嵌套缓冲会吞掉换行之后的字节。故用 ReadSlice 手动累计、每轮
+// 检查累计长度，只限制"这一行"（与服务端 readBoundedLine 同一手法）。
+// 与服务端版本不同：非超限错误（EOF/deadline）时把已累计的部分数据交还
+// 调用方，保持"取已有内容、TrimRight \x00、空则 false"的旧兜底语义。
+func readBoundedCmdLine(br *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		frag, err := br.ReadSlice('\n')
+		line = append(line, frag...)
+		if len(line) > limit {
+			return nil, errCmdLineTooLarge
+		}
+		if err == nil {
+			return line, nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue // 单个 bufio 缓冲内无 '\n'，继续累计
+		}
+		return line, err
 	}
 }
 
