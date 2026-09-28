@@ -125,7 +125,7 @@ func (l *LoginLimiter) Wrap(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // cleanupLocked 防止计数表无界增长：超过阈值时清掉已无价值的条目
-//（计数为空且锁已过期）。调用方需持锁
+// （计数为空且锁已过期）。调用方需持锁
 func (l *LoginLimiter) cleanupLocked(now time.Time) {
 	if len(l.entries) < loginEntriesCap {
 		return

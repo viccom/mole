@@ -228,7 +228,7 @@ const defaultAdminPassword = "admin"
 
 // rotateDefaultAdminPassword 检查 admin 用户库内哈希是否仍为公开默认口令，
 // 是则用给定凭据重建：passFromEnv 为 true 时 password 来自 MA_ADMIN_PASS
-//（无缝换密通道），否则为本次启动随机生成（打印一次性提示）
+// （无缝换密通道），否则为本次启动随机生成（打印一次性提示）
 func rotateDefaultAdminPassword(username, password string, passFromEnv bool) error {
 	hashVal, err := db.Hash().Get("passwords", username)
 	if err != nil {

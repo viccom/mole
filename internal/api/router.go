@@ -39,7 +39,7 @@ func (r *Router) Register(method, pattern string, handler http.HandlerFunc, reso
 }
 
 // RegisterStrict 注册拒绝 AccessKey 旁路的权限路由（SEC-06）：用于高危操作
-//（删用户/AccessKey 管理/自更新），这些不允许以共享密钥身份执行
+// （删用户/AccessKey 管理/自更新），这些不允许以共享密钥身份执行
 func (r *Router) RegisterStrict(method, pattern string, handler http.HandlerFunc, resource, action string) {
 	h := r.mw.RequirePermissionNoAccessKey(resource, action)(handler)
 	r.routes = append(r.routes, routeEntry{method: method, prefix: pattern, handler: h})
