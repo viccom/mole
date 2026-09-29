@@ -36,9 +36,9 @@
 
 ## _release 规则
 
-- `_release/` 只有三个文件入仓：`e2e/e2e_run.sh`、`e2e/echo_server.py`、`smoke_release.sh`（白名单式 .gitignore 控制；新增入仓文件须同步改 .gitignore）
-- 其余一切产物（moles/ molec/ e2e/bin/ e2e/wt-*/）与运行时数据（logs/ data/ admin/）不入库
-- e2e harness 铺 WSL 用 `mole/_release/e2e` 为源；脚本在仓库内是 LF（.gitattributes 锁定），**勿在 Windows 侧用会引入 CRLF 的工具改写**
+- `_release/` 是**编译产物目录，位于仓库外**（与 mole 同级：`E:\Go_codes\mole\_release`），不属于仓库；双端 Makefile 的 `RELEASE_DIR := ../../_release/moles|molec` 指向它
+- e2e harness 脚本入仓在 `scripts/`（`scripts/e2e/e2e_run.sh`、`scripts/e2e/echo_server.py`、`scripts/smoke_release.sh`）；产物二进制（moles/ molec/ bin/）与运行时数据（logs/ data/ admin/）一律不入库
+- e2e 铺 WSL 以仓库 `scripts/e2e` 脚本 + 外部 `_release/e2e/bin` 物料为源；脚本在仓库内是 LF（.gitattributes 锁定），**勿在 Windows 侧用会引入 CRLF 的工具改写**
 - 旧版源码参照（wt-cli-old/wt-serv-old）已移至仓库外 `E:\Go_codes\mole\_archive\`
 
 ## shared 抽取守则

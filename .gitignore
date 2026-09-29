@@ -3,11 +3,6 @@
 *.out
 coverage.txt
 
-# --- _release：仅三个 harness 脚本入仓（e2e_run.sh / echo_server.py / smoke_release.sh）---
-# 白名单式：其余产物与运行时数据（moles/ molec/ bin/ wt-*/ logs/ data/ admin/ 等）一律不入库
-_release/*
-!_release/e2e/
-_release/e2e/*
-!_release/e2e/e2e_run.sh
-!_release/e2e/echo_server.py
-!_release/smoke_release.sh
+# --- _release：编译产物目录在仓库外（与 mole 同级），不属于仓库 ---
+# 防御性忽略：即使将来误在仓库根建 _release/ 也不入库；harness 脚本已入仓 scripts/
+_release/

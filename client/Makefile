@@ -16,7 +16,7 @@ help: ## 显示帮助信息
 # 构建变量
 BINARY_NAME    := moleagent-client
 CMD_PATH       := ./cmd/moleagent-client
-RELEASE_DIR    := ../_release/molec
+RELEASE_DIR    := ../../_release/molec
 DESKTOP_DIR    := ./cmd/moleagent-desktop
 DESKTOP_NAME   := moleAgent-desktop
 MANAGER_DIR    := ./cmd/moleagent-manager

@@ -8,7 +8,8 @@ moleAgent_Serv + moleAgent_client 合并 monorepo（2026-09 迁移，subtree mer
 server/   ← 原 moleAgent_Serv（module 名不变：moleAgent_Serv）
 client/   ← 原 moleAgent_client（module 名不变：moleAgent_client）
 shared/   ← 新模块 mole/shared（仅 go.work 内本地引用，不发布；已落地 listenport/proto/tunnelvalidate 三件单源化）
-_release/ ← 发布产物目录 + e2e harness（仅三脚本入仓，产物 gitignore）
+scripts/  ← e2e harness 脚本（e2e_run.sh / echo_server.py / smoke_release.sh）
+（_release/ 编译产物目录在仓库外与 mole 同级，Makefile 以 ../../_release 引用）
 go.work   ← use ./server ./client ./shared
 ```
 

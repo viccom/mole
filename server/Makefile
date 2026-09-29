@@ -13,7 +13,7 @@ help: ## 显示帮助信息
 # 构建变量
 BINARY_NAME    := moleagent-serv
 CMD_PATH       := ./cmd/moleagent-serv
-RELEASE_DIR    := ../_release/moles
+RELEASE_DIR    := ../../_release/moles
 FRONTEND_DIR   := ./admin
 FRONTEND_DIST  := $(FRONTEND_DIR)/dist
 MOBILE_DIR     := ./mobile

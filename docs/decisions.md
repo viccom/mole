@@ -15,6 +15,7 @@
 | 6 | 2026-09-29 | `mv _release` Permission denied（句柄占用） | robocopy /MOVE 迁移（101 文件 303.57MB 零失败）；原位置空目录壳被外部句柄锁定暂留，待释放后手动删 | 无：空壳零内容 |
 | 7 | 2026-09-29 | push 前置「gitea 预建空仓 viccom/mole」未完成（API 建仓 401：git 凭据仅 git 端点有效） | 建仓与 push 留给用户执行 `git push -u origin master && git push origin 'refs/tags/srv/*' 'refs/tags/cli/*'`；本地交付全就绪 | 中：推送完成前新仓库仅存本地，旧仓库仍为唯一远程事实源（符合「验收未全过前新仓库可整体丢弃」设计） |
 | 8 | 2026-09-29 | 方案验收 #4 的验证命令 `git log --follow -- server/...` 在 subtree merge 场景返回空（history simplification 在 add merge 处沿 TREESAME 的骨架线剪枝） | 改用 `--full-history` 形态验证（已通过：226/405 commit 精确对账、旧路径日志逐条一致）；`--follow` 不穿透目录级搬移 merge 是 git 已知局限 | 无：历史对象与可达性完好，仅命令形态修正 |
+| 9 | 2026-09-30 | 负责人决策：`_release` 是编译产物、不是仓库一部分，已整体移回与 mole 同级的外部路径（推翻方案第一节布局与裁决 #1 的「_release 落仓库根」） | 双端 Makefile `RELEASE_DIR := ../_release/...` → `../../_release/...`；git 树内 `_release/` 路径清空，三个 harness 脚本（源码非产物）`git mv` 至 `scripts/e2e/` 与 `scripts/` 保住验收 #13「17 场景计数可核」；.gitignore 改防御性忽略 `_release/` | 低：验收 #12 的 harness 铺设源描述从 `mole/_release/e2e` 变为仓库 `scripts/e2e` 脚本 + 外部 `_release/e2e/bin` 物料；smoke_release.sh 的产物绝对路径 `/mnt/e/.../_release/...` 恰与外部新位置一致无需改 |
 
 ## 遗留跟踪
 
