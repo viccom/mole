@@ -241,6 +241,14 @@ func (cs *ControlServer) SetNodeAuthOptions(registerOwnerCheck, legacyFormatEnab
 
 // Start 启动控制端口监听（主传输层 + 额外传输层）
 func (cs *ControlServer) Start(ctx context.Context) error {
+	// acceptLoop 生命周期 ctx（审查①）：shutdown 必须能独立于外部 ctx 让
+	// acceptLoop 退出——extra listener Listen 失败路径下外部 ctx 未 Done，
+	// acceptLoop 只认 ctx 会永久自旋，Start 卡死在 acceptors.Wait()
+	sctx, scancel := context.WithCancel(ctx)
+	// cancel 幂等；成功路径 Start 阻塞至 ctx.Done 后返回，泄漏窗口与
+	// Start 调用同生命周期（每 Start 调用一次派生，无累积）
+	defer scancel()
+
 	// Worker pool（所有 listener 共用）
 	connChan := make(chan connEntry, 1000)
 	workerCount := runtime.NumCPU() * 2
@@ -257,10 +265,12 @@ func (cs *ControlServer) Start(ctx context.Context) error {
 	// 否则残留的发送分支会向已关闭 channel 写入而 panic（QUA-11a）
 	var acceptors sync.WaitGroup
 
-	// shutdown 统一关闭序列（QUA-11a）：关 listener → 等 acceptLoop 全部退出 →
-	// close(connChan)（connectionWorker 的 range 自然退出）→ 等 worker 排空。
-	// close 仅存在于这一条路径（每次 Start 持有独立 connChan，无 double-close）
+	// shutdown 统一关闭序列（QUA-11a）：先 cancel acceptLoop 的 sctx → 关
+	// listener → 等 acceptLoop 全部退出 → close(connChan)（connectionWorker
+	// 的 range 自然退出）→ 等 worker 排空。close 仅存在于这一条路径
+	// （每次 Start 持有独立 connChan，无 double-close）
 	shutdown := func() {
+		scancel()
 		for _, ln := range cs.listeners {
 			ln.Close()
 		}
@@ -281,7 +291,7 @@ func (cs *ControlServer) Start(ctx context.Context) error {
 	acceptors.Add(1)
 	go func() {
 		defer acceptors.Done()
-		cs.acceptLoop(ctx, primaryLn, connChan, cs.transport.Name())
+		cs.acceptLoop(sctx, primaryLn, connChan, cs.transport.Name())
 	}()
 
 	// 启动额外 listener（WS、KCP 等）
@@ -297,7 +307,7 @@ func (cs *ControlServer) Start(ctx context.Context) error {
 		acceptors.Add(1)
 		go func(ln net.Listener, name string) {
 			defer acceptors.Done()
-			cs.acceptLoop(ctx, ln, connChan, name)
+			cs.acceptLoop(sctx, ln, connChan, name)
 		}(ln, lt.transport.Name())
 	}
 
@@ -312,6 +322,10 @@ func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connCh
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			// listener 已关闭：立即退出（双保险——即便 ctx 分支失效也不得自旋）
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return

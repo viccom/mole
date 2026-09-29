@@ -985,6 +985,44 @@ func TestControlServerShutdownClosesConnChan(t *testing.T) {
 	}
 }
 
+// 审查①：extra listener Listen 失败时 Start 必须及时返回错误。
+// 旧实现的 shutdown() 先关 listeners 再 acceptors.Wait()，而 acceptLoop 只认
+// 外部 ctx 退出（Accept 报错走 default 分支自旋），primary acceptLoop 永不退出
+// → Start 在 Wait 上挂死、进程无法启动且日志风暴
+func TestControlServerStart_ExtraListenFailureReturns(t *testing.T) {
+	// primary 端口：探测后释放
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe port: %v", err)
+	}
+	primaryPort := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	// 占住一个端口，让 extra transport 的 Listen 必然失败（端口被占）
+	occupier, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy port: %v", err)
+	}
+	defer occupier.Close()
+	badPort := occupier.Addr().(*net.TCPAddr).Port
+
+	nodeMgr := node.NewShardedNodeManager(4)
+	cs := NewControlServer(fmt.Sprintf("127.0.0.1:%d", primaryPort), NewTCPTransport(nil), nodeMgr, "t", nil)
+	cs.AddTransport(fmt.Sprintf("127.0.0.1:%d", badPort), NewTCPTransport(nil))
+
+	done := make(chan error, 1)
+	go func() { done <- cs.Start(context.Background()) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Start must return an error when extra listener fails")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start hangs forever after extra listener failure (acceptLoop never exits)")
+	}
+}
+
 // ===== QUA-02：控制面错误脱敏 =====
 
 // sanitizeControlErr 语义：协议/业务校验错误（可修正）保留原文，
