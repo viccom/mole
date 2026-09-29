@@ -1,10 +1,11 @@
 module moleAgent_client/cmd/moleagent-manager
 
-go 1.25.3
+go 1.25.8
 
 require (
 	github.com/getlantern/systray v1.1.0
 	github.com/wailsapp/wails/v2 v2.9.1
+	mole/shared v0.0.0
 	moleAgent_client v0.0.0
 )
 
@@ -45,5 +46,7 @@ require (
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )
+
+replace mole/shared => ../../../shared
 
 replace moleAgent_client => ../..

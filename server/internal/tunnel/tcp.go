@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"moleAgent_Serv/internal/core"
+	"mole/shared/proto"
 )
 
 // StartTCP 启动 TCP 隧道监听
@@ -107,7 +108,7 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 	defer tg.stats.ConnClosed(sKey)
 
 	// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
-	if _, err := stream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
+	if _, err := stream.Write(append([]byte{proto.PrefixTCPUDP}, tunnel.Name...)); err != nil {
 		slog.Error("Failed to send tunnel proxy header", "tunnel", tunnel.Name, "error", err)
 		return
 	}

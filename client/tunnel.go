@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"mole/shared/listenport"
+	"mole/shared/proto"
 	"moleAgent_client/internal/protocol"
 )
 
@@ -20,17 +22,18 @@ type TunnelType string
 // 冲击控制面内存与注册路径。超限在 register 构造前本地报错。
 const maxRegisterTunnels = 256
 
+// 隧道类型枚举单源至 mole/shared/proto（跨端一致的值），此处以既有名字 re-export
 const (
-	TunnelTypeHTTP    TunnelType = "http"
-	TunnelTypeHTTPS   TunnelType = "https"
-	TunnelTypeTCP     TunnelType = "tcp"
-	TunnelTypeUDP     TunnelType = "udp"
-	TunnelTypeSer2MQ  TunnelType = "ser2mq"      // 串口转 MQTT
-	TunnelTypeSer2TCP TunnelType = "ser2tcp"     // 串口转 TCP
-	TunnelTypeSer2UDP TunnelType = "ser2udp"     // 串口转 UDP
-	TunnelTypeVPNMgr  TunnelType = "vpn-manager" // VPN 程序管理
-	TunnelTypeWebSSH  TunnelType = "webssh"      // WebSSH 远程终端
-	TunnelTypeP2P     TunnelType = "p2p"         // P2P 直连隧道（需 -tags p2p 构建才运行）
+	TunnelTypeHTTP    TunnelType = proto.TunnelTypeHTTP    // HTTP 域名路由
+	TunnelTypeHTTPS   TunnelType = proto.TunnelTypeHTTPS   // HTTPS 域名路由
+	TunnelTypeTCP     TunnelType = proto.TunnelTypeTCP     // TCP 网关端口监听
+	TunnelTypeUDP     TunnelType = proto.TunnelTypeUDP     // UDP 网关端口监听
+	TunnelTypeSer2MQ  TunnelType = proto.TunnelTypeSer2MQ  // 串口转 MQTT
+	TunnelTypeSer2TCP TunnelType = proto.TunnelTypeSer2TCP // 串口转 TCP
+	TunnelTypeSer2UDP TunnelType = proto.TunnelTypeSer2UDP // 串口转 UDP
+	TunnelTypeVPNMgr  TunnelType = proto.TunnelTypeVPNMgr  // VPN 程序管理
+	TunnelTypeWebSSH  TunnelType = proto.TunnelTypeWebSSH  // WebSSH 远程终端
+	TunnelTypeP2P     TunnelType = proto.TunnelTypeP2P     // P2P 直连隧道（需 -tags p2p 构建才运行）
 )
 
 // Tunnel 隧道配置（统一类型，替代原 tunnelConfig 和 protocol.Tunnel 两套定义）
@@ -140,31 +143,13 @@ func validateHostPort(target string) error {
 	return nil
 }
 
-// reservedListenPorts 服务端自身监听的保留端口集合（网关/控制/API/控制面
-// WS 附加传输/MQTT-TCP/MQTT-WS），语义与服务端 core/listen_port.go 的
-// reservedListenPorts 一致：TCP/UDP 隧道 listen_port 落在其中意味着与服务
-// 自身端口冲突，服务端在配置期整单拒绝（REL-01）。客户端不能 import 服务端
-// core 包，按协议约定在此维护同值副本——漂移的后果是客户端放行、服务端
-// 整单拒绝，节点无法上线。
-var reservedListenPorts = map[int]struct{}{
-	9980: {}, // gateway_port
-	9981: {}, // control_port
-	9982: {}, // 控制面 WS 附加传输默认端口
-	9983: {}, // api_port
-	1882: {}, // mqtt ws_port
-	1883: {}, // mqtt tcp_port
-}
-
 // validateListenPort 校验单条 TCP/UDP 隧道的监听端口（REL-01），与服务端
-// core.ValidateTunnelListenPort 同规则同文案：1-65535 且不落保留端口集合
+// core.ValidateTunnelListenPort 同规则同文案（无前缀主体）：1-65535 且不落
+// 保留端口集合。规则与保留端口集合已单源化至 shared/listenport（双端同源，
+// 此处是薄适配层）——曾经的手工副本漂移后果（客户端放行、服务端整单拒绝、
+// 节点无法上线）由单源化消除。
 func validateListenPort(port int) error {
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("listen_port must be 1-65535, got %d", port)
-	}
-	if _, reserved := reservedListenPorts[port]; reserved {
-		return fmt.Errorf("listen_port %d is reserved for the server itself", port)
-	}
-	return nil
+	return listenport.Validate(port)
 }
 
 // validateTunnelList 在单条 Validate 之上补两条列表级规则，精确镜像服务端

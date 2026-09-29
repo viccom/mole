@@ -1,6 +1,6 @@
 module moleAgent_client
 
-go 1.25.3
+go 1.25.8
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
@@ -18,7 +18,10 @@ require (
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.54.0
 	golang.org/x/sys v0.45.0
+	mole/shared v0.0.0
 )
+
+replace mole/shared => ../shared
 
 require (
 	github.com/creack/goselect v0.1.2 // indirect

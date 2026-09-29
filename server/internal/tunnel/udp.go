@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"moleAgent_Serv/internal/core"
+	"mole/shared/proto"
 )
 
 const udpSessionTimeout = 60 * time.Second
@@ -195,7 +196,7 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 				}
 
 				// 发送隧道标识头：\x00<tunnel-name>\n，客户端据此路由到正确目标
-				if _, err := newStream.Write(append([]byte{0x00}, tunnel.Name...)); err != nil {
+				if _, err := newStream.Write(append([]byte{proto.PrefixTCPUDP}, tunnel.Name...)); err != nil {
 					tg.sem.Release()
 					slog.Error("Failed to send UDP proxy header", "tunnel", tunnel.Name, "error", err)
 					newStream.Close()

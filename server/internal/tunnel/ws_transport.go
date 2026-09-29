@@ -10,9 +10,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"mole/shared/proto"
 )
 
-const wsUpgradePath = "/ws"
+// wsUpgradePath WS 控制面 HTTP 升级路径（值单源至 mole/shared/proto，
+// 客户端 ws dialer 拼接同一常量）
+const wsUpgradePath = proto.WSUpgradePath
 
 // WSTransport implements Transport for WebSocket (ws://) and secure WebSocket (wss://).
 type WSTransport struct {

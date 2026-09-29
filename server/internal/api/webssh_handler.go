@@ -15,6 +15,7 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
+	"mole/shared/proto"
 )
 
 // 消息类型（与客户端 webssh handler 一致）
@@ -129,7 +130,7 @@ func (h *WebSSHHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		defer stream.Close()
 
 		// 发送流标识头，让客户端 dispatchStream 识别为 webssh 流
-		if _, err := stream.Write(append([]byte{0x01}, tunnelName...)); err != nil {
+		if _, err := stream.Write(append([]byte{proto.PrefixWebSSH}, tunnelName...)); err != nil {
 			slog.Error("WebSSH: failed to write stream header", "tunnel", tunnelName, "error", err)
 			return
 		}

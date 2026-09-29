@@ -14,6 +14,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	kcp "github.com/xtaci/kcp-go/v5"
+
+	"mole/shared/proto"
 )
 
 // ---------------------------------------------------------------------------
@@ -45,7 +47,8 @@ func NewWSDialer(cfg WSDialerConfig) DialFunc {
 			if tlsConfig != nil {
 				scheme = "wss"
 			}
-			url = fmt.Sprintf("%s://%s/ws", scheme, addr)
+			// 升级路径单源至 mole/shared/proto（与服务端 wsUpgradePath 一致）
+			url = fmt.Sprintf("%s://%s%s", scheme, addr, proto.WSUpgradePath)
 		}
 		dialer := websocket.Dialer{
 			HandshakeTimeout: DefaultConnectTimeout,

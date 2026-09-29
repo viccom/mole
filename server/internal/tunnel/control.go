@@ -19,6 +19,7 @@ import (
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
+	"mole/shared/proto"
 )
 
 // isValidNodeID 验证节点 ID 格式：固定 8 个 ASCII 字符，首字符字母，其余字母或数字。
@@ -44,57 +45,21 @@ func isValidNodeID(id string) bool {
 	return true
 }
 
-// ControlProtocol 命令类型
-type ControlCmd struct {
-	Cmd      string         `json:"cmd"`                     // register, ping, tunnel_update, tunnel_status, sysinfo, tunnel_action, restart
-	NodeID   string         `json:"node_id,omitempty"`       // 注册时使用
-	Name     string         `json:"name,omitempty"`          // 节点名称 / 隧道名称
-	Token    string         `json:"token,omitempty"`         // 节点令牌
-	Tunnels  []core.Tunnel  `json:"tunnels,omitempty"`       // 隧道配置
-	Ts       int64          `json:"ts,omitempty"`            // Unix 毫秒（ping RTT）
-	Action   string         `json:"action,omitempty"`        // tunnel_action: start/stop/restart
-	Delay    int            `json:"delay_seconds,omitempty"` // restart 延迟秒数
-	Reason   string         `json:"reason,omitempty"`        // restart 原因
-	Statuses []TunnelStatus `json:"statuses,omitempty"`      // tunnel_status 上报
-	SysInfo  *SysInfo       `json:"sysinfo,omitempty"`       // 系统信息上报
-}
+// ControlProtocol 命令类型——协议结构体单源至 mole/shared/proto（双端 json tag
+// 逐字一致），此处以类型别名接入保持包内既有名字。ControlCmd 以 core.Tunnel
+// 实例化 Tunnels 字段（双端 Tunnel 的 Go 类型各自独立，见 proto 包注释）；
+// p2pSignalTokenResp 同为 shared 导出类型的包内别名（lowercase 名不变）。
+type (
+	ControlCmd         = proto.ControlCmd[core.Tunnel]
+	ControlResponse    = proto.ControlResponse
+	TunnelStatus       = proto.TunnelStatus
+	SysInfo            = proto.SysInfo
+	p2pSignalTokenResp = proto.P2PSignalTokenResp
+)
 
-type ControlResponse struct {
-	Cmd  string          `json:"cmd"` // ok, pong, err
-	Msg  string          `json:"msg,omitempty"`
-	Ts   int64           `json:"ts,omitempty"`   // 原样回传（ping RTT）
-	Data json.RawMessage `json:"data,omitempty"` // 结构化数据
-}
-
-// TunnelStatus 客户端上报的隧道运行时状态
-type TunnelStatus struct {
-	Name          string `json:"name"`
-	Type          string `json:"type"`
-	Running       bool   `json:"running"`
-	Connected     bool   `json:"connected,omitempty"`
-	SerialOpen    bool   `json:"serial_open,omitempty"`
-	MQTTConnected bool   `json:"mqtt_connected,omitempty"`
-	Clients       int    `json:"clients,omitempty"`
-	PID           int    `json:"pid,omitempty"`
-	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
-	BytesIn       uint64 `json:"bytes_in,omitempty"`
-	BytesOut      uint64 `json:"bytes_out,omitempty"`
-	Error         string `json:"error,omitempty"`
-}
-
-// SysInfo 客户端上报的系统信息
-type SysInfo struct {
-	OS           string `json:"os,omitempty"`
-	Hostname     string `json:"hostname,omitempty"`
-	Uptime       int64  `json:"uptime_seconds,omitempty"`
-	GoVersion    string `json:"go_version,omitempty"`
-	AgentVersion string `json:"agent_version,omitempty"`
-	NumCPU       int    `json:"num_cpu,omitempty"`
-	MemTotalMB   int64  `json:"mem_total_mb,omitempty"`
-	MemUsedMB    int64  `json:"mem_used_mb,omitempty"`
-}
-
-func (s *SysInfo) toCore() *core.SysInfo {
+// sysInfoToCore 转换为 core 运行态模型。原为 (*SysInfo).toCore 方法——SysInfo
+// 已是 shared 别名（非本地类型不能再挂方法），改为包内函数，逻辑不变
+func sysInfoToCore(s *SysInfo) *core.SysInfo {
 	if s == nil {
 		return nil
 	}
@@ -110,7 +75,9 @@ func (s *SysInfo) toCore() *core.SysInfo {
 	}
 }
 
-func (s *TunnelStatus) toCore() core.ClientTunnelStatus {
+// tunnelStatusToCore 转换为 core 运行态模型（原 (*TunnelStatus).toCore 方法
+// 改函数，原因同 sysInfoToCore，逻辑不变）
+func tunnelStatusToCore(s TunnelStatus) core.ClientTunnelStatus {
 	return core.ClientTunnelStatus{
 		Name:          s.Name,
 		Type:          s.Type,
@@ -416,7 +383,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		Proof string `json:"proof"`
 	}
 	if err := json.Unmarshal([]byte(authLine), &authMsg); err != nil {
-		writeControlResp(conn, "err", "invalid auth format")
+		writeControlResp(conn, proto.RespErr, "invalid auth format")
 		slog.Warn("Node auth format invalid", "remote", remoteAddr, "transport", transportName)
 		conn.Close()
 		return
@@ -437,7 +404,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 				// 计数必须先于应答：客户端读到响应即可发起下一次连接，
 				// 若后计数，第 N+1 次连接可能赶在失败入账前通过锁检查
 				cs.authFail(ip)
-				writeControlResp(conn, "err", "invalid token")
+				writeControlResp(conn, proto.RespErr, "invalid token")
 				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
 				conn.Close()
 				return
@@ -445,7 +412,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		case authMsg.Token != "":
 			if !cs.legacyFormatEnabled {
 				cs.authFail(ip)
-				writeControlResp(conn, "err", "legacy auth disabled")
+				writeControlResp(conn, proto.RespErr, "legacy auth disabled")
 				slog.Warn("Legacy node auth rejected", "remote", remoteAddr, "transport", transportName)
 				conn.Close()
 				return
@@ -454,19 +421,19 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 			grant, authErr = cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
 			if authErr != nil {
 				cs.authFail(ip)
-				writeControlResp(conn, "err", "invalid token")
+				writeControlResp(conn, proto.RespErr, "invalid token")
 				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
 				conn.Close()
 				return
 			}
 		default:
-			writeControlResp(conn, "err", "invalid auth format")
+			writeControlResp(conn, proto.RespErr, "invalid auth format")
 			slog.Warn("Node auth format invalid", "remote", remoteAddr, "transport", transportName)
 			conn.Close()
 			return
 		}
 		cs.authOK(ip) // 同理：清零先于应答，防「成功后紧接的失败连接」误锁
-		writeControlResp(conn, "ok", "authenticated")
+		writeControlResp(conn, proto.RespOK, "authenticated")
 		slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
 
 		// 建立 smux 会话并使用 grant（conn 生命周期转移给 goroutine）
@@ -477,7 +444,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	// 无 authenticator 时回退到旧全局 token 直接比对（兼容未注入场景）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) == 1 {
 		cs.authOK(ip)
-		writeControlResp(conn, "ok", "authenticated")
+		writeControlResp(conn, proto.RespOK, "authenticated")
 		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr, "transport", transportName)
 
 		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, &core.NodeAccessGrant{
@@ -488,7 +455,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	}
 
 	cs.authFail(ip)
-	writeControlResp(conn, "err", "invalid token")
+	writeControlResp(conn, proto.RespErr, "invalid token")
 	slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName, "reason", "invalid token")
 	conn.Close()
 }
@@ -597,10 +564,12 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 }
 
 // maxControlMsgSize 单条控制消息的大小上限，防止异常客户端耗尽服务端内存
-const maxControlMsgSize = 1 << 20 // 1MB
+// （值单源至 mole/shared/proto）
+const maxControlMsgSize = proto.MaxControlMsgSize // 1MB
 
 // maxAuthLineBytes 预认证 auth 行的长度上限（token JSON 远小于此值）
-const maxAuthLineBytes = 64 << 10
+// （值单源至 mole/shared/proto）
+const maxAuthLineBytes = proto.MaxAuthLineBytes
 
 // errAuthLineTooLarge 认证行超过长度上限
 var errAuthLineTooLarge = errors.New("auth line too large")
@@ -670,14 +639,14 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 
 	var cmd ControlCmd
 	if err := json.Unmarshal(data, &cmd); err != nil {
-		writeControlResp(stream, "err", "invalid json")
+		writeControlResp(stream, proto.RespErr, "invalid json")
 		return
 	}
 
 	switch cmd.Cmd {
-	case "register":
+	case proto.CmdRegister:
 		cs.handleRegister(ctx, cmd, state, stream)
-	case "ping":
+	case proto.CmdPing:
 		node := state.get()
 		if node != nil {
 			cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
@@ -688,26 +657,26 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 				}
 			})
 		}
-		writeControlRespTs(stream, "pong", "", cmd.Ts)
-	case "tunnel_update":
+		writeControlRespTs(stream, proto.RespPong, "", cmd.Ts)
+	case proto.CmdTunnelUpdate:
 		cs.handleTunnelUpdate(ctx, cmd, state, stream)
-	case "sysinfo":
+	case proto.CmdSysInfo:
 		node := state.get()
 		if node != nil && cmd.SysInfo != nil {
-			si := cmd.SysInfo.toCore()
+			si := sysInfoToCore(cmd.SysInfo)
 			if err := cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
 				n.SysInfo = si
 			}); err != nil {
 				slog.Debug("sysinfo update failed", "node", node.ID, "error", err)
 			}
 		}
-		writeControlResp(stream, "ok", "sysinfo received")
-	case "tunnel_status":
+		writeControlResp(stream, proto.RespOK, "sysinfo received")
+	case proto.CmdTunnelStatus:
 		node := state.get()
 		if node != nil && len(cmd.Statuses) > 0 {
 			statuses := make([]core.ClientTunnelStatus, len(cmd.Statuses))
 			for i, s := range cmd.Statuses {
-				statuses[i] = s.toCore()
+				statuses[i] = tunnelStatusToCore(s)
 			}
 			if err := cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
 				n.ClientStatuses = statuses
@@ -715,31 +684,23 @@ func (cs *ControlServer) handleStream(ctx context.Context, stream *smux.Stream, 
 				slog.Debug("tunnel_status update failed", "node", node.ID, "error", err)
 			}
 		}
-		writeControlResp(stream, "ok", "status received")
-	case "p2p_signal_token":
+		writeControlResp(stream, proto.RespOK, "status received")
+	case proto.CmdP2PSignalToken:
 		cs.handleP2PSignalToken(ctx, cmd, state, stream)
 	default:
-		writeControlResp(stream, "err", "unknown command")
+		writeControlResp(stream, proto.RespErr, "unknown command")
 	}
 }
 
-// p2pSignalTokenResp 是 p2p_signal_token 命令的 ad-hoc 响应（与 pong 携带 ts 同款做法：
-// 协议层无共享 types，两端各自解码，不扩 ControlResponse）
-type p2pSignalTokenResp struct {
-	Cmd       string `json:"cmd"`
-	OK        bool   `json:"ok"`
-	Error     string `json:"error,omitempty"`
-	Username  string `json:"username,omitempty"`
-	Password  string `json:"password,omitempty"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
-}
+// p2pSignalTokenResp 类型已单源至 mole/shared/proto（P2PSignalTokenResp，
+// 双端 json tag 逐字一致），包内别名见文件头部类型组。
 
 // handleP2PSignalToken 处理 C→S p2p_signal_token：校验连接已认证 + name 归属该校验连接
 // 的节点且类型为 p2p（纵深防御，token 本身只授 nat-exchange/*），签发并平铺 JSON 返回。
 // 不写 Para（凭据不能进配置，admin/持久化面不接触明文 secret）。
 func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCmd, state *connState, stream *smux.Stream) {
 	fail := func(msg string) {
-		_ = writeJSONLine(stream, p2pSignalTokenResp{Cmd: "p2p_signal_token", Error: msg})
+		_ = writeJSONLine(stream, p2pSignalTokenResp{Cmd: proto.CmdP2PSignalToken, Error: msg})
 	}
 	node := state.get()
 	if node == nil {
@@ -772,7 +733,7 @@ func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCm
 				return
 			}
 			if err := writeJSONLine(stream, p2pSignalTokenResp{
-				Cmd: "p2p_signal_token", OK: true,
+				Cmd: proto.CmdP2PSignalToken, OK: true,
 				Username: username, Password: password, ExpiresAt: expiresAt,
 			}); err != nil {
 				slog.Debug("write p2p_signal_token response failed", "error", err)
@@ -821,7 +782,7 @@ func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCm
 		return
 	}
 	if err := writeJSONLine(stream, p2pSignalTokenResp{
-		Cmd: "p2p_signal_token", OK: true,
+		Cmd: proto.CmdP2PSignalToken, OK: true,
 		Username: username, Password: password, ExpiresAt: expiresAt,
 	}); err != nil {
 		slog.Debug("write p2p_signal_token response failed", "error", err)
@@ -830,11 +791,11 @@ func (cs *ControlServer) handleP2PSignalToken(ctx context.Context, cmd ControlCm
 
 func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, state *connState, stream *smux.Stream) {
 	if cmd.NodeID == "" {
-		writeControlResp(stream, "err", "node_id is required")
+		writeControlResp(stream, proto.RespErr, "node_id is required")
 		return
 	}
 	if !isValidNodeID(cmd.NodeID) {
-		writeControlResp(stream, "err", "node_id must be exactly 8 alphanumeric characters starting with a letter")
+		writeControlResp(stream, proto.RespErr, "node_id must be exactly 8 alphanumeric characters starting with a letter")
 		return
 	}
 
@@ -844,14 +805,14 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 	if len(cmd.Tunnels) > core.MaxRegisterTunnels {
 		slog.Warn("Register rejected: tunnel list exceeds limit",
 			"nodeId", cmd.NodeID, "tunnels", len(cmd.Tunnels), "limit", core.MaxRegisterTunnels)
-		writeControlResp(stream, "err", fmt.Sprintf("tunnel list exceeds limit of %d", core.MaxRegisterTunnels))
+		writeControlResp(stream, proto.RespErr, fmt.Sprintf("tunnel list exceeds limit of %d", core.MaxRegisterTunnels))
 		return
 	}
 	if len(cmd.Tunnels) > 0 {
 		if err := core.ValidateTunnels(cmd.Tunnels); err != nil {
 			slog.Warn("Register rejected: invalid tunnel list",
 				"nodeId", cmd.NodeID, "tunnels", len(cmd.Tunnels), "error", err)
-			writeControlResp(stream, "err", err.Error())
+			writeControlResp(stream, proto.RespErr, err.Error())
 			return
 		}
 	}
@@ -868,7 +829,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 				persisted.OwnerUserID != grant.UserID && grant.UserID != "system" {
 				slog.Warn("Node register rejected: registered by another user",
 					"nodeId", cmd.NodeID, "grantUser", grant.UserID, "persistedOwner", persisted.OwnerUserID)
-				writeControlResp(stream, "err", "node registered by another user")
+				writeControlResp(stream, proto.RespErr, "node registered by another user")
 				return
 			}
 		}
@@ -887,7 +848,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		RemoteAddr:    state.remoteAddr,
 		ConnectedAt:   &now,
 		LastHeartbeat: &now,
-		SysInfo:       cmd.SysInfo.toCore(),
+		SysInfo:       sysInfoToCore(cmd.SysInfo),
 	}
 
 	// 从认证结果中读取归属信息
@@ -911,7 +872,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 			oldNode, oldOk := cs.nodeMgr.Get(ctx, cmd.NodeID)
 			if oldOk && cs.probeOldSession(ctx, cmd.NodeID, oldNode.Tunnels) {
 				slog.Info("Node already online, old session alive", "nodeId", cmd.NodeID)
-				writeControlResp(stream, "err", "node already online")
+				writeControlResp(stream, proto.RespErr, "node already online")
 				return
 			}
 			// 旧 session 假死，置换
@@ -927,12 +888,12 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 			if err2 := cs.nodeMgr.Add(ctx, node); err2 != nil {
 				// QUA-02：Add 失败属内部错误，对端回 generic，详情进日志
 				slog.Error("Register re-add after displacement failed", "nodeId", cmd.NodeID, "error", err2)
-				writeControlResp(stream, "err", "internal server error")
+				writeControlResp(stream, proto.RespErr, "internal server error")
 				return
 			}
 		} else {
 			slog.Error("Register node add failed", "nodeId", cmd.NodeID, "error", err)
-			writeControlResp(stream, "err", "internal server error")
+			writeControlResp(stream, proto.RespErr, "internal server error")
 			return
 		}
 	}
@@ -952,7 +913,7 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		cs.onNodeChange()
 	}
 
-	writeControlResp(stream, "ok", "registered")
+	writeControlResp(stream, proto.RespOK, "registered")
 
 	// 注册成功后，优先由统一服务处理持久化配置加载；未注入时走兼容路径。
 	if cs.tunnelSvc != nil {
@@ -1016,7 +977,7 @@ func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tun
 
 	// 发送 tunnel_push 作为探测（客户端会回复 {"cmd":"ok",...}）
 	stream.SetWriteDeadline(time.Now().Add(probeOldSessionTimeout))
-	cmd := ControlCmd{Cmd: "tunnel_push", Tunnels: tunnels}
+	cmd := ControlCmd{Cmd: proto.CmdTunnelPush, Tunnels: tunnels}
 	data, _ := json.Marshal(cmd)
 	if _, err := stream.Write(append(data, '\n')); err != nil {
 		return false
@@ -1030,7 +991,7 @@ func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tun
 	}
 
 	var resp ControlResponse
-	return json.Unmarshal(raw, &resp) == nil && resp.Cmd == "ok"
+	return json.Unmarshal(raw, &resp) == nil && resp.Cmd == proto.RespOK
 }
 
 // writeControlResp 向控制流写入 JSON 响应行
@@ -1103,7 +1064,7 @@ func (cs *ControlServer) sendToNode(ctx context.Context, nodeID string, cmd Cont
 // TriggerTunnelAction 向指定节点发送隧道操作命令（start/stop/restart）
 func (cs *ControlServer) TriggerTunnelAction(ctx context.Context, nodeID, name, action string) error {
 	cmd := ControlCmd{
-		Cmd:    "tunnel_action",
+		Cmd:    proto.CmdTunnelAction,
 		Name:   name,
 		Action: action,
 	}
@@ -1111,7 +1072,7 @@ func (cs *ControlServer) TriggerTunnelAction(ctx context.Context, nodeID, name, 
 	if err != nil {
 		return err
 	}
-	if resp.Cmd != "ok" {
+	if resp.Cmd != proto.RespOK {
 		return fmt.Errorf("action rejected: %s", resp.Msg)
 	}
 	return nil
@@ -1125,7 +1086,7 @@ func (cs *ControlServer) RestartNode(ctx context.Context, nodeID string, delay i
 		delay = 300
 	}
 	cmd := ControlCmd{
-		Cmd:    "restart",
+		Cmd:    proto.CmdRestart,
 		Delay:  delay,
 		Reason: reason,
 	}
@@ -1133,7 +1094,7 @@ func (cs *ControlServer) RestartNode(ctx context.Context, nodeID string, delay i
 	if err != nil {
 		return err
 	}
-	if resp.Cmd != "ok" {
+	if resp.Cmd != proto.RespOK {
 		return fmt.Errorf("restart rejected: %s", resp.Msg)
 	}
 	return nil
@@ -1142,7 +1103,7 @@ func (cs *ControlServer) RestartNode(ctx context.Context, nodeID string, delay i
 func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd, state *connState, stream *smux.Stream) {
 	node := state.get()
 	if node == nil {
-		writeControlResp(stream, "err", "node not registered")
+		writeControlResp(stream, proto.RespErr, "node not registered")
 		return
 	}
 
@@ -1153,7 +1114,7 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 	}); err != nil {
 		// QUA-02：内部错误脱敏，详情进日志
 		slog.Error("tunnel_update heartbeat failed", "nodeId", nodeID, "error", err)
-		writeControlResp(stream, "err", "internal server error")
+		writeControlResp(stream, proto.RespErr, "internal server error")
 		return
 	}
 
@@ -1165,7 +1126,7 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 			if internal {
 				slog.Error("tunnel_update sync failed", "nodeId", nodeID, "error", err)
 			}
-			writeControlResp(stream, "err", msg)
+			writeControlResp(stream, proto.RespErr, msg)
 			return
 		}
 	} else {
@@ -1180,7 +1141,7 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 		slog.Warn("tunnel_update received but TunnelConfigManager not configured; change only persisted from registration snapshot", "nodeId", nodeID)
 	}
 
-	writeControlResp(stream, "ok", "tunnels updated")
+	writeControlResp(stream, proto.RespOK, "tunnels updated")
 }
 
 // persistNode 持久化节点信息（主要是隧道配置）
@@ -1222,7 +1183,7 @@ func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tu
 	defer stream.Close()
 
 	cmd := ControlCmd{
-		Cmd:     "tunnel_push",
+		Cmd:     proto.CmdTunnelPush,
 		Tunnels: tunnels,
 	}
 	data, err := json.Marshal(cmd)
@@ -1245,7 +1206,7 @@ func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tu
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return fmt.Errorf("parse tunnel_push response: %w", err)
 	}
-	if resp.Cmd != "ok" {
+	if resp.Cmd != proto.RespOK {
 		return fmt.Errorf("tunnel_push rejected: %s", resp.Msg)
 	}
 

@@ -15,8 +15,11 @@ require (
 	golang.org/x/time v0.14.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
+	mole/shared v0.0.0
 	modernc.org/sqlite v1.48.1
 )
+
+replace mole/shared => ../shared
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

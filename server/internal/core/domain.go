@@ -3,6 +3,8 @@ package core
 import (
 	"encoding/json"
 	"time"
+
+	"mole/shared/proto"
 )
 
 // NodeStatus 节点在线状态
@@ -68,13 +70,20 @@ type ClientTunnelStatus struct {
 // TunnelType 隧道类型
 type TunnelType string
 
+// 隧道类型枚举单源至 mole/shared/proto（跨端一致的值），此处以既有名字
+// re-export 保持调用方零改动；原 tunnel_validate.go 中的裸字符串
+// （ser2mq/vpn-manager/ser2tcp/ser2udp）一并列为本包常量
 const (
-	TunnelTypeHTTP  TunnelType = "http"
-	TunnelTypeHTTPS TunnelType = "https"
-	TunnelTypeTCP   TunnelType = "tcp"
-	TunnelTypeUDP   TunnelType = "udp"
-	TunnelTypeWebSSH TunnelType = "webssh"
-	TunnelTypeP2P   TunnelType = "p2p"
+	TunnelTypeHTTP    TunnelType = proto.TunnelTypeHTTP
+	TunnelTypeHTTPS   TunnelType = proto.TunnelTypeHTTPS
+	TunnelTypeTCP     TunnelType = proto.TunnelTypeTCP
+	TunnelTypeUDP     TunnelType = proto.TunnelTypeUDP
+	TunnelTypeSer2MQ  TunnelType = proto.TunnelTypeSer2MQ
+	TunnelTypeVPNMgr  TunnelType = proto.TunnelTypeVPNMgr
+	TunnelTypeSer2TCP TunnelType = proto.TunnelTypeSer2TCP
+	TunnelTypeSer2UDP TunnelType = proto.TunnelTypeSer2UDP
+	TunnelTypeWebSSH  TunnelType = proto.TunnelTypeWebSSH
+	TunnelTypeP2P     TunnelType = proto.TunnelTypeP2P
 )
 
 // Tunnel 隧道配置

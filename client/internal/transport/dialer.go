@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/xtaci/smux"
+
+	"mole/shared/proto"
 )
 
 // 连接和协议常量
@@ -33,9 +35,9 @@ const (
 	SmuxMaxStreamBuffer   = 4 * 1024 * 1024  // 4MB per-stream window for smooth RDP
 
 	// maxAuthRespBytes 认证应答行的长度上限，与服务端 readBoundedLine 的
-	// maxAuthLineBytes（64KB）对等。合法应答 {"cmd":"ok","msg":"..."}
-	// 仅几十字节，64KB 余量充足零误伤
-	maxAuthRespBytes = 64 << 10
+	// maxAuthLineBytes（64KB）对等（值单源至 mole/shared/proto）。
+	// 合法应答 {"cmd":"ok","msg":"..."} 仅几十字节，64KB 余量充足零误伤
+	maxAuthRespBytes = proto.MaxAuthLineBytes
 )
 
 // errAuthRespTooLarge 认证应答行超过长度上限（协议违规）
@@ -245,8 +247,8 @@ func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 	mac.Write(challenge)
 	proof := hex.EncodeToString(mac.Sum(nil))
 
-	// 发送认证消息
-	authMsg, err := json.Marshal(map[string]string{"proof": proof})
+	// 发送认证消息（key 单源至 mole/shared/proto）
+	authMsg, err := json.Marshal(map[string]string{proto.AuthKeyProof: proof})
 	if err != nil {
 		return nil, fmt.Errorf("marshal auth: %w", err)
 	}
@@ -272,7 +274,7 @@ func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 	if err := json.Unmarshal(bytes.TrimSpace(authResp), &result); err != nil {
 		return nil, fmt.Errorf("parse auth response: %w", err)
 	}
-	if result.Cmd != "ok" {
+	if result.Cmd != proto.RespOK {
 		return nil, fmt.Errorf("auth failed: %s", result.Msg)
 	}
 

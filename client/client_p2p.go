@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"mole/shared/proto"
 	"moleAgent_client/internal/protocol"
 	"moleAgent_client/internal/proxy/p2p"
 )
@@ -147,7 +148,7 @@ func (c *Client) requestP2PSignalToken(ctx context.Context, name string) (userna
 	}
 	defer stream.Close()
 
-	if err := writeCmd(stream, protocol.ControlCmd{Cmd: "p2p_signal_token", NodeID: c.cfg.NodeID, Name: name}); err != nil {
+	if err := writeCmd(stream, protocol.ControlCmd{Cmd: proto.CmdP2PSignalToken, NodeID: c.cfg.NodeID, Name: name}); err != nil {
 		return "", "", 0, fmt.Errorf("send p2p_signal_token: %w", err)
 	}
 	// 平铺响应走 readControlMsg 裸读，deadline 在读前设置（对齐 readResponse 惯例）
@@ -159,14 +160,9 @@ func (c *Client) requestP2PSignalToken(ctx context.Context, name string) (userna
 	if err != nil {
 		return "", "", 0, fmt.Errorf("read p2p_signal_token response: %w", err)
 	}
-	var resp struct {
-		Cmd       string `json:"cmd"`
-		OK        bool   `json:"ok"`
-		Error     string `json:"error,omitempty"`
-		Username  string `json:"username,omitempty"`
-		Password  string `json:"password,omitempty"`
-		ExpiresAt int64  `json:"expires_at,omitempty"`
-	}
+	// 响应结构已单源至 mole/shared/proto（P2PSignalTokenResp，与 server 端
+	// p2pSignalTokenResp 同一类型，json tag 逐字一致）
+	var resp proto.P2PSignalTokenResp
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return "", "", 0, fmt.Errorf("unmarshal p2p_signal_token response: %w", err)
 	}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/xtaci/smux"
 
+	"mole/shared/proto"
 	"moleAgent_client/internal/protocol"
 	"moleAgent_client/internal/proxy"
 	"moleAgent_client/internal/proxy/ser2mq"
@@ -566,7 +567,7 @@ func (c *Client) register(ctx context.Context) error {
 	defer stream.Close()
 
 	cmd := protocol.ControlCmd{
-		Cmd:     "register",
+		Cmd:     proto.CmdRegister,
 		NodeID:  c.cfg.NodeID,
 		Name:    c.cfg.NodeName,
 		Tunnels: tunnels,
@@ -582,7 +583,7 @@ func (c *Client) register(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read register response: %w", err)
 	}
-	if resp.Cmd != "ok" {
+	if resp.Cmd != proto.RespOK {
 		return fmt.Errorf("register failed: %s", resp.Msg)
 	}
 
@@ -608,7 +609,7 @@ func (c *Client) sendTunnelUpdate(tunnels []Tunnel) error {
 	defer stream.Close()
 
 	cmd := protocol.ControlCmd{
-		Cmd:     "tunnel_update",
+		Cmd:     proto.CmdTunnelUpdate,
 		NodeID:  c.cfg.NodeID,
 		Tunnels: toProtocols(tunnels),
 	}
@@ -620,7 +621,7 @@ func (c *Client) sendTunnelUpdate(tunnels []Tunnel) error {
 	if err != nil {
 		return fmt.Errorf("read tunnel_update response: %w", err)
 	}
-	if resp.Cmd != "ok" {
+	if resp.Cmd != proto.RespOK {
 		return fmt.Errorf("tunnel_update failed: %s", resp.Msg)
 	}
 
@@ -680,7 +681,7 @@ func (c *Client) sendPing() error {
 	}
 	defer stream.Close()
 
-	cmd := protocol.ControlCmd{Cmd: "ping", Ts: time.Now().UnixMilli()}
+	cmd := protocol.ControlCmd{Cmd: proto.CmdPing, Ts: time.Now().UnixMilli()}
 	if err := writeCmd(stream, cmd); err != nil {
 		return fmt.Errorf("send ping: %w", err)
 	}
@@ -689,7 +690,7 @@ func (c *Client) sendPing() error {
 	if err != nil {
 		return fmt.Errorf("read pong: %w", err)
 	}
-	if resp.Cmd != "pong" {
+	if resp.Cmd != proto.RespPong {
 		return fmt.Errorf("unexpected pong response: %s", resp.Cmd)
 	}
 	if resp.Ts > 0 {
@@ -733,7 +734,7 @@ func (c *Client) sendSysInfo() {
 	defer stream.Close()
 
 	cmd := protocol.ControlCmd{
-		Cmd:     "sysinfo",
+		Cmd:     proto.CmdSysInfo,
 		NodeID:  c.cfg.NodeID,
 		SysInfo: collectSysInfo(),
 	}
@@ -844,7 +845,7 @@ func (c *Client) sendTunnelStatus() {
 	defer stream.Close()
 
 	cmd := protocol.ControlCmd{
-		Cmd:      "tunnel_status",
+		Cmd:      proto.CmdTunnelStatus,
 		NodeID:   c.cfg.NodeID,
 		Statuses: statuses,
 	}
@@ -917,7 +918,7 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	}
 
 	// 检查 TCP/UDP 代理协议头：\x00<tunnel-name>\n
-	if peek[0] == 0x00 {
+	if peek[0] == proto.PrefixTCPUDP {
 		line, err := readBoundedCmdLine(br, maxCmdLineBytes)
 		if errors.Is(err, errCmdLineTooLarge) {
 			// 隧道名以 \n 定界且远短于上限——超限即协议违规，断开本流
@@ -943,7 +944,7 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 
 	// 检查 WebSSH 代理协议头：<tunnel-name>
 
-	if peek[0] == 0x01 {
+	if peek[0] == proto.PrefixWebSSH {
 		line, err := readBoundedCmdLine(br, maxCmdLineBytes)
 		if errors.Is(err, errCmdLineTooLarge) {
 			// 同 \x00 头：WebSSH 隧道名远短于上限，超限即协议违规，断开本流
@@ -1046,7 +1047,7 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) (handled
 	}
 
 	switch cmd.Cmd {
-	case "tunnel_push":
+	case proto.CmdTunnelPush:
 		tunnels := fromProtocols(cmd.Tunnels)
 		// 服务端推送路径不改变配置，仅记录校验不通过的项。
 		// 服务端侧 validateTunnels 已在 pushToClient 前把关，此处是纵深防御：
@@ -1064,17 +1065,17 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) (handled
 		log.Printf("Received tunnel_push from server: %d tunnel(s)", len(tunnels))
 		c.events.Emit(Event{Type: EventTunnelUpdated, Data: map[string]any{"tunnels": len(tunnels)}})
 
-		writeResp(stream, "ok", "tunnels updated")
+		writeResp(stream, proto.RespOK, "tunnels updated")
 
 		// 配置变更后上报最新隧道状态
 		go c.sendTunnelStatus()
 		return true, false
 
-	case "tunnel_action":
+	case proto.CmdTunnelAction:
 		c.handleTunnelAction(stream, cmd.Name, cmd.Action)
 		return true, false
 
-	case "restart":
+	case proto.CmdRestart:
 		c.handleRestart(stream, cmd.Delay, cmd.Reason)
 		return true, false
 
@@ -1100,7 +1101,7 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 	c.mu.RUnlock()
 
 	if !found {
-		writeResp(stream, "err", "tunnel not found: "+name)
+		writeResp(stream, proto.RespErr, "tunnel not found: "+name)
 		return
 	}
 
@@ -1181,10 +1182,10 @@ func (c *Client) handleTunnelAction(stream *smux.Stream, name, action string) {
 	}
 
 	if err != nil {
-		writeResp(stream, "err", err.Error())
+		writeResp(stream, proto.RespErr, err.Error())
 	} else {
 		log.Printf("Tunnel action: %s %s (type=%s)", action, name, tunnelType)
-		writeResp(stream, "ok", action+" done")
+		writeResp(stream, proto.RespOK, action+" done")
 	}
 }
 
@@ -1199,7 +1200,7 @@ const maxRestartDelay = 300
 func (c *Client) handleRestart(stream *smux.Stream, delay int, reason string) {
 	// CAS 防重复：同一连接多次 restart 只生效一次
 	if !c.restartRequested.CompareAndSwap(false, true) {
-		writeResp(stream, "err", "restart already in progress")
+		writeResp(stream, proto.RespErr, "restart already in progress")
 		return
 	}
 
@@ -1211,7 +1212,7 @@ func (c *Client) handleRestart(stream *smux.Stream, delay int, reason string) {
 		delay = maxRestartDelay
 	}
 
-	writeResp(stream, "ok", fmt.Sprintf("restarting in %ds", delay))
+	writeResp(stream, proto.RespOK, fmt.Sprintf("restarting in %ds", delay))
 
 	log.Printf("Server requested restart (delay=%ds, reason=%s)", delay, reason)
 
@@ -1276,8 +1277,8 @@ func (c *Client) sleep(ctx context.Context, d time.Duration) {
 
 // ===== 协议工具函数 =====
 
-// maxControlMsgSize 单条控制消息的大小上限
-const maxControlMsgSize = 1 << 20 // 1MB
+// maxControlMsgSize 单条控制消息的大小上限（值单源至 mole/shared/proto）
+const maxControlMsgSize = proto.MaxControlMsgSize // 1MB
 
 // maxCmdLineBytes 服务端控制命令行（tunnel_push 等 JSON 行）的长度上限。
 // 与 readControlMsg 的 maxControlMsgSize 同量级：合法控制命令远小于此值；
@@ -1376,7 +1377,7 @@ func logReadResponse(kind string, resp *protocol.ControlResponse, err error) {
 		log.Printf("%s response read failed: %v", kind, err)
 		return
 	}
-	if resp != nil && resp.Cmd != "ok" {
+	if resp != nil && resp.Cmd != proto.RespOK {
 		log.Printf("%s rejected by server: %s", kind, resp.Msg)
 	}
 }

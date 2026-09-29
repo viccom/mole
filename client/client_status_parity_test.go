@@ -184,12 +184,12 @@ func TestTunnelPushHandlerCallsWarning(t *testing.T) {
 		t.Fatalf("read client.go: %v", err)
 	}
 	text := string(src)
-	idx := strings.Index(text, `case "tunnel_push":`)
+	idx := strings.Index(text, "case proto.CmdTunnelPush:")
 	if idx < 0 {
 		t.Fatal("tunnel_push branch not found")
 	}
 	rest := text[idx:]
-	if next := strings.Index(rest, `case "tunnel_action":`); next > 0 {
+	if next := strings.Index(rest, "case proto.CmdTunnelAction:"); next > 0 {
 		rest = rest[:next]
 	}
 	if !strings.Contains(rest, "warnInvalidPushedTunnels(tunnels)") {
