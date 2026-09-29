@@ -1,4 +1,12 @@
 # moleAgent_Serv 配置示例
+#
+# 节点接入 token（必配）：通过 -nodetoken 启动参数或 MA_NODE_TOKEN 环境变量设置；
+# 两者均未设置时服务拒绝启动（不再回落公开默认值，SEC-05）。推荐使用用户级
+# 接入 Token，全局 nodetoken 仅作兼容过渡保留。
+#
+# 管理员口令：MA_ADMIN_PASS 环境变量未设置时，首次种子/默认口令轮换会生成
+# 随机强口令并打印到 stderr 一次（SEC-05）；请用该口令登录后立即改密，
+# 或预先设置 MA_ADMIN_PASS 固定自己的口令。
 
 server:
   control_port: ":9981"    # Node 连接端口（TCP）
@@ -36,6 +44,10 @@ auth:
   jwt_secret: ""           # 必须配置，空则启动失败。也可通过 MA_JWT_SECRET 环境变量设置
   jwt_expiry: "24h"
   bcrypt_cost: 12
+
+node_auth:
+  register_owner_check: true   # register 时校验 node_id 归属：认证用户与节点持久化归属者不同则拒绝（SEC-02）。故障时可临时置 false（kill-switch）
+  legacy_format_enabled: true  # 是否接受旧版明文 token 认证格式（SEC-01 兼容期）。全部客户端升级到 proof 格式后置 false 收口，重启生效
 
 database:
   path: "data/config.db"

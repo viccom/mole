@@ -18,9 +18,9 @@ import (
 
 // EmbeddedBroker embedded MQTT Broker
 type EmbeddedBroker struct {
-	server    *mqtt.Server
-	tcpAddr   string
-	wsAddr    string
+	server     *mqtt.Server
+	tcpAddr    string
+	wsAddr     string
 	authSvc    *auth.AuthService
 	rbac       *auth.RBACEngine
 	p2pTokens  auth.P2PSignalTokenVerifier
@@ -182,8 +182,8 @@ const (
 )
 
 type authFailEntry struct {
-	count    int
-	firstAt  time.Time
+	count        int
+	firstAt      time.Time
 	blockedUntil time.Time
 }
 
@@ -307,6 +307,69 @@ func nodeTopicID(topic string) (string, bool) {
 	return rest, true
 }
 
+// CheckTopicACL 与 aclHook 同规则的 topic 归属判定（SEC-09）：
+// Publish API 等服务端路径走 broker inline client，不经 aclHook，
+// 发布前必须用本方法显式校验调用者身份。write=true 对应发布语义。
+// 身份对齐 aclHook 语义：admin（*/*）放行任意 topic；其余身份（含
+// access_key——aclHook 无此概念，按无 RBAC 记录处理）须通过节点归属
+// 与 mqtt 权限检查
+func (b *EmbeddedBroker) CheckTopicACL(userID, topic string, write bool) bool {
+	if userID == "" {
+		return false
+	}
+	return checkTopicACL(b.rbac, b.topicAuthz, userID, topic, write, "publish-api")
+}
+
+// checkTopicACL aclHook 与 Publish API 共用的 topic 判定核心：
+// rbac==nil 兜底 → admin 放行 → 通配符拒绝 → /mole/<nodeId>/ 归属仲裁 →
+// mqtt 读/写权限。source 用于日志定位调用方（MQTT clientId 或 API 标识）
+func checkTopicACL(rbac *auth.RBACEngine, nodeAuthz func(userID, nodeID string) bool, userID, topic string, write bool, source string) bool {
+	// Map MQTT operation to RBAC permission
+	action := "read" // subscribe = read
+	if write {
+		action = "write" // publish = write
+	}
+
+	// QUA-09：rbac 未注入时 fail-closed——nil 兜底放行会把无 RBAC 的部署
+	// 变成全量放行。生产 main 必接 rbac，nil 仅测试场景；需要放行的旧
+	// 测试应显式注入 rbac fake 而非依赖此分支
+	if rbac == nil {
+		slog.Warn("MQTT ACL denied: RBAC engine not configured (fail-closed)", "source", source, "userID", userID, "topic", topic)
+		return false
+	}
+
+	// 管理员（*/* 权限）不受 topic 级约束
+	if admin, err := rbac.CheckPermission(userID, "*", "*"); err == nil && admin {
+		return true
+	}
+
+	// 通配符拒绝：#/+ 全域订阅可跨租户窃听所有节点的串口流量与 p2p 信令
+	// （p2p 哨兵分支早有同样防御，普通用户分支此前完全未设防）
+	if strings.ContainsAny(topic, "+#") {
+		slog.Warn("MQTT ACL denied (wildcard)", "source", source, "userID", userID, "topic", topic)
+		return false
+	}
+
+	// 节点归属：/mole/<nodeId>/... 只允许节点归属者（或未注入仲裁器时维持旧行为）
+	if nodeID, ok := nodeTopicID(topic); ok && nodeAuthz != nil {
+		if !nodeAuthz(userID, nodeID) {
+			slog.Warn("MQTT ACL denied (node ownership)", "source", source, "userID", userID, "topic", topic)
+			return false
+		}
+	}
+
+	allowed, err := rbac.CheckPermission(userID, "mqtt", action)
+	if err != nil {
+		slog.Warn("MQTT ACL check error", "userID", userID, "error", err)
+		return false
+	}
+
+	if !allowed {
+		slog.Warn("MQTT ACL denied", "source", source, "userID", userID, "topic", topic, "action", action)
+	}
+	return allowed
+}
+
 func (h *aclHook) ID() string {
 	return "acl-hook"
 }
@@ -321,8 +384,9 @@ func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 		return false
 	}
 
-	// P2P 信令哨兵分支：必须置于 rbac == nil 兜底放行之前，否则 RBAC 未配置时
-	// P2P 客户端可订阅任意 topic。仅放行 nat-exchange/ 精确前缀（read/write），
+	// P2P 信令哨兵分支：必须置于 rbac == nil fail-closed 兜底之前——p2p
+	// 信令路由不依赖 RBAC，nil 场景（测试直构 hook）下也要照常工作。
+	// 仅放行 nat-exchange/ 精确前缀（read/write），
 	// 通配符（+/#）一律拒绝——防 nat-exchange/# 全域订阅窃取其他配对信令。
 	if auth.IsP2PSignalUsername(userID) {
 		if strings.ContainsAny(topic, "+#") {
@@ -336,46 +400,7 @@ func (h *aclHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 		return allowed
 	}
 
-	// Map MQTT operation to RBAC permission
-	action := "read" // subscribe = read
-	if write {
-		action = "write" // publish = write
-	}
-
-	if h.rbac == nil {
-		return true // fallback: allow if no RBAC engine
-	}
-
-	// 管理员（*/* 权限）不受 topic 级约束
-	if admin, err := h.rbac.CheckPermission(userID, "*", "*"); err == nil && admin {
-		return true
-	}
-
-	// 通配符拒绝：#/+ 全域订阅可跨租户窃听所有节点的串口流量与 p2p 信令
-	// （p2p 哨兵分支早有同样防御，普通用户分支此前完全未设防）
-	if strings.ContainsAny(topic, "+#") {
-		slog.Warn("MQTT ACL denied (wildcard)", "clientId", cl.ID, "userID", userID, "topic", topic)
-		return false
-	}
-
-	// 节点归属：/mole/<nodeId>/... 只允许节点归属者（或未注入仲裁器时维持旧行为）
-	if nodeID, ok := nodeTopicID(topic); ok && h.nodeAuthz != nil {
-		if !h.nodeAuthz(userID, nodeID) {
-			slog.Warn("MQTT ACL denied (node ownership)", "clientId", cl.ID, "userID", userID, "topic", topic)
-			return false
-		}
-	}
-
-	allowed, err := h.rbac.CheckPermission(userID, "mqtt", action)
-	if err != nil {
-		slog.Warn("MQTT ACL check error", "userID", userID, "error", err)
-		return false
-	}
-
-	if !allowed {
-		slog.Warn("MQTT ACL denied", "clientId", cl.ID, "userID", userID, "topic", topic, "action", action)
-	}
-	return allowed
+	return checkTopicACL(h.rbac, h.nodeAuthz, userID, topic, write, cl.ID)
 }
 
 // GetSubscriptionsInfo returns subscription info for all connected clients

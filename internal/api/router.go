@@ -38,6 +38,13 @@ func (r *Router) Register(method, pattern string, handler http.HandlerFunc, reso
 	r.routes = append(r.routes, routeEntry{method: method, prefix: pattern, handler: h})
 }
 
+// RegisterStrict 注册拒绝 AccessKey 旁路的权限路由（SEC-06）：用于高危操作
+// （删用户/AccessKey 管理/自更新），这些不允许以共享密钥身份执行
+func (r *Router) RegisterStrict(method, pattern string, handler http.HandlerFunc, resource, action string) {
+	h := r.mw.RequirePermissionNoAccessKey(resource, action)(handler)
+	r.routes = append(r.routes, routeEntry{method: method, prefix: pattern, handler: h})
+}
+
 func (r *Router) RegisterPublic(method, pattern string, handler http.HandlerFunc) {
 	r.routes = append(r.routes, routeEntry{method: method, prefix: pattern, handler: handler})
 }
@@ -63,7 +70,14 @@ func (r *Router) Build() http.Handler {
 			e := &r.routes[i]
 
 			if req.URL.Path == e.prefix {
-				if req.Method == e.method || req.Method == "OPTIONS" {
+				// QUA-12：OPTIONS 预检命中路由直接 204 + CORS 头，不调用
+				// 真实 handler——预检不携带凭据，走认证会 401，走放行路由
+				// 则会产生副作用
+				if req.Method == http.MethodOptions {
+					handlePreflight(w, req)
+					return
+				}
+				if req.Method == e.method {
 					e.handler.ServeHTTP(w, req)
 					return
 				}
@@ -71,7 +85,7 @@ func (r *Router) Build() http.Handler {
 			}
 
 			if strings.HasPrefix(req.URL.Path, e.prefix) && len(e.prefix) > bestMatchLen {
-				if req.Method == e.method || req.Method == "OPTIONS" {
+				if req.Method == e.method || req.Method == http.MethodOptions {
 					bestMatch = e
 					bestMatchLen = len(e.prefix)
 				}
@@ -79,6 +93,10 @@ func (r *Router) Build() http.Handler {
 		}
 
 		if bestMatch != nil {
+			if req.Method == http.MethodOptions {
+				handlePreflight(w, req)
+				return
+			}
 			bestMatch.handler.ServeHTTP(w, req)
 			return
 		}
@@ -102,6 +120,19 @@ func (r *Router) Build() http.Handler {
 		})
 	}
 	return core
+}
+
+// handlePreflight 统一应答 OPTIONS 预检（QUA-12）：仅回 CORS 头 + 204，
+// 不经过认证中间件、不触发真实 handler。服务端无既有 CORS 中间件
+// （管理台同源部署），此处为预检的最小实现
+func handlePreflight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+	if hdrs := r.Header.Get("Access-Control-Request-Headers"); hdrs != "" {
+		w.Header().Set("Access-Control-Allow-Headers", hdrs)
+	}
+	w.Header().Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

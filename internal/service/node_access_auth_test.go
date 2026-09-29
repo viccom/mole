@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -60,6 +62,14 @@ func (m *mockAccessTokenRepo) ListByUser(userID string) ([]*core.AccessToken, er
 		if t.UserID == userID {
 			result = append(result, t)
 		}
+	}
+	return result, nil
+}
+
+func (m *mockAccessTokenRepo) ListAll() ([]*core.AccessToken, error) {
+	var result []*core.AccessToken
+	for _, t := range m.tokens {
+		result = append(result, t)
 	}
 	return result, nil
 }
@@ -321,4 +331,170 @@ func TestGenerateAccessTokenRaw_HashConsistency(t *testing.T) {
 // isHexRune reports whether r is a lowercase hex digit.
 func isHexRune(r rune) bool {
 	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+}
+
+// ---------------------------------------------------------------------------
+// AuthenticateNodeProof（SEC-01 proof 认证）
+// ---------------------------------------------------------------------------
+
+// clientProofHex 按客户端公式计算 proof：h=sha256(token); proof=hex(HMAC(h[:], challenge))
+func clientProofHex(t *testing.T, rawToken string, challenge []byte) string {
+	t.Helper()
+	h := sha256.Sum256([]byte(rawToken))
+	mac := hmac.New(sha256.New, h[:])
+	mac.Write(challenge)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// proof 往返：按客户端公式算出的 proof 必须通过认证并返回正确 grant + TouchLastUsed
+func TestAuthenticateNodeProof_RoundTrip(t *testing.T) {
+	repo := newMockRepo()
+	raw := "mat_proofroundtrip0123456789abcdef"
+	repo.Create(makeActiveToken("tok-proof-1", "user-proof", raw))
+
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+	challenge := make([]byte, 32)
+	for i := range challenge {
+		challenge[i] = byte(i)
+	}
+
+	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw, challenge), challenge)
+	if err != nil {
+		t.Fatalf("expected proof to authenticate, got %v", err)
+	}
+	if grant.UserID != "user-proof" || grant.AccessTokenID != "tok-proof-1" {
+		t.Errorf("grant mismatch: %+v", grant)
+	}
+	if grant.LegacyGlobal {
+		t.Error("LegacyGlobal should be false for access token proof")
+	}
+	if len(repo.updates) != 1 || repo.updates[0].LastUsedAt == nil {
+		t.Errorf("TouchLastUsed must fire exactly once, updates=%d", len(repo.updates))
+	}
+}
+
+// 多候选命中第二个：遍历顺序无关，命中的 token 决定 grant
+func TestAuthenticateNodeProof_MultipleCandidates(t *testing.T) {
+	repo := newMockRepo()
+	repo.Create(makeActiveToken("tok-m1", "user-m1", "mat_multicandidate_first00"))
+	raw2 := "mat_multicandidate_second0"
+	repo.Create(makeActiveToken("tok-m2", "user-m2", raw2))
+
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+	challenge := []byte("0123456789abcdef0123456789abcdef")
+
+	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw2, challenge), challenge)
+	if err != nil {
+		t.Fatalf("expected authentication via second candidate, got %v", err)
+	}
+	if grant.UserID != "user-m2" || grant.AccessTokenID != "tok-m2" {
+		t.Errorf("grant mismatch: %+v", grant)
+	}
+}
+
+// challenge 改一字节：proof 失效
+func TestAuthenticateNodeProof_WrongChallenge(t *testing.T) {
+	repo := newMockRepo()
+	raw := "mat_wrongchallenge00000000000000"
+	repo.Create(makeActiveToken("tok-wc", "user-wc", raw))
+
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+	challenge := make([]byte, 32)
+	rand.Read(challenge) //nolint:errcheck // 测试随机源失败无处理意义
+	tampered := append([]byte(nil), challenge...)
+	tampered[7] ^= 0x01
+
+	proof := clientProofHex(t, raw, challenge)
+	grant, err := svc.AuthenticateNodeProof(context.Background(), proof, tampered)
+	if err == nil {
+		t.Fatal("proof bound to a different challenge must fail")
+	}
+	if grant != nil {
+		t.Error("grant should be nil on failure")
+	}
+	if !strings.Contains(err.Error(), "invalid token") {
+		t.Errorf("error must follow the legacy wording, got %q", err.Error())
+	}
+}
+
+// 错误 proof（值不对 / 非法 hex / 长度不符）一律失败且不区分原因
+func TestAuthenticateNodeProof_BadProofValues(t *testing.T) {
+	repo := newMockRepo()
+	raw := "mat_badproof0000000000000000000"
+	repo.Create(makeActiveToken("tok-bp", "user-bp", raw))
+	legacyRaw := "legacy-global-secret"
+	svc := NewAccessTokenAuthService(repo, legacyRaw).(*accessTokenAuthService)
+	challenge := []byte("fedcba9876543210fedcba9876543210")
+
+	cases := []struct {
+		name     string
+		proofHex string
+	}{
+		{"值错误的合法 hex", hex.EncodeToString(make([]byte, 32))},
+		{"非 hex 字符", "zz-not-hex-at-all"},
+		{"长度不符（31 字节）", hex.EncodeToString(make([]byte, 31))},
+		{"空字符串", ""},
+	}
+	for _, tc := range cases {
+		grant, err := svc.AuthenticateNodeProof(context.Background(), tc.proofHex, challenge)
+		if err == nil || grant != nil {
+			t.Errorf("%s: must fail, got grant=%+v err=%v", tc.name, grant, err)
+		}
+	}
+}
+
+// 禁用 token 的 proof 不参与候选
+func TestAuthenticateNodeProof_DisabledTokenSkipped(t *testing.T) {
+	repo := newMockRepo()
+	raw := "mat_disabledproof0000000000000"
+	tok := makeActiveToken("tok-dis", "user-dis", raw)
+	tok.Status = core.AccessTokenDisabled
+	repo.Create(tok)
+
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+	challenge := []byte("aabbccddeeff00112233445566778899")
+
+	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw, challenge), challenge)
+	if err == nil {
+		t.Fatalf("disabled token proof must fail, got grant %+v", grant)
+	}
+	if len(repo.updates) != 0 {
+		t.Errorf("TouchLastUsed must not fire for disabled token, updates=%d", len(repo.updates))
+	}
+}
+
+// legacy 全局 token 的 proof：返回 LegacyGlobal grant
+func TestAuthenticateNodeProof_LegacyGlobal(t *testing.T) {
+	repo := newMockRepo()
+	repo.Create(makeActiveToken("tok-lg", "user-lg", "mat_legacycoexist0000000000"))
+	legacyRaw := "the-legacy-global-token"
+
+	svc := NewAccessTokenAuthService(repo, legacyRaw).(*accessTokenAuthService)
+	challenge := make([]byte, 32)
+	rand.Read(challenge) //nolint:errcheck
+
+	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, legacyRaw, challenge), challenge)
+	if err != nil {
+		t.Fatalf("legacy proof must authenticate, got %v", err)
+	}
+	if grant.UserID != "system" || grant.AccessTokenID != "" || !grant.LegacyGlobal {
+		t.Errorf("legacy grant mismatch: %+v", grant)
+	}
+	if len(repo.updates) != 0 {
+		t.Errorf("legacy proof must not TouchLastUsed on access tokens, updates=%d", len(repo.updates))
+	}
+}
+
+// 无任何候选命中（空库无 legacy）→ 与旧路径同文案错误
+func TestAuthenticateNodeProof_NoCandidates(t *testing.T) {
+	repo := newMockRepo()
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+
+	grant, err := svc.AuthenticateNodeProof(context.Background(), hex.EncodeToString(make([]byte, 32)), []byte("challenge-bytes-32..............."))
+	if err == nil || grant != nil {
+		t.Fatalf("must fail with no candidates, got grant=%+v err=%v", grant, err)
+	}
+	if !strings.Contains(err.Error(), "invalid token") {
+		t.Errorf("error must follow the legacy wording, got %q", err.Error())
+	}
 }

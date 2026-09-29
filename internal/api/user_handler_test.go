@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nalgeon/redka"
+	_ "modernc.org/sqlite"
+
+	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
 )
@@ -85,6 +89,254 @@ func (m *mockUserRepo) GetPasswordHash(id string) (string, error) {
 		return "", core.ErrNotFound
 	}
 	return h, nil
+}
+
+// mapRoleRepo 按 ID 返回预置角色（权限检查测试用）
+type mapRoleRepo struct {
+	roles map[string]*core.Role
+}
+
+func (r *mapRoleRepo) Create(role *core.Role) error {
+	c := *role
+	r.roles[role.ID] = &c
+	return nil
+}
+func (r *mapRoleRepo) GetByID(id string) (*core.Role, error) {
+	role, ok := r.roles[id]
+	if !ok {
+		return nil, core.ErrRoleNotFound
+	}
+	c := *role
+	return &c, nil
+}
+func (r *mapRoleRepo) GetAll() ([]*core.Role, error) { return nil, nil }
+func (r *mapRoleRepo) Update(role *core.Role) error  { return nil }
+func (r *mapRoleRepo) Delete(id string) error        { return nil }
+
+// newResetPasswordRBAC 构造带 writer（仅 users:write）与 useradmin（users:admin）
+// 两类用户的真实 RBAC 引擎（SEC-08 权限检查测试）
+func newResetPasswordRBAC(t *testing.T) *auth.RBACEngine {
+	t.Helper()
+	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
+	if err != nil {
+		t.Fatalf("failed to open in-memory redka: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	roleRepo := &mapRoleRepo{roles: map[string]*core.Role{
+		"writer":    {ID: "writer", Name: "writer", Permissions: []core.Permission{{Resource: "users", Action: "write"}}},
+		"useradmin": {ID: "useradmin", Name: "useradmin", Permissions: []core.Permission{{Resource: "users", Action: "admin"}}},
+	}}
+	rbac := auth.NewRBACEngine(db, roleRepo)
+	if err := rbac.AssignRole("writer", "writer"); err != nil {
+		t.Fatalf("AssignRole writer failed: %v", err)
+	}
+	if err := rbac.AssignRole("useradmin", "useradmin"); err != nil {
+		t.Fatalf("AssignRole useradmin failed: %v", err)
+	}
+	return rbac
+}
+
+// SEC-08：重置密码必须持 users:admin，仅 users:write 的操作者不得改他人密码
+func TestUserHandler_ResetPassword_RequiresUsersAdmin(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "victim", Username: "victim", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "old-hash")
+	handler := NewUserHandler(userRepo, newResetPasswordRBAC(t), 10, nil, nil, nil)
+
+	body := []byte(`{"password":"NewStrongPass123"}`)
+
+	// 仅 users:write 的操作者 → 403
+	req := reqWithClaims(http.MethodPut, "/api/v1/users/victim/password", body,
+		&core.Claims{UserID: "writer", Roles: []string{"writer"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for users:write operator, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if userRepo.passwords["victim"] != "old-hash" {
+		t.Fatal("password must not be changed without users:admin")
+	}
+
+	// 持 users:admin → 200 且密码被重置
+	req = reqWithClaims(http.MethodPut, "/api/v1/users/victim/password", body,
+		&core.Claims{UserID: "useradmin", Roles: []string{"useradmin"}})
+	w = httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for users:admin operator, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if userRepo.passwords["victim"] == "old-hash" || userRepo.passwords["victim"] == "" {
+		t.Fatalf("password should be reset, got %q", userRepo.passwords["victim"])
+	}
+}
+
+// 无 claims（防御分支）→ 403
+func TestUserHandler_ResetPassword_NoClaims_Forbidden(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "victim", Username: "victim", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "old-hash")
+	handler := NewUserHandler(userRepo, newResetPasswordRBAC(t), 10, nil, nil, nil)
+
+	req := reqWithClaims(http.MethodPut, "/api/v1/users/victim/password",
+		[]byte(`{"password":"NewStrongPass123"}`), nil)
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without claims, got %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 路由级：未认证请求在中间件处被 401 挡下，到不了 handler
+func TestUserHandler_ResetPassword_Unauthenticated_401(t *testing.T) {
+	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
+	if err != nil {
+		t.Fatalf("failed to open in-memory redka: %v", err)
+	}
+	defer db.Close()
+	mw := auth.NewAuthMiddleware(auth.NewJWTManager("test-secret", time.Hour), auth.NewRBACEngine(db, &stubRoleRepo{}), func() string { return "" })
+
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "victim", Username: "victim", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "old-hash")
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
+
+	router := NewRouter(mw, nil)
+	router.Register("PUT", "/api/v1/users/", handler.Update, "users", "write")
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/victim/password", nil)
+	w := httptest.NewRecorder()
+	router.Build().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated request, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if userRepo.passwords["victim"] != "old-hash" {
+		t.Fatal("password must not be changed when unauthenticated")
+	}
+}
+
+// QUA-07：状态子路径仅接受 core 定义的合法 UserStatus 常量
+func TestUserHandler_SetStatus_RejectsUnknownStatus(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "userA", Username: "alice", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "hash")
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
+
+	// 非法状态 → 400，且不落库
+	req := reqWithClaims(http.MethodPut, "/api/v1/users/userA/status",
+		[]byte(`{"status":"hacked"}`), &core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown status, got %d, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := userRepo.GetByID("userA")
+	if u.Status != core.UserStatusActive {
+		t.Fatalf("status must not be persisted for invalid value, got %s", u.Status)
+	}
+
+	// 合法值 active / disabled → 200
+	for _, status := range []string{"active", "disabled"} {
+		req := reqWithClaims(http.MethodPut, "/api/v1/users/userA/status",
+			[]byte(`{"status":"`+status+`"}`), &core.Claims{UserID: "admin", Roles: []string{"admin"}})
+		w := httptest.NewRecorder()
+		handler.Update(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for valid status %q, got %d, body=%s", status, w.Code, w.Body.String())
+		}
+		u, _ := userRepo.GetByID("userA")
+		if string(u.Status) != status {
+			t.Fatalf("expected status %q persisted, got %q", status, u.Status)
+		}
+	}
+}
+
+// QUA-07：白名单必须覆盖全部三个落库入口——Create/Update 原先直接
+// core.UserStatus(req.Status) 落库，任意字符串（如 "hacked"）被原样存储回显
+func TestUserHandler_Create_RejectsUnknownStatus(t *testing.T) {
+	userRepo := newMockUserRepo()
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
+
+	req := reqWithClaims(http.MethodPost, "/api/v1/users",
+		[]byte(`{"username":"bob","password":"Str0ngPass!x","status":"hacked"}`),
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Create with unknown status must 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if u, err := userRepo.GetByUsername("bob"); err == nil {
+		t.Fatalf("invalid-status user must not be persisted, got %+v", u)
+	}
+
+	// 合法值与默认值路径不受影响
+	req = reqWithClaims(http.MethodPost, "/api/v1/users",
+		[]byte(`{"username":"bob","password":"Str0ngPass!x","status":"disabled"}`),
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w = httptest.NewRecorder()
+	handler.Create(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create with valid status must 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := userRepo.GetByUsername("bob")
+	if u.Status != core.UserStatusDisabled {
+		t.Fatalf("expected disabled persisted, got %s", u.Status)
+	}
+}
+
+func TestUserHandler_Update_RejectsUnknownStatus(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "userA", Username: "alice", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "hash")
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
+
+	req := reqWithClaims(http.MethodPut, "/api/v1/users/userA",
+		[]byte(`{"status":"hacked"}`), &core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Update with unknown status must 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := userRepo.GetByID("userA")
+	if u.Status != core.UserStatusActive {
+		t.Fatalf("invalid status must not be persisted, got %s", u.Status)
+	}
+}
+
+// REL-07：级联步骤（AccessToken 禁用）失败时 Delete 返回 500，
+// 不静默继续删除用户
+func TestUserHandler_Delete_AccessTokenDisableFailure_500(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "userA", Username: "alice", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "fake-hash")
+	atRepo := newMockAccessTokenRepo()
+	atRepo.failUpdate = true
+	atRepo.Create(newTestAccessToken("userA", "token1"))
+
+	handler := NewUserHandler(userRepo, nil, 10, newTestNodeRepo(), atRepo, nil)
+	req := reqWithClaims(http.MethodDelete, "/api/v1/users/userA", nil,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Delete(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when access token disable fails, got %d, body=%s", w.Code, w.Body.String())
+	}
+	// 用户不得被删除（静默继续会留下已失效归属/凭据的半删状态）
+	if len(userRepo.deleteCalls) != 0 {
+		t.Fatalf("user must not be deleted on cascade failure, deleteCalls=%v", userRepo.deleteCalls)
+	}
 }
 
 // --- tests ---

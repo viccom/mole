@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,13 +13,13 @@ import (
 )
 
 type UserHandler struct {
-	userRepo       core.UserRepo
-	rbac           *auth.RBACEngine
-	bcryptCost     int
-	nodeRepo       core.NodeRepo
-	accessTokenRepo core.AccessTokenRepo
-	nodeMgr        core.NodeManager // 运行态节点管理器（同步归属）
-	feishuBindings core.FeishuBindingRepo
+	userRepo         core.UserRepo
+	rbac             *auth.RBACEngine
+	bcryptCost       int
+	nodeRepo         core.NodeRepo
+	accessTokenRepo  core.AccessTokenRepo
+	nodeMgr          core.NodeManager // 运行态节点管理器（同步归属）
+	feishuBindings   core.FeishuBindingRepo
 	dingtalkBindings core.DingTalkBindingRepo
 }
 
@@ -36,6 +37,18 @@ func (h *UserHandler) SetBindingRepos(feishu core.FeishuBindingRepo, dingtalk co
 // UserID 有 RBAC 旁路（access_key）或归属语义（system），允许注册同名
 // 账号等于把旁路权限发给普通人
 var reservedUserIDs = map[string]bool{"access_key": true, "system": true}
+
+// validateUserStatus QUA-07：状态值白名单——core.UserStatus 是字符串类型，
+// 任意值会被原样落库并回显（如 "hacked"），下游按 Status 分支的语义被污染。
+// 合法集 = core.UserStatus 常量全集；Create/Update/setStatus 三入口统一调用
+func validateUserStatus(status string) error {
+	switch core.UserStatus(status) {
+	case core.UserStatusActive, core.UserStatusDisabled:
+		return nil
+	default:
+		return fmt.Errorf("invalid status %q: must be one of: active, disabled", status)
+	}
+}
 
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	users, err := h.userRepo.GetAll()
@@ -65,8 +78,8 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ResponseError(w, http.StatusConflict, 409, "Username is reserved")
 		return
 	}
-	if len(req.Password) < 8 {
-		ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
+	if err := auth.ValidatePasswordStrength(req.Password); err != nil {
+		ResponseError(w, http.StatusUnprocessableEntity, 422, err.Error())
 		return
 	}
 
@@ -86,6 +99,10 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	status := req.Status
 	if status == "" {
 		status = string(core.UserStatusActive)
+	}
+	if err := validateUserStatus(status); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, err.Error())
+		return
 	}
 
 	user := &core.User{
@@ -190,11 +207,15 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		user.Username = req.Username
 	}
 	if req.Status != "" {
+		if err := validateUserStatus(req.Status); err != nil {
+			ResponseError(w, http.StatusBadRequest, 400, err.Error())
+			return
+		}
 		user.Status = core.UserStatus(req.Status)
 	}
 	if req.Password != "" {
-		if len(req.Password) < 8 {
-			ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
+		if err := auth.ValidatePasswordStrength(req.Password); err != nil {
+			ResponseError(w, http.StatusUnprocessableEntity, 422, err.Error())
 			return
 		}
 		hash, err := auth.HashPassword(req.Password, h.bcryptCost)
@@ -233,53 +254,69 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	// 级联处理 SSO 绑定：不清理则用户名回收后，原飞书/钉钉身份的 SSO 回调
 	// 会命中残留绑定、直接给同名的重建账号签发 JWT（账号接管）
+	// REL-07：级联步骤失败记日志并 500 中止，不再静默继续
 	if h.feishuBindings != nil {
-		if err := h.feishuBindings.DeleteByUserID(id); err == nil {
-			slog.Info("Deleted feishu binding for deleted user", "userId", id)
+		if err := h.feishuBindings.DeleteByUserID(id); err != nil {
+			slog.Error("Failed to delete feishu binding on user delete", "userId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
 		}
+		slog.Info("Deleted feishu binding for deleted user", "userId", id)
 	}
 	if h.dingtalkBindings != nil {
-		if err := h.dingtalkBindings.DeleteByUserID(id); err == nil {
-			slog.Info("Deleted dingtalk binding for deleted user", "userId", id)
+		if err := h.dingtalkBindings.DeleteByUserID(id); err != nil {
+			slog.Error("Failed to delete dingtalk binding on user delete", "userId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
 		}
+		slog.Info("Deleted dingtalk binding for deleted user", "userId", id)
 	}
 
 	// 级联处理：禁用该用户的 AccessToken，节点归属改为 system
 	if h.accessTokenRepo != nil {
 		tokens, err := h.accessTokenRepo.ListByUser(id)
-		if err == nil {
-			for _, t := range tokens {
-				t.Status = core.AccessTokenDisabled
-				if updateErr := h.accessTokenRepo.Update(t); updateErr != nil {
-					slog.Warn("Failed to disable access token on user delete", "tokenId", t.ID, "error", updateErr)
-				}
+		if err != nil {
+			slog.Error("Failed to list access tokens on user delete", "userId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
+		}
+		for _, t := range tokens {
+			t.Status = core.AccessTokenDisabled
+			if updateErr := h.accessTokenRepo.Update(t); updateErr != nil {
+				slog.Error("Failed to disable access token on user delete", "tokenId", t.ID, "error", updateErr)
+				ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+				return
 			}
-			if len(tokens) > 0 {
-				slog.Info("Disabled access tokens for deleted user", "userId", id, "count", len(tokens))
-			}
+		}
+		if len(tokens) > 0 {
+			slog.Info("Disabled access tokens for deleted user", "userId", id, "count", len(tokens))
 		}
 	}
 	if h.nodeRepo != nil {
 		nodes, err := h.nodeRepo.GetAll()
-		if err == nil {
-			migrated := 0
-			for _, n := range nodes {
-				if n.OwnerUserID == id {
-					n.OwnerUserID = "system"
-					// 落库前清运行态字段：这些字段不属于持久化契约
-					n.SysInfo = nil
-					n.ClientStatuses = nil
-					n.RTT = 0
-					if updateErr := h.nodeRepo.Update(n); updateErr != nil {
-						slog.Warn("Failed to reassign node owner", "nodeId", n.ID, "error", updateErr)
-					} else {
-						migrated++
-					}
+		if err != nil {
+			slog.Error("Failed to list nodes on user delete", "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+			return
+		}
+		migrated := 0
+		for _, n := range nodes {
+			if n.OwnerUserID == id {
+				n.OwnerUserID = "system"
+				// 落库前清运行态字段：这些字段不属于持久化契约
+				n.SysInfo = nil
+				n.ClientStatuses = nil
+				n.RTT = 0
+				if updateErr := h.nodeRepo.Update(n); updateErr != nil {
+					slog.Error("Failed to reassign node owner", "nodeId", n.ID, "error", updateErr)
+					ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+					return
 				}
+				migrated++
 			}
-			if migrated > 0 {
-				slog.Info("Reassigned nodes from deleted user to system (persisted)", "userId", id, "count", migrated)
-			}
+		}
+		if migrated > 0 {
+			slog.Info("Reassigned nodes from deleted user to system (persisted)", "userId", id, "count", migrated)
 		}
 	}
 
@@ -289,9 +326,13 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		runtimeUpdated := 0
 		for _, n := range runtimeNodes {
 			if n.OwnerUserID == id {
-				h.nodeMgr.Update(r.Context(), n.ID, func(rn *core.Node) {
+				if updateErr := h.nodeMgr.Update(r.Context(), n.ID, func(rn *core.Node) {
 					rn.OwnerUserID = "system"
-				})
+				}); updateErr != nil {
+					slog.Error("Failed to reassign runtime node owner", "nodeId", n.ID, "error", updateErr)
+					ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete user")
+					return
+				}
 				runtimeUpdated++
 			}
 		}
@@ -357,15 +398,33 @@ func (h *UserHandler) setStatus(w http.ResponseWriter, r *http.Request, userID s
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
+	// QUA-07：状态值白名单（与 Create/Update 同一校验函数）
+	if err := validateUserStatus(req.Status); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, err.Error())
+		return
+	}
 	user.Status = core.UserStatus(req.Status)
 	if err := h.userRepo.Update(user); err != nil {
-			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update user")
-			return
-		}
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update user")
+		return
+	}
 	ResponseOK(w, user)
 }
 
 func (h *UserHandler) resetPassword(w http.ResponseWriter, r *http.Request, userID string) {
+	// SEC-08：重置密码按 users:admin 收口——路由仅挂 users:write，旧逻辑让
+	// 任意 users:write 操作者可改任何人（含 admin）的密码完成提权。自助改密
+	// 请走 /auth/changepass（校验旧密码），本接口不做自助
+	claims := auth.GetClaims(r.Context())
+	if claims == nil || h.rbac == nil {
+		ResponseError(w, http.StatusForbidden, 403, "Forbidden: password reset requires users:admin permission")
+		return
+	}
+	allowed, err := h.rbac.CheckPermission(claims.UserID, "users", "admin")
+	if err != nil || !allowed {
+		ResponseError(w, http.StatusForbidden, 403, "Forbidden: password reset requires users:admin permission")
+		return
+	}
 	var req struct {
 		Password string `json:"password"`
 	}
@@ -373,9 +432,9 @@ func (h *UserHandler) resetPassword(w http.ResponseWriter, r *http.Request, user
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
-	// 与 Create 对称的最小长度校验（1 位密码重置成功 = 弱口令入口）
-	if len(req.Password) < 8 {
-		ResponseError(w, http.StatusUnprocessableEntity, 422, "Password must be at least 8 characters")
+	// 与 Create 对称的强度校验（1 位密码重置成功 = 弱口令入口）
+	if err := auth.ValidatePasswordStrength(req.Password); err != nil {
+		ResponseError(w, http.StatusUnprocessableEntity, 422, err.Error())
 		return
 	}
 	hash, err := auth.HashPassword(req.Password, h.bcryptCost)
@@ -397,4 +456,3 @@ func (h *UserHandler) revokeRole(w http.ResponseWriter, r *http.Request, userID,
 	}
 	ResponseOK(w, "role revoked")
 }
-

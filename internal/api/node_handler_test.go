@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"moleAgent_Serv/internal/core"
@@ -22,6 +26,9 @@ type testTunnelConfigManager struct {
 	nodeRepo     core.NodeRepo
 	replaceCalls int
 	replacedTuns []core.Tunnel
+	// 错误注入（QUA-02 脱敏测试）：非 nil 时对应方法直接返回
+	applyErr   error
+	replaceErr error
 }
 
 func (m *testTunnelConfigManager) ActivateClientTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
@@ -71,6 +78,9 @@ func (r *testNodeRepo) Delete(id string) error {
 }
 
 func (m *testTunnelConfigManager) ApplyTunnel(context.Context, string, core.Tunnel) (core.TunnelChangeResult, error) {
+	if m.applyErr != nil {
+		return core.TunnelChangeResult{}, m.applyErr
+	}
 	return core.TunnelChangeResult{}, nil
 }
 
@@ -99,6 +109,9 @@ func (m *testTunnelConfigManager) RemoveTunnel(ctx context.Context, nodeID strin
 }
 
 func (m *testTunnelConfigManager) ReplaceTunnels(ctx context.Context, nodeID string, tunnels []core.Tunnel) (core.TunnelChangeResult, error) {
+	if m.replaceErr != nil {
+		return core.TunnelChangeResult{}, m.replaceErr
+	}
 	m.replaceCalls++
 	m.replacedTuns = append([]core.Tunnel(nil), tunnels...)
 	if err := m.nodeMgr.Update(ctx, nodeID, func(n *core.Node) {
@@ -407,6 +420,85 @@ func (f *fakeP2PRevoker) RevokeNodeP2PTokens(nodeID string, tunnels []core.Tunne
 
 // 删除节点必须把其隧道列表交给凭据吊销器——否则被删节点的信令凭据
 // 存活到 TTL，恰好赶上被释放的 room 被新配对注册（审查 #5 场景）
+// ===== SEC-03：Node.Token 停存停回显 =====
+
+// GET /api/v1/nodes/{id} 响应不得回显接入 token（credential 泄露面）
+func TestNodeHandler_Get_ResponseOmitsToken(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
+
+	if err := nodeMgr.Add(ctx, &core.Node{
+		ID:     "Node0001",
+		Name:   "n1",
+		Token:  "super-secret-node-token",
+		Status: core.NodeStatusOnline,
+	}); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	req := reqWithClaims(http.MethodGet, "/api/v1/nodes/Node0001", nil, claims)
+	w := httptest.NewRecorder()
+	handler.Get(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	if _, exists := data["token"]; exists {
+		t.Fatalf("GET /nodes/{id} response must not contain token field, got %v", data["token"])
+	}
+	if strings.Contains(w.Body.String(), "super-secret-node-token") {
+		t.Fatal("GET /nodes/{id} response must not leak token value")
+	}
+}
+
+// Create 的响应与落库内容都必须剥离 token：落库会让明文凭据进 blob，
+// 回显则把凭据暴露给所有有权读节点的账号
+func TestNodeHandler_Create_StripsTokenFromResponseAndPersist(t *testing.T) {
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
+
+	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	body, _ := json.Marshal(map[string]any{
+		"name":  "test-node-tok",
+		"token": "plain-text-token-from-request",
+	})
+	req := reqWithClaims(http.MethodPost, "/api/v1/nodes", body, claims)
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	resp := parseResponse(t, w)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", resp.Data)
+	}
+	if _, exists := data["token"]; exists {
+		t.Fatalf("Create response must not contain token field, got %v", data["token"])
+	}
+	if strings.Contains(w.Body.String(), "plain-text-token-from-request") {
+		t.Fatal("Create response must not echo token value")
+	}
+
+	persisted, err := nodeRepo.GetByID("test-node-tok")
+	if err != nil {
+		t.Fatalf("persisted node not found: %v", err)
+	}
+	if persisted.Token != "" {
+		t.Fatalf("persisted node must not store token, got %q", persisted.Token)
+	}
+}
+
 func TestNodeHandlerDelete_RevokesP2PTokens(t *testing.T) {
 	ctx := context.Background()
 	nodeMgr := node.NewShardedNodeManager(4)
@@ -485,5 +577,71 @@ func TestNodeHandlerDelete_RevokesPersistedOnlyTunnels(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("revoker must receive persisted-only tunnels, got %+v", revoker.tunnels)
+	}
+}
+
+// QUA-02：存储层错误细节不得回传客户端，真实错误进日志
+func TestNodeHandlerUpdate_SanitizesInternalErrors(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	if err := nodeMgr.Add(ctx, &core.Node{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "admin"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	repo := newTestNodeRepo()
+	sensitive := errors.New("open /var/lib/mole/redka.db: permission denied (sqlite: disk I/O error)")
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: repo, replaceErr: sensitive}
+	handler := NewNodeHandler(nodeMgr, repo, tunnelSvc, nil)
+
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	body, _ := json.Marshal(map[string]any{
+		"tunnels": []map[string]any{{"name": "web", "type": "http", "target": "http://127.0.0.1:8080"}},
+	})
+	req := reqWithClaims(http.MethodPut, "/api/v1/nodes/NodeA1", body,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "/var/lib/mole/redka.db") {
+		t.Fatalf("response must not leak internal storage error, body=%s", w.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), "/var/lib/mole/redka.db") {
+		t.Fatal("log must contain the real storage error")
+	}
+}
+
+// 审查③：校验错误经 %w 包装（core.ValidateTunnels 全系如此），handler 必须
+// 用 errors.Is 判哨兵——== 比较是死分支，非法配置会落 500 generic 而非 400+原因
+func TestNodeHandlerUpdate_WrappedValidationErrorMaps400(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	if err := nodeMgr.Add(ctx, &core.Node{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "admin"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	repo := newTestNodeRepo()
+	// 与真实 service 对 listen_port=0 的返回一致：%w 包装的 ErrTunnelInvalid
+	validationErr := fmt.Errorf("%w: listen_port must be 1-65535, got 0", core.ErrTunnelInvalid)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: repo, replaceErr: validationErr}
+	handler := NewNodeHandler(nodeMgr, repo, tunnelSvc, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"tunnels": []map[string]any{{"name": "bad", "type": "tcp", "target": "127.0.0.1:22", "listen_port": 0}},
+	})
+	req := reqWithClaims(http.MethodPut, "/api/v1/nodes/NodeA1", body,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("wrapped validation error must map to 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "listen_port must be 1-65535") {
+		t.Fatalf("response body must contain the validation reason, body=%s", w.Body.String())
 	}
 }

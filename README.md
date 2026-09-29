@@ -452,8 +452,8 @@ curl -X POST http://localhost:9983/api/v1/auth/login \
 | GET | `/users/{id}` | 用户详情 | `users:read` |
 | PUT | `/users/{id}` | 更新用户 | `users:write` |
 | DELETE | `/users/{id}` | 删除用户 | `users:delete` |
-| PUT | `/users/{id}/status` | 启用/禁用 | `users:admin` |
-| PUT | `/users/{id}/password` | 重置密码 | `users:admin` |
+| PUT | `/users/{id}/status` | 启用/禁用 | `users:write` |
+| PUT | `/users/{id}/password` | 重置密码 | `users:write` + `users:admin` |
 | GET | `/users/{id}/roles` | 用户角色 | `users:read` |
 | POST | `/users/{id}/roles/{roleId}` | 分配角色 | `users:admin` |
 | DELETE | `/users/{id}/roles/{roleId}` | 移除角色 | `users:admin` |

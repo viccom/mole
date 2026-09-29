@@ -284,7 +284,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		result, err = h.tunnelSvc.ApplyTunnel(r.Context(), req.NodeID, newTunnel)
 	}
 	if err != nil {
-		if err == core.ErrNodeNotFound {
+		if errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
@@ -292,7 +292,14 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel: "+err.Error())
+		// REL-01：监听失败（端口被外部进程占用等）是可纠正的配置错误而非内部故障
+		if errors.Is(err, core.ErrPortInUse) {
+			ResponseError(w, http.StatusBadRequest, 400, "listen port is already in use")
+			return
+		}
+		// QUA-02：内部错误细节（存储路径/驱动信息）进日志，对外 generic
+		slog.Error("Failed to apply tunnel", "nodeId", req.NodeID, "tunnel", req.Name, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to apply tunnel")
 		return
 	}
 	ResponseOK(w, map[string]any{
@@ -350,11 +357,12 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.tunnelSvc.RemoveTunnel(r.Context(), targetNodeID, name)
 	if err != nil {
-		if err == core.ErrNodeNotFound {
+		if errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, "Failed to remove tunnel: "+err.Error())
+		slog.Error("Failed to remove tunnel", "nodeId", targetNodeID, "tunnel", name, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to remove tunnel")
 		return
 	}
 	ResponseOK(w, map[string]any{
@@ -524,11 +532,14 @@ func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 	}
 	results, err := h.tunnelSvc.BatchUpdateRateLimit(r.Context(), req.Items)
 	if err != nil {
-		if errors.Is(err, core.ErrTunnelInvalid) || err == core.ErrNodeNotFound {
+		// 审查③：service 层以 %w 包装哨兵（ErrTunnelInvalid/ErrNodeNotFound），
+		// 必须 errors.Is 判定——== 比较对包装链是死分支
+		if errors.Is(err, core.ErrTunnelInvalid) || errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, err.Error())
+		slog.Error("Failed to batch update rate limits", "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update rate limits")
 		return
 	}
 	ResponseOK(w, map[string]any{
@@ -585,7 +596,7 @@ func (h *TunnelHandler) Action(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.controlSrv.TriggerTunnelAction(r.Context(), req.NodeID, name, req.Action); err != nil {
 		slog.Error("TriggerTunnelAction failed", "node", req.NodeID, "tunnel", name, "action", req.Action, "error", err)
-		ResponseError(w, http.StatusInternalServerError, 500, "Action failed: "+err.Error())
+		ResponseError(w, http.StatusInternalServerError, 500, "Action failed")
 		return
 	}
 	ResponseOK(w, map[string]any{"status": "ok", "action": req.Action, "tunnel": name})

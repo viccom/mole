@@ -13,11 +13,20 @@ import (
 
 type userRepo struct {
 	db *redka.DB
+	// deleteField 删除 hash 字段。生产绑定 redka；包内测试注入失败
+	//（REL-07：级联删除错误必须逐步上抛，曾整体吞掉）
+	deleteField func(key, field string) error
 }
 
 // NewUserRepo 创建用户仓库
 func NewUserRepo(db *redka.DB) core.UserRepo {
-	return &userRepo{db: db}
+	return &userRepo{
+		db: db,
+		deleteField: func(key, field string) error {
+			_, err := db.Hash().Delete(key, field)
+			return err
+		},
+	}
 }
 
 func (r *userRepo) Create(user *core.User, passwordHash string) error {
@@ -129,15 +138,28 @@ func (r *userRepo) Update(user *core.User) error {
 }
 
 func (r *userRepo) Delete(id string) error {
-	// 先获取用户信息用于清理索引
-	existing, _ := r.GetByID(id)
-	if _, err := r.db.Hash().Delete("users", id); err != nil {
-		return err
+	// 先获取用户信息用于清理索引。真错误必须上抛：吞掉会把 existing 折叠成
+	// nil，静默跳过 usernames 索引清理（孤儿索引指向已删用户，用户名回收后
+	// 残留索引还会劫持新同名用户）；「不存在」（ErrUserNotFound）维持幂等
+	existing, err := r.GetByID(id)
+	if err != nil && !errors.Is(err, core.ErrUserNotFound) {
+		return fmt.Errorf("read user %s before delete: %w", id, err)
 	}
-	r.db.Hash().Delete("passwords", id)
-	r.db.Hash().Delete("user_roles", id)
+	// REL-07：级联删除（passwords/user_roles/usernames）错误不再吞掉——
+	// 静默继续会留下指向已删用户的孤儿数据（残余密码、角色、用户名索引）
+	if err := r.deleteField("users", id); err != nil {
+		return fmt.Errorf("delete user %s: %w", id, err)
+	}
+	if err := r.deleteField("passwords", id); err != nil {
+		return fmt.Errorf("delete password for user %s: %w", id, err)
+	}
+	if err := r.deleteField("user_roles", id); err != nil {
+		return fmt.Errorf("delete roles for user %s: %w", id, err)
+	}
 	if existing != nil {
-		r.db.Hash().Delete("usernames", existing.Username)
+		if err := r.deleteField("usernames", existing.Username); err != nil {
+			return fmt.Errorf("delete username index %s: %w", existing.Username, err)
+		}
 	}
 	return nil
 }

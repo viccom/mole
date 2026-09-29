@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"errors"
 	"testing"
+
+	"moleAgent_Serv/internal/core"
 )
 
 func TestHashAndVerifyPassword(t *testing.T) {
@@ -40,5 +43,21 @@ func TestHashPasswordDifferentSalts(t *testing.T) {
 	// Both should verify
 	if !VerifyPassword(password, hash1) || !VerifyPassword(password, hash2) {
 		t.Error("both hashes should verify against original password")
+	}
+}
+
+// SEC-14：口令强度校验是唯一入口，Create/Update/resetPassword/ChangePassword 共用
+func TestValidatePasswordStrength(t *testing.T) {
+	if err := ValidatePasswordStrength("abc"); !errors.Is(err, core.ErrPasswordTooShort) {
+		t.Errorf("expected ErrPasswordTooShort for 3-char password, got %v", err)
+	}
+	if err := ValidatePasswordStrength("1234567"); !errors.Is(err, core.ErrPasswordTooShort) {
+		t.Errorf("expected ErrPasswordTooShort for 7-char password, got %v", err)
+	}
+	if err := ValidatePasswordStrength("12345678"); err != nil {
+		t.Errorf("expected nil for 8-char password, got %v", err)
+	}
+	if err := ValidatePasswordStrength("much-longer-password-123"); err != nil {
+		t.Errorf("expected nil for long password, got %v", err)
 	}
 }

@@ -137,18 +137,6 @@ type connState struct {
 	remoteAddr string                // 客户端连接地址
 }
 
-func (s *connState) setGrant(grant *core.NodeAccessGrant) {
-	s.mu.Lock()
-	s.grant = grant
-	s.mu.Unlock()
-}
-
-func (s *connState) getGrant() *core.NodeAccessGrant {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.grant
-}
-
 func (s *connState) set(node *core.Node) {
 	s.mu.Lock()
 	s.node = node
@@ -176,6 +164,11 @@ type ControlServer struct {
 	nodeRepo         core.NodeRepo                              // 隧道持久化仓库
 	tunnelSvc        core.TunnelConfigManager
 	p2pIssuer        P2PSignalTokenIssuer // P2P 信令凭据签发（nil = 命令返回未配置）
+	authLimiter      *connAuthLimiter     // 认证失败 per-IP 限速（SEC-13，NewControlServer 默认启用）
+	// registerOwnerCheck register 时校验 node_id 归属（SEC-02，默认 true，kill-switch）
+	registerOwnerCheck bool
+	// legacyFormatEnabled 是否接受旧版明文 token 认证格式（SEC-01 兼容期，默认 true）
+	legacyFormatEnabled bool
 }
 
 // P2PSignalTokenIssuer 签发 P2P 信令凭据（service 包实现；tunnel 包不依赖 service）
@@ -193,14 +186,19 @@ type listenTarget struct {
 	transport Transport
 }
 
-// NewControlServer 创建控制端口服务
+// NewControlServer 创建控制端口服务。
+// 两个安全开关默认开启（与 config.NodeAuthConfig 默认一致），
+// 经 SetNodeAuthOptions 由配置注入覆盖
 func NewControlServer(addr string, transport Transport, nodeMgr *node.ShardedNodeManager, nodeToken string, nodeRepo core.NodeRepo) *ControlServer {
 	return &ControlServer{
-		addr:      addr,
-		transport: transport,
-		nodeMgr:   nodeMgr,
-		nodeToken: nodeToken,
-		nodeRepo:  nodeRepo,
+		addr:                addr,
+		transport:           transport,
+		nodeMgr:             nodeMgr,
+		nodeToken:           nodeToken,
+		nodeRepo:            nodeRepo,
+		registerOwnerCheck:  true,
+		legacyFormatEnabled: true,
+		authLimiter:         newConnAuthLimiter(),
 	}
 }
 
@@ -235,45 +233,87 @@ func (cs *ControlServer) SetAuthenticator(auth core.NodeAccessAuthenticator) {
 	cs.authenticator = auth
 }
 
+// SetNodeAuthOptions 设置节点认证行为开关（来自 node_auth 配置节）
+func (cs *ControlServer) SetNodeAuthOptions(registerOwnerCheck, legacyFormatEnabled bool) {
+	cs.registerOwnerCheck = registerOwnerCheck
+	cs.legacyFormatEnabled = legacyFormatEnabled
+}
+
 // Start 启动控制端口监听（主传输层 + 额外传输层）
 func (cs *ControlServer) Start(ctx context.Context) error {
+	// acceptLoop 生命周期 ctx（审查①）：shutdown 必须能独立于外部 ctx 让
+	// acceptLoop 退出——extra listener Listen 失败路径下外部 ctx 未 Done，
+	// acceptLoop 只认 ctx 会永久自旋，Start 卡死在 acceptors.Wait()
+	sctx, scancel := context.WithCancel(ctx)
+	// cancel 幂等；成功路径 Start 阻塞至 ctx.Done 后返回，泄漏窗口与
+	// Start 调用同生命周期（每 Start 调用一次派生，无累积）
+	defer scancel()
+
 	// Worker pool（所有 listener 共用）
 	connChan := make(chan connEntry, 1000)
 	workerCount := runtime.NumCPU() * 2
+	var workers sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
-		go cs.connectionWorker(ctx, connChan)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			cs.connectionWorker(ctx, connChan)
+		}()
+	}
+
+	// acceptLoop 追踪：关闭序列必须等所有 acceptLoop 退出后再 close(connChan)，
+	// 否则残留的发送分支会向已关闭 channel 写入而 panic（QUA-11a）
+	var acceptors sync.WaitGroup
+
+	// shutdown 统一关闭序列（QUA-11a）：先 cancel acceptLoop 的 sctx → 关
+	// listener → 等 acceptLoop 全部退出 → close(connChan)（connectionWorker
+	// 的 range 自然退出）→ 等 worker 排空。close 仅存在于这一条路径
+	// （每次 Start 持有独立 connChan，无 double-close）
+	shutdown := func() {
+		scancel()
+		for _, ln := range cs.listeners {
+			ln.Close()
+		}
+		acceptors.Wait()
+		close(connChan)
+		workers.Wait()
 	}
 
 	// 启动主 listener
 	primaryLn, err := cs.transport.Listen(cs.addr)
 	if err != nil {
+		shutdown()
 		return fmt.Errorf("control listen on %s (%s): %w", cs.addr, cs.transport.Name(), err)
 	}
 	cs.listener = primaryLn
 	cs.listeners = append(cs.listeners, primaryLn)
 	slog.Info("Control server listening", "addr", cs.addr, "transport", cs.transport.Name())
-	go cs.acceptLoop(ctx, primaryLn, connChan, cs.transport.Name())
+	acceptors.Add(1)
+	go func() {
+		defer acceptors.Done()
+		cs.acceptLoop(sctx, primaryLn, connChan, cs.transport.Name())
+	}()
 
 	// 启动额外 listener（WS、KCP 等）
 	for _, lt := range cs.extraTargets {
 		ln, err := lt.transport.Listen(lt.addr)
 		if err != nil {
-			// 清理已启动的 listener
-			for _, l := range cs.listeners {
-				l.Close()
-			}
+			// 清理已启动的 listener 与 worker 池
+			shutdown()
 			return fmt.Errorf("control listen on %s (%s): %w", lt.addr, lt.transport.Name(), err)
 		}
 		cs.listeners = append(cs.listeners, ln)
 		slog.Info("Control server listening", "addr", lt.addr, "transport", lt.transport.Name())
-		go cs.acceptLoop(ctx, ln, connChan, lt.transport.Name())
+		acceptors.Add(1)
+		go func(ln net.Listener, name string) {
+			defer acceptors.Done()
+			cs.acceptLoop(sctx, ln, connChan, name)
+		}(ln, lt.transport.Name())
 	}
 
 	// 等待关闭
 	<-ctx.Done()
-	for _, ln := range cs.listeners {
-		ln.Close()
-	}
+	shutdown()
 	slog.Info("Control server stopped")
 	return nil
 }
@@ -282,6 +322,10 @@ func (cs *ControlServer) acceptLoop(ctx context.Context, ln net.Listener, connCh
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			// listener 已关闭：立即退出（双保险——即便 ctx 分支失效也不得自旋）
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -311,6 +355,16 @@ func (cs *ControlServer) connectionWorker(ctx context.Context, connChan <-chan c
 func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, transportName string) {
 	remoteAddr := conn.RemoteAddr().String()
 	slog.Info("Handling new connection", "remote", remoteAddr, "transport", transportName)
+
+	// SEC-13：认证失败 per-IP 限速——锁内 IP 在进入认证流程前直接断开
+	//（不发 challenge、不读 auth 行）。authLimiter 为 nil 仅出现在测试
+	// 直构 ControlServer 的场景，生产路径经 NewControlServer 默认启用
+	ip := connRemoteIP(remoteAddr)
+	if cs.authLimiter != nil && !cs.authLimiter.Allowed(ip) {
+		slog.Warn("Control connection dropped: auth failure lock active", "remote", remoteAddr, "transport", transportName)
+		conn.Close()
+		return
+	}
 
 	// KCP probe: client sends a probe byte to trigger Accept; discard it before auth.
 	if transportName == "kcp" {
@@ -359,6 +413,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 
 	var authMsg struct {
 		Token string `json:"token"`
+		Proof string `json:"proof"`
 	}
 	if err := json.Unmarshal([]byte(authLine), &authMsg); err != nil {
 		writeControlResp(conn, "err", "invalid auth format")
@@ -367,15 +422,50 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		return
 	}
 
-	// 统一走 authenticator 认证（内部实现：用户级 token 优先 → legacy 兜底）
+	// 统一走 authenticator 认证（内部实现：用户级 token 优先 → legacy 兜底）。
+	// 双格式（SEC-01）：新客户端发 {"proof"}（challenge-response HMAC，proof 绑定
+	// 本次连接的一次性 challenge，明文 token 不上线，客户端不发任何标识符）；
+	// 旧客户端发 {"token"}（明文格式，legacy_format_enabled 关闭后拒绝，
+	// 全部客户端升级到 proof 格式后由 R2 配置收口）
 	if cs.authenticator != nil {
-		grant, err := cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
-		if err != nil {
-			writeControlResp(conn, "err", "invalid token")
-			slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
+		var grant *core.NodeAccessGrant
+		switch {
+		case authMsg.Proof != "":
+			var authErr error
+			grant, authErr = cs.authenticator.AuthenticateNodeProof(ctx, authMsg.Proof, challenge)
+			if authErr != nil {
+				// 计数必须先于应答：客户端读到响应即可发起下一次连接，
+				// 若后计数，第 N+1 次连接可能赶在失败入账前通过锁检查
+				cs.authFail(ip)
+				writeControlResp(conn, "err", "invalid token")
+				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
+				conn.Close()
+				return
+			}
+		case authMsg.Token != "":
+			if !cs.legacyFormatEnabled {
+				cs.authFail(ip)
+				writeControlResp(conn, "err", "legacy auth disabled")
+				slog.Warn("Legacy node auth rejected", "remote", remoteAddr, "transport", transportName)
+				conn.Close()
+				return
+			}
+			var authErr error
+			grant, authErr = cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
+			if authErr != nil {
+				cs.authFail(ip)
+				writeControlResp(conn, "err", "invalid token")
+				slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName)
+				conn.Close()
+				return
+			}
+		default:
+			writeControlResp(conn, "err", "invalid auth format")
+			slog.Warn("Node auth format invalid", "remote", remoteAddr, "transport", transportName)
 			conn.Close()
 			return
 		}
+		cs.authOK(ip) // 同理：清零先于应答，防「成功后紧接的失败连接」误锁
 		writeControlResp(conn, "ok", "authenticated")
 		slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
 
@@ -386,6 +476,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 
 	// 无 authenticator 时回退到旧全局 token 直接比对（兼容未注入场景）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) == 1 {
+		cs.authOK(ip)
 		writeControlResp(conn, "ok", "authenticated")
 		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr, "transport", transportName)
 
@@ -396,9 +487,26 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 		return
 	}
 
+	cs.authFail(ip)
 	writeControlResp(conn, "err", "invalid token")
 	slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName, "reason", "invalid token")
 	conn.Close()
+}
+
+// authFail/authOK 认证结果计入 per-IP 限速器（SEC-13）：
+// 仅「提交了凭据但被拒/通过」计入——载荷无法解析（invalid format）与
+// 读取失败不构成认证尝试，对齐 auth.LoginLimiter 只计 401 的语义；
+// limiter 未注入（测试直构）时为空操作
+func (cs *ControlServer) authFail(ip string) {
+	if cs.authLimiter != nil {
+		cs.authLimiter.RecordFailure(ip)
+	}
+}
+
+func (cs *ControlServer) authOK(ip string) {
+	if cs.authLimiter != nil {
+		cs.authLimiter.RecordSuccess(ip)
+	}
 }
 
 // setupSmuxAndAccept 建立 smux 会话并在独立 goroutine 中接收流。
@@ -501,21 +609,26 @@ var errAuthLineTooLarge = errors.New("auth line too large")
 // 修复 OOM 必须只限制"这一行"的长度：绝不能用 io.LimitedReader 包装连接——
 // 其 N 计数覆盖连接全生命周期，认证完成后节点→服务端的所有流量继续扣减，
 // 累计 64KB 后全部读取返回 EOF，整条节点连接死亡（生产事故根因）。
+// 跨 bufio 缓冲（4KB）的行由多个 ReadSlice 分片组成：必须 append 累计全部
+// 分片（与客户端 readBoundedCmdLine 同手法）——只返回末片会把 4KB-64KB
+// 间的合法行静默截断成残缺 JSON
 func readBoundedLine(r *bufio.Reader, limit int) (string, error) {
 	var total int
+	var line []byte
 	for {
 		frag, err := r.ReadSlice('\n')
 		total += len(frag)
 		if total > limit {
 			return "", errAuthLineTooLarge
 		}
+		line = append(line, frag...)
 		if err != nil {
 			if errors.Is(err, bufio.ErrBufferFull) {
 				continue // 单个 bufio 缓冲无 \n，继续累计
 			}
 			return "", err
 		}
-		return string(frag), nil
+		return string(line), nil
 	}
 }
 
@@ -725,6 +838,42 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 		return
 	}
 
+	// REL-02：register 携带的隧道列表必须先过服务端校验（与 REST 落库入口
+	// 同一规则，含 listen_port 范围/保留端口/唯一性）+ 条数上限，任一失败
+	// 即拒绝注册——阻止非法配置进入内存运行态（注册竞态产物的源头）
+	if len(cmd.Tunnels) > core.MaxRegisterTunnels {
+		slog.Warn("Register rejected: tunnel list exceeds limit",
+			"nodeId", cmd.NodeID, "tunnels", len(cmd.Tunnels), "limit", core.MaxRegisterTunnels)
+		writeControlResp(stream, "err", fmt.Sprintf("tunnel list exceeds limit of %d", core.MaxRegisterTunnels))
+		return
+	}
+	if len(cmd.Tunnels) > 0 {
+		if err := core.ValidateTunnels(cmd.Tunnels); err != nil {
+			slog.Warn("Register rejected: invalid tunnel list",
+				"nodeId", cmd.NodeID, "tunnels", len(cmd.Tunnels), "error", err)
+			writeControlResp(stream, "err", err.Error())
+			return
+		}
+	}
+
+	// SEC-02：注册归属校验——认证身份与 node_id 的持久化归属者不同时拒绝注册，
+	// 防止用户 B 的 token 抢注用户 A 的 node_id（覆盖隧道配置、劫持流量）。
+	// 放行：无持久记录（新节点）/ 同主 / 持久归属为 system（legacy 时代记录，
+	// 允许任意用户接管完成迁移）/ grant 为 legacy 全局 token（UserID=system）/
+	// 开关关闭（kill-switch）
+	if cs.registerOwnerCheck && cs.nodeRepo != nil {
+		if grant := state.grant; grant != nil {
+			if persisted, err := cs.nodeRepo.GetByID(cmd.NodeID); err == nil && persisted != nil &&
+				persisted.OwnerUserID != "" && persisted.OwnerUserID != "system" &&
+				persisted.OwnerUserID != grant.UserID && grant.UserID != "system" {
+				slog.Warn("Node register rejected: registered by another user",
+					"nodeId", cmd.NodeID, "grantUser", grant.UserID, "persistedOwner", persisted.OwnerUserID)
+				writeControlResp(stream, "err", "node registered by another user")
+				return
+			}
+		}
+	}
+
 	// 获取 Session：从 connState 获取（在 handleConnection 中建立 smux 会话时存入）
 	smuxSession := state.session
 
@@ -776,11 +925,14 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 				cs.onNodeDisconnect(cmd.NodeID, oldTunnels)
 			}
 			if err2 := cs.nodeMgr.Add(ctx, node); err2 != nil {
-				writeControlResp(stream, "err", err2.Error())
+				// QUA-02：Add 失败属内部错误，对端回 generic，详情进日志
+				slog.Error("Register re-add after displacement failed", "nodeId", cmd.NodeID, "error", err2)
+				writeControlResp(stream, "err", "internal server error")
 				return
 			}
 		} else {
-			writeControlResp(stream, "err", err.Error())
+			slog.Error("Register node add failed", "nodeId", cmd.NodeID, "error", err)
+			writeControlResp(stream, "err", "internal server error")
 			return
 		}
 	}
@@ -841,8 +993,15 @@ func (cs *ControlServer) handleRegister(ctx context.Context, cmd ControlCmd, sta
 	}
 }
 
+// probeOldSessionTimeout 旧会话判死阈值（REL-06）。
+// 原值 3s 在慢链路（高 RTT、瞬时拥塞、弱网移动端）下，探针响应稍慢即把
+// 真活的旧客户端误判为假死而强制置换——表现为在线节点被无谓断线重建。
+// 探针内容是幂等的 tunnel_push（推送的就是该节点现存隧道，重复应用无害），
+// 放宽到 8s 只增加罕见假死场景的重连等待，不引入正确性风险。
+const probeOldSessionTimeout = 8 * time.Second
+
 // probeOldSession 通过旧 smux session 向旧客户端发送 tunnel_push 并等待响应。
-// 3 秒内有响应说明旧客户端真活；否则判定为假死。
+// probeOldSessionTimeout 内有响应说明旧客户端真活；否则判定为假死。
 func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tunnels []core.Tunnel) bool {
 	sess, err := cs.nodeMgr.GetSession(ctx, nodeID)
 	if err != nil {
@@ -856,7 +1015,7 @@ func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tun
 	defer stream.Close()
 
 	// 发送 tunnel_push 作为探测（客户端会回复 {"cmd":"ok",...}）
-	stream.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	stream.SetWriteDeadline(time.Now().Add(probeOldSessionTimeout))
 	cmd := ControlCmd{Cmd: "tunnel_push", Tunnels: tunnels}
 	data, _ := json.Marshal(cmd)
 	if _, err := stream.Write(append(data, '\n')); err != nil {
@@ -864,7 +1023,7 @@ func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tun
 	}
 
 	// 等待客户端响应
-	stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+	stream.SetReadDeadline(time.Now().Add(probeOldSessionTimeout))
 	raw, err := readControlMsg(stream, maxControlMsgSize)
 	if err != nil {
 		return false
@@ -880,6 +1039,16 @@ func writeControlResp(w interface{ Write([]byte) (int, error) }, cmd, msg string
 	if err := writeJSONLine(w, resp); err != nil {
 		slog.Debug("Failed to write control response", "cmd", cmd, "error", err)
 	}
+}
+
+// sanitizeControlErr 控制面错误脱敏（QUA-02）：协议/业务校验错误（对端可
+// 理解并修正，如 ErrTunnelInvalid/ErrPortInUse）保留原文；内部错误（存储、
+// 内存态等）只回 generic 消息，真实详情由调用方记日志
+func sanitizeControlErr(err error) (msg string, internal bool) {
+	if errors.Is(err, core.ErrTunnelInvalid) || errors.Is(err, core.ErrPortInUse) {
+		return err.Error(), false
+	}
+	return "internal server error", true
 }
 
 // writeControlRespTs 向控制流写入带时间戳的 JSON 响应行（ping RTT 用）
@@ -982,13 +1151,21 @@ func (cs *ControlServer) handleTunnelUpdate(ctx context.Context, cmd ControlCmd,
 		now := time.Now()
 		n.LastHeartbeat = &now
 	}); err != nil {
-		writeControlResp(stream, "err", err.Error())
+		// QUA-02：内部错误脱敏，详情进日志
+		slog.Error("tunnel_update heartbeat failed", "nodeId", nodeID, "error", err)
+		writeControlResp(stream, "err", "internal server error")
 		return
 	}
 
 	if cs.tunnelSvc != nil {
 		if err := cs.tunnelSvc.SyncFromClient(ctx, nodeID, cmd.Tunnels); err != nil {
-			writeControlResp(stream, "err", err.Error())
+			// QUA-02：业务校验错误（ErrTunnelInvalid/ErrPortInUse 等包装链）
+			// 保留原文供客户端修正；内部错误只回 generic、详情进日志
+			msg, internal := sanitizeControlErr(err)
+			if internal {
+				slog.Error("tunnel_update sync failed", "nodeId", nodeID, "error", err)
+			}
+			writeControlResp(stream, "err", msg)
 			return
 		}
 	} else {
@@ -1012,11 +1189,13 @@ func (cs *ControlServer) persistNode(n *core.Node) {
 		return
 	}
 	// 运行态字段不属于持久化契约：清除后再落库，避免 sysinfo/状态列表随每次
-	// 持久化写入 blob 持续膨胀、重启后离线节点带陈旧运行态"复活"
+	// 持久化写入 blob 持续膨胀、重启后离线节点带陈旧运行态"复活"；
+	// 接入 token 同样剥离（SEC-03）——明文节点凭据不得进持久层
 	cp := *n
 	cp.SysInfo = nil
 	cp.ClientStatuses = nil
 	cp.RTT = 0
+	cp.Token = ""
 	// Create or Update：先尝试 GetByID 判断是否已存在
 	if existing, err := cs.nodeRepo.GetByID(n.ID); err != nil || existing == nil {
 		if err := cs.nodeRepo.Create(&cp); err != nil {

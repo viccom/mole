@@ -71,71 +71,22 @@ func (s *TunnelConfigService) SetP2PSignalTokenService(svc *P2PSignalTokenServic
 	s.p2pTokens = svc
 }
 
-// validateTunnel 校验单条隧道配置的合法性
+// validateTunnel 校验单条隧道配置的合法性。
+// 实现在 core（与 control 面 register 校验共用同一规则，REL-02），此处保留
+// 包内别名以维持既有调用点
 func validateTunnel(t core.Tunnel) error {
-	if t.Name == "" {
-		return fmt.Errorf("%w: tunnel name is required", core.ErrTunnelInvalid)
-	}
-
-	switch t.Type {
-	case core.TunnelTypeHTTP, core.TunnelTypeHTTPS, core.TunnelTypeTCP, core.TunnelTypeUDP:
-		// target 统一为 host:port 格式
-		if t.Target == "" {
-			return fmt.Errorf("%w: tunnel target is required", core.ErrTunnelInvalid)
-		}
-		host, port, err := net.SplitHostPort(t.Target)
-		if err != nil {
-			return fmt.Errorf("%w: tunnel target must be host:port format (e.g. 127.0.0.1:8080), got %q", core.ErrTunnelInvalid, t.Target)
-		}
-		if host == "" {
-			return fmt.Errorf("%w: tunnel target host is required", core.ErrTunnelInvalid)
-		}
-		portNum, err := strconv.Atoi(port)
-		if err != nil || portNum < 1 || portNum > 65535 {
-			return fmt.Errorf("%w: tunnel target port must be 1-65535, got %q", core.ErrTunnelInvalid, port)
-		}
-
-	// 客户端本地类型：服务端不验证 target 格式，只做基本校验
-	case "ser2mq", "vpn-manager", "ser2tcp", "ser2udp", "webssh":
-		// 这些类型的配置在 Para 字段中，客户端自己处理
-		// 服务端只需要确保 Name 不为空即可
-
-	case core.TunnelTypeP2P:
-		// p2p 与上述本地类型同类（仅客户端处理），但 room 是密钥材料，Para 必须严格校验
-		if err := core.ValidateP2PPara(t.Para); err != nil {
-			return err
-		}
-
-	default:
-		return fmt.Errorf("%w: unknown tunnel type %q", core.ErrTunnelInvalid, t.Type)
-	}
-
-	if err := validateRateLimit(t.RateLimit); err != nil {
-		return err
-	}
-
-	return nil
+	return core.ValidateTunnel(t)
 }
 
-// validateTunnels 校验隧道列表
+// validateTunnels 校验隧道列表（别名，实现在 core）
 func validateTunnels(tunnels []core.Tunnel) error {
-	names := make(map[string]bool, len(tunnels))
-	for i := range tunnels {
-		if err := validateTunnel(tunnels[i]); err != nil {
-			return err
-		}
-		if names[tunnels[i].Name] {
-			return fmt.Errorf("%w: duplicate tunnel name %q", core.ErrTunnelInvalid, tunnels[i].Name)
-		}
-		names[tunnels[i].Name] = true
-	}
-	return nil
+	return core.ValidateTunnels(tunnels)
 }
 
-const (
-	maxConnsUpperBound           = 100000
-	maxBandwidthUpperBound int64 = 10737418240 // 10 GB/s (显式 int64，避免 32-bit 平台 int 溢出)
-)
+// validateRateLimit 校验限速配置（别名，实现在 core）
+func validateRateLimit(rl *core.TunnelRateLimit) error {
+	return core.ValidateRateLimit(rl)
+}
 
 // validateP2PRoomPairing 校验 p2p 隧道 room 的跨记录配对不变量：
 // 同一 room 全局最多 2 条记录且分属 2 个不同节点。
@@ -233,6 +184,9 @@ func (s *TunnelConfigService) applyTunnelChangeLocked(ctx context.Context, nodeI
 	if err := s.validateCrossNodeTunnelNames(ctx, nodeID, next); err != nil {
 		return nil, nil, err
 	}
+	if err := s.validateListenPortConflicts(ctx, nodeID, next); err != nil {
+		return nil, nil, err
+	}
 	if err := s.persistUpdatedNode(ctx, nodeID, next); err != nil {
 		return nil, nil, err
 	}
@@ -269,6 +223,63 @@ func (s *TunnelConfigService) validateCrossNodeTunnelNames(ctx context.Context, 
 		all, err := s.nodeRepo.GetAll()
 		if err != nil {
 			return fmt.Errorf("scan persisted nodes for tunnel name conflicts: %w", err)
+		}
+		for _, n := range all {
+			if n == nil || n.ID == nodeID {
+				continue
+			}
+			if err := conflict(n.ID, n.Tunnels); err != nil {
+				return err
+			}
+		}
+	}
+	for _, n := range s.nodeMgr.GetAll(ctx) {
+		if n == nil || n.ID == nodeID {
+			continue
+		}
+		if err := conflict(n.ID, n.Tunnels); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateListenPortConflicts 拒绝启用态 TCP/UDP 隧道的 listen_port 重复
+// （本节点变更集内 + 跨节点）。服务端监听端口全局唯一，冲突若放到监听阶段
+// 才暴露（ErrPortInUse），配置已先行落库，留下「已持久化却无法监听」的脏
+// 状态；在写路径统一入口以 ErrTunnelInvalid 拒绝，落库前拦截（REL-01）。
+func (s *TunnelConfigService) validateListenPortConflicts(ctx context.Context, nodeID string, next []core.Tunnel) error {
+	isRoutable := func(t core.Tunnel) bool {
+		return t.IsEnabled() && (t.Type == core.TunnelTypeTCP || t.Type == core.TunnelTypeUDP) && t.ListenPort > 0
+	}
+	// 本节点变更集内（next 已含既有基线）：同端口不同名即冲突
+	owner := map[int]string{}
+	for _, t := range next {
+		if !isRoutable(t) {
+			continue
+		}
+		if prev, dup := owner[t.ListenPort]; dup && prev != t.Name {
+			return fmt.Errorf("%w: listen_port %d already used by tunnel %q on node %s",
+				core.ErrTunnelInvalid, t.ListenPort, prev, nodeID)
+		}
+		owner[t.ListenPort] = t.Name
+	}
+	if len(owner) == 0 {
+		return nil
+	}
+	conflict := func(other string, tunnels []core.Tunnel) error {
+		for _, t := range tunnels {
+			if isRoutable(t) && owner[t.ListenPort] != "" && owner[t.ListenPort] != t.Name {
+				return fmt.Errorf("%w: listen_port %d already used by tunnel %q on node %s (server listen ports are globally unique)",
+					core.ErrTunnelInvalid, t.ListenPort, t.Name, other)
+			}
+		}
+		return nil
+	}
+	if s.nodeRepo != nil {
+		all, err := s.nodeRepo.GetAll()
+		if err != nil {
+			return fmt.Errorf("scan persisted nodes for listen port conflicts: %w", err)
 		}
 		for _, n := range all {
 			if n == nil || n.ID == nodeID {
@@ -352,30 +363,13 @@ func (s *TunnelConfigService) revokeRemovedP2PTokens(nodeID string, oldTunnels, 
 	}
 }
 
-// validateRateLimit 校验限速配置（拒绝零值/负值/极大值）
-func validateRateLimit(rl *core.TunnelRateLimit) error {
-	if rl == nil {
-		return nil
-	}
-	if rl.MaxConns < 0 || rl.MaxConns > maxConnsUpperBound {
-		return fmt.Errorf("%w: max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, maxConnsUpperBound, rl.MaxConns)
-	}
-	if rl.MaxBandwidth < 0 || rl.MaxBandwidth > maxBandwidthUpperBound {
-		return fmt.Errorf("%w: max_bandwidth must be 1-%d bytes/sec, got %d", core.ErrTunnelInvalid, maxBandwidthUpperBound, rl.MaxBandwidth)
-	}
-	if rl.MaxConns == 0 && rl.MaxBandwidth == 0 {
-		return fmt.Errorf("%w: rate_limit must have at least one non-zero field, use null to clear", core.ErrTunnelInvalid)
-	}
-	return nil
-}
-
 // validateNodeRateLimit 校验节点级限速配置
 func validateNodeRateLimit(rl *core.NodeRateLimit) error {
 	if rl == nil {
 		return nil
 	}
-	if rl.MaxConns < 0 || rl.MaxConns > maxConnsUpperBound {
-		return fmt.Errorf("%w: node max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, maxConnsUpperBound, rl.MaxConns)
+	if rl.MaxConns < 0 || rl.MaxConns > core.MaxConnsUpperBound {
+		return fmt.Errorf("%w: node max_conns must be 1-%d, got %d", core.ErrTunnelInvalid, core.MaxConnsUpperBound, rl.MaxConns)
 	}
 	if rl.MaxConns == 0 {
 		return fmt.Errorf("%w: node max_conns must be > 0, use null to clear", core.ErrTunnelInvalid)
@@ -720,21 +714,41 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		// 在线节点：启动 TCP/UDP 监听器
 		node, ok := s.nodeMgr.Get(ctx, nodeID)
 		if ok && node.Status == core.NodeStatusOnline {
+			var startErr error
 			for i := range tunnels {
 				t := tunnels[i]
 				if !t.IsEnabled() {
 					continue
 				}
+				if t.Type != core.TunnelTypeTCP && t.Type != core.TunnelTypeUDP {
+					continue
+				}
+				// 已在监听同一端口的同名隧道无需重启：对同端口二次 bind 必然
+				// 失败，历史上这类噪音错误被静默吞掉，上抛前必须先消除
+				if s.isListenerActive(t) {
+					continue
+				}
+				var err error
 				switch t.Type {
 				case core.TunnelTypeTCP:
-					if err := s.gateway.StartTCP(s.longLivedCtx, t); err != nil {
-						slog.Error("Failed to start TCP listener", "tunnel", t.Name, "error", err)
-					}
+					err = s.gateway.StartTCP(s.longLivedCtx, t)
 				case core.TunnelTypeUDP:
-					if err := s.gateway.StartUDP(s.longLivedCtx, t); err != nil {
-						slog.Error("Failed to start UDP listener", "tunnel", t.Name, "error", err)
-					}
+					err = s.gateway.StartUDP(s.longLivedCtx, t)
 				}
+				if err != nil {
+					slog.Error("Failed to start tunnel listener", "tunnel", t.Name, "type", t.Type, "error", err)
+					if startErr == nil {
+						startErr = fmt.Errorf("tunnel %s: %w", t.Name, err)
+					}
+					continue // 尽力启动其余隧道，失败汇总上抛
+				}
+			}
+			if startErr != nil {
+				// REL-01：监听失败必须上抛（ErrPortInUse 语义），不再静默继续。
+				// StartTCP/StartUDP 失败不触碰监听器注册表，同名旧监听器仍在
+				// 服务——配置失败可感知且既有服务不中断；跨隧道的已删除监听器
+				// 按配置语义停止，不受此影响
+				return fmt.Errorf("%w: %v", core.ErrPortInUse, startErr)
 			}
 		}
 	}
@@ -744,6 +758,32 @@ func (s *TunnelConfigService) applyRuntimeTunnels(ctx context.Context, nodeID st
 		"tunnels", len(tunnels),
 	)
 	return nil
+}
+
+// isListenerActive 判断隧道的监听器是否已注册且仍在监听同一端口：
+// 满足则跳过重复启动（避免对同端口二次 bind 的噪音失败），端口变更时
+// 仍会走 StartTCP/StartUDP（新监听成功后由注册表替换关闭旧监听）
+func (s *TunnelConfigService) isListenerActive(t core.Tunnel) bool {
+	if s.gateway == nil {
+		return false
+	}
+	reg := s.gateway.Registry()
+	if reg == nil {
+		return false
+	}
+	ln, ok := reg.Get(t.Name)
+	if !ok {
+		return false
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		return false
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	return portNum == t.ListenPort
 }
 
 func (s *TunnelConfigService) persistUpdatedNode(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
@@ -914,12 +954,14 @@ func (s *TunnelConfigService) rollbackOldNode(ctx context.Context, fromNodeID st
 
 // persistableNode 返回面向持久化的节点副本：仅运行态的字段清零，
 // 避免 sysinfo/客户端状态列表随每次落库写进 blob 持续膨胀、重启后
-// 离线节点带着陈旧运行态"复活"
+// 离线节点带着陈旧运行态"复活"；接入 token 同样剥离（SEC-03），
+// 明文节点凭据不属于持久化契约
 func persistableNode(n *core.Node) core.Node {
 	cp := *n
 	cp.SysInfo = nil
 	cp.ClientStatuses = nil
 	cp.RTT = 0
+	cp.Token = ""
 	return cp
 }
 
@@ -987,7 +1029,9 @@ func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []
 		}
 		node, ok := s.nodeMgr.Get(ctx, item.NodeID)
 		if !ok {
-			return nil, fmt.Errorf("node %s not found", item.NodeID)
+			// 审查③：必须 %w 包装哨兵——handler 侧以 errors.Is 判定，
+			// 裸文案会让 ErrNodeNotFound 分支变死代码、非法请求落 500
+			return nil, fmt.Errorf("node %s: %w", item.NodeID, core.ErrNodeNotFound)
 		}
 		found := false
 		for _, t := range node.Tunnels {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -46,6 +47,14 @@ func (h *NodeHandler) SetP2PTokenRevoker(v P2PTokenRevoker) {
 
 func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager, controlSrv NodeControlServer) *NodeHandler {
 	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo, tunnelSvc: tunnelSvc, controlSrv: controlSrv}
+}
+
+// sanitizeNodeForResponse 返回剥离接入 token 的节点副本（SEC-03）：
+// token 是节点侧凭据，API 回显等于把凭据暴露给所有有权读节点的账号
+func sanitizeNodeForResponse(n *core.Node) *core.Node {
+	cp := *n
+	cp.Token = ""
+	return &cp
 }
 
 func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +133,7 @@ func (h *NodeHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if !checkNodeOwnership(w, r, node) {
 		return
 	}
-	ResponseOK(w, node)
+	ResponseOK(w, sanitizeNodeForResponse(node))
 }
 
 func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -181,10 +190,11 @@ func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Persist pre-configured node to Redka
-	if err := h.nodeRepo.Create(node); err != nil {
+	// SEC-03：落库副本剥离 token——明文凭据不得进持久层 blob
+	if err := h.nodeRepo.Create(sanitizeNodeForResponse(node)); err != nil {
 		slog.Warn("Failed to persist node config", "error", err)
 	}
-	ResponseOK(w, node)
+	ResponseOK(w, sanitizeNodeForResponse(node))
 }
 
 func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -231,15 +241,19 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := h.tunnelSvc.ReplaceTunnels(r.Context(), id, req.Tunnels); err != nil {
-			if err == core.ErrNodeNotFound {
+			// 审查③：service 层校验错误均经 %w 包装哨兵，必须用 errors.Is——
+			// == 比较是死分支，非法配置会落 500 generic 而非 400+原因
+			if errors.Is(err, core.ErrNodeNotFound) {
 				ResponseError(w, http.StatusNotFound, 404, "Node not found")
 				return
 			}
-			if err == core.ErrTunnelInvalid {
+			if errors.Is(err, core.ErrTunnelInvalid) {
 				ResponseError(w, http.StatusBadRequest, 400, err.Error())
 				return
 			}
-			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node tunnels: "+err.Error())
+			// QUA-02：内部错误细节（存储路径/驱动信息）进日志，对外 generic
+			slog.Error("Failed to update node tunnels", "nodeId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node tunnels")
 			return
 		}
 	}
@@ -258,6 +272,7 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 			persisted.SysInfo = nil
 			persisted.ClientStatuses = nil
 			persisted.RTT = 0
+			persisted.Token = "" // SEC-03：顺带剥离历史遗留的明文 token
 			if err := h.nodeRepo.Update(persisted); err != nil {
 				slog.Warn("Failed to persist node update", "error", err)
 			}
@@ -268,12 +283,13 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 			cp.SysInfo = nil
 			cp.ClientStatuses = nil
 			cp.RTT = 0
+			cp.Token = "" // SEC-03
 			if err := h.nodeRepo.Create(&cp); err != nil {
 				slog.Warn("Failed to persist node create", "error", err)
 			}
 		}
 		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-			ResponseOK(w, node)
+			ResponseOK(w, sanitizeNodeForResponse(node))
 			return
 		}
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
@@ -281,7 +297,7 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-		ResponseOK(w, node)
+		ResponseOK(w, sanitizeNodeForResponse(node))
 	} else {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 	}
@@ -455,7 +471,7 @@ func (h *NodeHandler) Restart(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.controlSrv.RestartNode(r.Context(), id, req.Delay, req.Reason); err != nil {
 		slog.Error("RestartNode failed", "node", id, "error", err)
-		ResponseError(w, http.StatusInternalServerError, 500, "Restart failed: "+err.Error())
+		ResponseError(w, http.StatusInternalServerError, 500, "Restart failed")
 		return
 	}
 	ResponseOK(w, map[string]any{"status": "ok", "node_id": id, "delay_seconds": req.Delay})
@@ -490,20 +506,22 @@ func (h *NodeHandler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.tunnelSvc.UpdateNodeRateLimit(r.Context(), id, rl); err != nil {
-		if err == core.ErrTunnelInvalid {
+		// 审查③：同上，%w 包装链必须 errors.Is 判哨兵
+		if errors.Is(err, core.ErrTunnelInvalid) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
-		if err == core.ErrNodeNotFound {
+		if errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
-		ResponseError(w, http.StatusInternalServerError, 500, err.Error())
+		slog.Error("Failed to update node rate limit", "nodeId", id, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update rate limit")
 		return
 	}
 
 	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
-		ResponseOK(w, node)
+		ResponseOK(w, sanitizeNodeForResponse(node))
 	} else {
 		ResponseError(w, http.StatusNotFound, 404, "Node not found")
 	}

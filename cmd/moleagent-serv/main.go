@@ -151,15 +151,11 @@ func main() {
 	gateway.HyphenRouting = cfg.Server.Gateway.HyphenRouting
 
 	// --- 控制端口 ---
-	token := *nodeToken
-	if token == "" {
-		token = os.Getenv("MA_NODE_TOKEN")
-	}
-	if token == "" {
-		token = "default-node-token-change-me"
-		// 该默认值在公开仓库中可查：不配置即等于向所有能访问控制端口的人开放节点注册
-		fmt.Fprintf(os.Stderr, "[WARN] node access token not configured (-nodetoken / MA_NODE_TOKEN); using the well-known default token — anyone can register nodes!\n")
-		slog.Warn("Node access token is the well-known default; set -nodetoken or MA_NODE_TOKEN to secure the control port")
+	// SEC-05：token 未配置时拒绝启动（原为回落公开默认值 + WARN）
+	token, err := resolveNodeToken(*nodeToken)
+	if err != nil {
+		slog.Error("Node access token is not configured; refusing to start", "error", err)
+		os.Exit(1)
 	}
 	var tlsConfig *tls.Config
 	if cfg.Server.TLS.Enabled {
@@ -195,6 +191,8 @@ func main() {
 		transport = tunnel.NewTCPTransport(tlsConfig)
 	}
 	controlSrv := tunnel.NewControlServer(cfg.Server.ControlPort, transport, nodeMgr, token, nodeRepo)
+	// SEC-01/SEC-02：节点认证行为开关（register 归属校验 / 旧格式兼容期）
+	controlSrv.SetNodeAuthOptions(cfg.NodeAuth.RegisterOwnerCheck, cfg.NodeAuth.LegacyFormatEnabled)
 
 	// 额外传输层：WS、KCP 可与 TCP 同时监听
 	if cfg.Server.WSPort != "" {
@@ -239,9 +237,11 @@ func main() {
 
 	// 所有依赖注入完成后再启动监听：否则启动窗口内 authenticator/tunnelSvc
 	// 为 nil，连接会走明文 token 比对兜底、配置命令被静默丢弃
+	controlStartFailed := make(chan struct{})
 	go func() {
 		if err := controlSrv.Start(ctx); err != nil {
 			slog.Error("Control server error", "error", err)
+			close(controlStartFailed)
 			cancel()
 		}
 	}()
@@ -365,10 +365,7 @@ func main() {
 		}
 	}()
 
-	gatewaySrv := &http.Server{
-		Addr:    cfg.Server.GatewayPort,
-		Handler: gateway,
-	}
+	gatewaySrv := newGatewayServer(cfg.Server.GatewayPort, gateway)
 	go func() {
 		slog.Info("Gateway server listening", "addr", cfg.Server.GatewayPort)
 		if err := gatewaySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -403,11 +400,32 @@ func main() {
 	}
 
 	slog.Info("moleAgent_Serv stopped gracefully")
+	// 控制面监听失败是致命的启动故障：优雅停机后必须以非零码退出，
+	// 否则 systemd/容器编排无法感知失败并告警重启（此前恒退 0 被掩盖）
+	select {
+	case <-controlStartFailed:
+		os.Exit(1)
+	default:
+	}
 }
 
 // maxAPIBodyBytes API 请求体统一上限：多数端点裸读 JSON 且无任何
 // MaxBytesReader，单请求无界解码可被用来耗尽内存
 const maxAPIBodyBytes = 16 << 20 // 16MB
+
+// newGatewayServer 构造网关 HTTP 服务（REL-05）：
+//   - ReadHeaderTimeout 10s：slowloris 防护，与 apiSrv 对齐
+//   - IdleTimeout 120s：空闲连接回收
+//   - 刻意不设 ReadTimeout：网关承载 WebSSH/WS 长连接，整体读超时会掐断
+//     正常长会话（头阶段的慢连接已由 ReadHeaderTimeout 覆盖）
+func newGatewayServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
 
 func buildAPIRouter(
 	mw *auth.AuthMiddleware,
@@ -454,7 +472,9 @@ func buildAPIRouter(
 	websshH := api.NewWebSSHHandler(nodeMgr)
 
 	// === 公开端点 ===
-	router.RegisterPublic("POST", "/api/v1/auth/login", authH.Login)
+	// 登录端点套独立失败限速（SEC-07）：不受 ratelimit.api.enabled 总开关影响
+	loginLimiter := auth.NewLoginLimiter()
+	router.RegisterPublic("POST", "/api/v1/auth/login", loginLimiter.Wrap(authH.Login))
 	router.RegisterPublic("GET", "/api/v1/health", sysH.Health)
 	router.RegisterPublic("GET", "/api/v1/version", sysH.Version)
 	router.RegisterPublic("POST", "/api/v1/auth/feishu/callback", feishuH.Callback)
@@ -490,7 +510,8 @@ func buildAPIRouter(
 	router.Register("POST", "/api/v1/users", userH.Create, "users", "write")
 	router.Register("GET", "/api/v1/users/", userH.Get, "users", "read")
 	router.Register("PUT", "/api/v1/users/", userH.Update, "users", "write")
-	router.Register("DELETE", "/api/v1/users/", userH.Delete, "users", "delete")
+	// 删除用户属高危操作：拒绝 AccessKey 旁路（SEC-06）
+	router.RegisterStrict("DELETE", "/api/v1/users/", userH.Delete, "users", "delete")
 	router.Register("POST", "/api/v1/users/", userH.AssignRole, "users", "admin")
 
 	// === 角色管理 ===
@@ -530,13 +551,16 @@ func buildAPIRouter(
 	// === 系统管理 ===
 	router.Register("GET", "/api/v1/metrics", sysH.Metrics, "system", "read")
 	router.Register("GET", "/api/v1/config", sysH.GetConfig, "system", "admin")
-	router.Register("GET", "/api/v1/accesskey", sysH.GetAccessKey, "accesskey", "read")
-	router.Register("PUT", "/api/v1/accesskey", sysH.SetAccessKey, "accesskey", "admin")
-	router.Register("DELETE", "/api/v1/accesskey", sysH.DeleteAccessKey, "accesskey", "admin")
+	// AccessKey 管理本身不允许用 AccessKey 执行（SEC-06）：否则持有旧密钥
+	// 者可自行轮换/删除密钥抹去痕迹
+	router.RegisterStrict("GET", "/api/v1/accesskey", sysH.GetAccessKey, "accesskey", "read")
+	router.RegisterStrict("PUT", "/api/v1/accesskey", sysH.SetAccessKey, "accesskey", "admin")
+	router.RegisterStrict("DELETE", "/api/v1/accesskey", sysH.DeleteAccessKey, "accesskey", "admin")
 
 	// === 版本升级 ===
 	router.Register("GET", "/api/v1/check-update", updateH.CheckUpdate, "system", "read")
-	router.Register("POST", "/api/v1/self-update", updateH.SelfUpdate, "system", "admin")
+	// 自更新会替换二进制：拒绝 AccessKey 旁路（SEC-06）
+	router.RegisterStrict("POST", "/api/v1/self-update", updateH.SelfUpdate, "system", "admin")
 	router.Register("GET", "/api/v1/update-progress", updateH.UpdateProgress, "system", "read")
 
 	// === WebSSH 终端 ===
@@ -551,4 +575,18 @@ func parseExpiry(s string) time.Duration {
 		return 24 * time.Hour
 	}
 	return d
+}
+
+// resolveNodeToken 解析节点接入 token（flag > 环境变量）；两者均未设置时
+// 返回错误拒绝启动——公开仓库中的默认 token 等于向所有能访问控制端口的
+// 人开放节点注册（SEC-05）
+func resolveNodeToken(flagToken string) (string, error) {
+	token := flagToken
+	if token == "" {
+		token = os.Getenv("MA_NODE_TOKEN")
+	}
+	if token == "" {
+		return "", fmt.Errorf("node access token not configured: set the -nodetoken flag or MA_NODE_TOKEN environment variable")
+	}
+	return token, nil
 }

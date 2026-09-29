@@ -18,15 +18,15 @@ var _ core.TunnelStatsReader = (*StatsTracker)(nil)
 
 // tunnelRuntime 隧道运行时生命周期句柄
 type tunnelRuntime struct {
-	cancel func()       // 取消隧道级 context
+	cancel func()        // 取消隧道级 context
 	done   chan struct{} // 运行循环退出信号
 }
 
 // ListenerRegistry 管理所有隧道的监听器和运行时
 type ListenerRegistry struct {
 	mu        sync.RWMutex
-	listeners map[string]net.Listener    // tunnelName -> listener
-	runtimes  map[string]*tunnelRuntime  // tunnelName -> runtime handle
+	listeners map[string]net.Listener   // tunnelName -> listener
+	runtimes  map[string]*tunnelRuntime // tunnelName -> runtime handle
 }
 
 func NewListenerRegistry() *ListenerRegistry {
@@ -179,11 +179,11 @@ type TunnelGateway struct {
 	stats    *StatsTracker
 	limiter  ratelimit.GatewayLimiter
 
-	// 路由索引：加速域名和隧道名称查找
-	domainMu sync.RWMutex
+	// 路由索引：加速域名和隧道名称查找。
+	// 双索引共用一把锁（QUA-01）：RebuildIndex 在同一临界区内完成两索引
+	// 替换，消除读侧看到「新 domain + 旧 tunnel」混搭快照的窗口
+	idxMu     sync.RWMutex
 	domainIdx map[string]*domainRoute // domain -> route
-
-	tunnelMu sync.RWMutex
 	tunnelIdx map[string]*tunnelRoute // tunnelName -> route
 
 	// HyphenRouting 泛域名分隔符：true=hyphen(-), false=dot(.)
@@ -240,26 +240,24 @@ func (tg *TunnelGateway) RebuildIndex(ctx context.Context) {
 				continue
 			}
 			newTunnel[t.Name] = &tunnelRoute{nodeID: n.ID}
-			if t.Type == core.TunnelTypeHTTP && t.Domain != "" {
+			if isDomainRoutable(t) {
 				newDomain[t.Domain] = &domainRoute{nodeID: n.ID, tunnelName: t.Name}
 			}
 		}
 	}
 
-	tg.domainMu.Lock()
+	// QUA-01：两索引在同一临界区内一次换入，读者不会观察到混搭快照
+	tg.idxMu.Lock()
 	tg.domainIdx = newDomain
-	tg.domainMu.Unlock()
-
-	tg.tunnelMu.Lock()
 	tg.tunnelIdx = newTunnel
-	tg.tunnelMu.Unlock()
+	tg.idxMu.Unlock()
 }
 
 // findByDomain 通过域名索引查找节点和隧道名
 func (tg *TunnelGateway) findByDomain(ctx context.Context, domain string) (*core.Node, string) {
-	tg.domainMu.RLock()
+	tg.idxMu.RLock()
 	r, ok := tg.domainIdx[domain]
-	tg.domainMu.RUnlock()
+	tg.idxMu.RUnlock()
 	if !ok {
 		return nil, ""
 	}
@@ -272,9 +270,9 @@ func (tg *TunnelGateway) findByDomain(ctx context.Context, domain string) (*core
 
 // findByTunnelName 通过隧道名称索引查找节点
 func (tg *TunnelGateway) findByTunnelName(ctx context.Context, tunnelName string) *core.Node {
-	tg.tunnelMu.RLock()
+	tg.idxMu.RLock()
 	r, ok := tg.tunnelIdx[tunnelName]
-	tg.tunnelMu.RUnlock()
+	tg.idxMu.RUnlock()
 	if !ok {
 		return nil
 	}
