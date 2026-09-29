@@ -1,0 +1,22 @@
+# 编译产物
+moleAgent_client
+moleagent-client
+moleagent-client-*
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.worktrees/
+.omc/
+
+# 工具产物（claude code / claude-flow）
+.claude/
+.claude-flow/

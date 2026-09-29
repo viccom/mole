@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "moleAgent-manager",
+  "outputfilename": "moleAgent-manager",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "mole"
+  },
+  "info": {
+    "productName": "moleAgent Manager",
+    "copyright": "Copyright 2024",
+    "comments": "Multi-instance manager for moleAgent_client"
+  },
+  "wailsjsdir": "./frontend",
+  "outputType": "desktop"
+}

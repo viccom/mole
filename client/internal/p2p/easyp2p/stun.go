@@ -1,0 +1,852 @@
+//go:build p2p
+
+package easyp2p
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/pion/stun/v3"
+	"moleAgent_client/internal/p2p/misc"
+	"moleAgent_client/internal/p2p/netx"
+)
+
+var (
+	STUNServers []string = []string{
+		// 国内公共 STUN（Python 实测 10/10 成功，低延迟；GetPublicIP 并发查询取首个响应，
+		// 国内低延迟自然优先）。取代 stun.l.google.com（国内被墙无响应）与 stun.qq.com（已关停）。
+		"stun.miwifi.com:3478",        // 小米 ~6ms
+		"stun.hitv.com:3478",          // 海信 ~33ms
+		"stun.chat.bilibili.com:3478", // B站 ~33ms
+		// 国外公共 STUN（兜底，实测可达）
+		"global.turn.twilio.com:3478",  // ~63ms
+		"stun.cloudflare.com:3478",     // ~229ms
+		"tcp://turn.cloudflare.com:80", // TCP STUN（tcp4 模式用）
+	}
+)
+
+func NetworksForStun(network string) ([]string, error) {
+	switch network {
+	case "any":
+		return []string{"tcp6", "tcp4", "udp4"}, nil
+	case "any6":
+		return []string{"tcp6"}, nil
+	case "any4":
+		return []string{"tcp4", "udp4"}, nil
+	case "tcp":
+		return []string{"tcp6", "tcp4"}, nil
+	case "udp":
+		return []string{"udp6", "udp4"}, nil
+	case "tcp6", "tcp4", "udp6", "udp4":
+		return []string{network}, nil
+	default:
+		return nil, fmt.Errorf("unsupported network type: '%s'", network)
+	}
+}
+
+// GetPublicIP 获取公网IP，返回第一个成功响应的STUN服务器的结果
+func GetPublicIP(network, bind string, timeout time.Duration) (index int, localAddr, natAddr string, err error) {
+	return GetPublicIPContext(context.Background(), network, bind, timeout)
+}
+
+// GetPublicIPContext 是 GetPublicIP 的 context 感知版本。
+// parentCtx 被取消时，AfterFunc 会调用 client.Close() 解除阻塞中的 stun.Do，
+// 各 worker 自身的 defer 链负责关闭 client 及底层 conn。
+func GetPublicIPContext(parentCtx context.Context, network, bind string, timeout time.Duration) (index int, localAddr, natAddr string, err error) {
+	if cause := context.Cause(parentCtx); cause != nil {
+		return -1, "", "", cause
+	}
+	// 1. result 结构体包含单次查询结果
+	type result struct {
+		index int
+		local string
+		nat   string
+		err   error
+	}
+
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+	defer cancel()
+
+	results := make(chan result, len(STUNServers))
+	var wg sync.WaitGroup
+
+	netLower := strings.ToLower(network)
+	netProto := "udp"
+	if strings.HasPrefix(netLower, "tcp") {
+		netProto = "tcp"
+	}
+	isIPv6 := strings.HasSuffix(netLower, "6")
+
+	resolveAddr := func(proto string) (string, net.Addr, error) {
+		var network string
+		if proto == "tcp" {
+			network = "tcp4"
+			if isIPv6 {
+				network = "tcp6"
+			}
+			addr, err := net.ResolveTCPAddr(network, bind)
+			return network, addr, err
+		}
+		network = "udp4"
+		if isIPv6 {
+			network = "udp6"
+		}
+		addr, err := net.ResolveUDPAddr(network, bind)
+		return network, addr, err
+	}
+
+	for i, rawAddr := range STUNServers {
+		scheme := ""
+		addr := rawAddr
+
+		if strings.HasPrefix(rawAddr, "udp://") {
+			scheme = "udp"
+			addr = strings.TrimPrefix(rawAddr, "udp://")
+		} else if strings.HasPrefix(rawAddr, "tcp://") {
+			scheme = "tcp"
+			addr = strings.TrimPrefix(rawAddr, "tcp://")
+		}
+
+		//选择匹配network的stun服务器
+		if scheme != "" && scheme != netProto {
+			continue
+		}
+
+		wg.Add(1)
+		go func(index int, stunAddr string) {
+			defer wg.Done()
+
+			// 检查 context 是否已经被取消，避免不必要的拨号
+			if ctx.Err() != nil {
+				//logSTUN("Err: %s ...\n", stunAddr)
+				return
+			}
+
+			useNetwork, laddr, err := resolveAddr(netProto)
+			if err != nil {
+				//logSTUN("stun resolve local addr: %s://%s err: %v\n", useNetwork, stunAddr, err)
+				results <- result{err: fmt.Errorf("resolve local addr: %v", err)}
+				return
+			}
+
+			// 为拨号器创建一个带 context 的超时
+			dialer := &net.Dialer{LocalAddr: laddr}
+			if strings.HasPrefix(useNetwork, "tcp") {
+				dialer.Control = netx.ControlTCP
+			} else {
+				dialer.Control = netx.ControlUDP
+			}
+
+			//logSTUN("stun dial: %s://%s ...\n", useNetwork, stunAddr)
+			var conn net.Conn
+			if strings.Contains(stunAddr, "?") {
+				conn, err = netx.DialRace(ctx, useNetwork, stunAddr, dialer.DialContext)
+			} else {
+				conn, err = dialer.DialContext(ctx, useNetwork, stunAddr)
+			}
+			if err != nil {
+				//logSTUN("STUN dial failed: %s://%s err: %v\n", useNetwork, stunAddr, err)
+				// 如果 context 被取消，错误会是 "context canceled"
+				results <- result{err: fmt.Errorf("STUN dial failed: %v", err)}
+				return
+			}
+			//logSTUN("stun dial: %s://%s OK\n", useNetwork, stunAddr)
+
+			client, err := stun.NewClient(conn)
+			if err != nil {
+				//logSTUN("STUN NewClient failed: %s://%s err: %v\n", useNetwork, stunAddr, err)
+				conn.Close()
+				results <- result{err: fmt.Errorf("STUN NewClient failed: %v", err)}
+				return
+			}
+			defer client.Close()
+			// parentCtx 取消时强制 Close client，解除阻塞中的 stun.Do。
+			cancelCloseDone := make(chan struct{})
+			stopCancelClose := context.AfterFunc(ctx, func() {
+				_ = client.Close()
+				close(cancelCloseDone)
+			})
+			defer func() {
+				if !stopCancelClose() {
+					<-cancelCloseDone
+				}
+			}()
+
+			var xorAddr stun.XORMappedAddress
+			var noneXorAddr stun.MappedAddress
+			var callErr error
+
+			req := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
+
+			//logSTUN("stun do request: %s://%s\n", useNetwork, stunAddr)
+
+			// client.Do 不直接支持 context，但拨号阶段已经支持了。
+			// STUN 请求通常很快，超时主要由外层 context 控制。
+			err = client.Do(req, func(e stun.Event) {
+				if e.Error != nil {
+					callErr = e.Error
+				} else if err := xorAddr.GetFrom(e.Message); err != nil {
+					// 尝试使用非 XOR-MAPPED-ADDRESS 获取地址（某些 STUN 服务器可能只返回 MAPPED-ADDRESS）
+					if err2 := noneXorAddr.GetFrom(e.Message); err2 != nil {
+						callErr = err
+					} else {
+						xorAddr.IP = noneXorAddr.IP
+						xorAddr.Port = noneXorAddr.Port
+					}
+				}
+			})
+
+			if err != nil {
+				//logSTUN("STUN Do failed: %s://%s err: %v\n", useNetwork, stunAddr, err)
+				results <- result{err: fmt.Errorf("STUN Do failed: %v", err)}
+				return
+			}
+			if callErr != nil {
+				//logSTUN("STUN response error: %s://%s err: %v\n", useNetwork, stunAddr, callErr)
+				results <- result{err: fmt.Errorf("STUN response error: %v", callErr)}
+				return
+			}
+
+			//logSTUN("stun result: %s://%s(%s) %s\n", useNetwork, stunAddr, conn.RemoteAddr().String(), xorAddr.String())
+
+			// 2. 发送成功结果。client 及其底层连接由当前 worker 的 defer 链关闭。
+			results <- result{
+				index: i,
+				local: conn.LocalAddr().String(),
+				nat:   xorAddr.String(),
+			}
+
+		}(i, addr)
+
+		if bind != "" && !strings.HasSuffix(bind, ":0") && strings.HasPrefix(netProto, "udp") {
+			//由于UDP SO_REUSEADDR明确端口的话，只有一个能收到回复数据，所以只选第一个可用的stunServer
+			break
+		}
+	}
+
+	workersDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(results)
+		close(workersDone)
+	}()
+
+	// 3. for-select 循环
+	for {
+		select {
+		case <-ctx.Done():
+			// 超时或被主动取消。等待 worker 释放所有 client 和连接。
+			<-workersDone
+			if cause := context.Cause(parentCtx); cause != nil {
+				return -1, "", "", cause
+			}
+			return -1, "", "", fmt.Errorf("timeout or cancelled while waiting for STUN response")
+
+		case r, ok := <-results:
+			if !ok {
+				// Channel 已关闭，说明所有 goroutine 都已执行完毕且无一成功。
+				if cause := context.Cause(parentCtx); cause != nil {
+					return -1, "", "", cause
+				}
+				return -1, "", "", fmt.Errorf("all STUN servers failed")
+			}
+
+			if r.err == nil {
+				// **** 找到第一个成功者 ****
+				if cause := context.Cause(parentCtx); cause != nil {
+					cancel()
+					<-workersDone
+					return -1, "", "", cause
+				}
+
+				// 立即通知其他 goroutine 停止，并等待所有连接释放。
+				cancel()
+				<-workersDone
+				return r.index, r.local, r.nat, nil
+			}
+			// 如果 r.err != nil，忽略该错误结果，继续等待下一个
+		}
+	}
+}
+
+// STUNResult struct holds the outcome of a single STUN request.
+// It's used both internally and as the return type for the function.
+type STUNResult struct {
+	Index   int // Original index of the STUN server in the input slice
+	Network string
+	Local   string // Local IP address and port used for the STUN request
+	Nat     string // NAT IP address and port returned by the STUN server
+	Remote  string // Stun Server address used
+	Elapsed time.Duration
+	Err     error // Error, if any, encountered during the STUN request
+}
+
+// validateNatIP checks that the NAT IP returned by a STUN server is valid:
+// it must not be a private/reserved IP, and must not be the STUN server's own IP.
+func validateNatIP(natIP net.IP, remoteAddr net.Addr) error {
+	if natIP == nil {
+		return fmt.Errorf("NAT IP is nil")
+	}
+
+	// Check private/reserved ranges
+	if natIP.IsPrivate() || natIP.IsLoopback() || natIP.IsLinkLocalUnicast() || natIP.IsLinkLocalMulticast() || natIP.IsUnspecified() {
+		return fmt.Errorf("NAT IP %s is a private/reserved address", natIP)
+	}
+
+	// Check if NAT IP equals the STUN server's IP
+	if remoteAddr != nil {
+		remoteHost, _, err := net.SplitHostPort(remoteAddr.String())
+		if err == nil {
+			remoteIP := net.ParseIP(remoteHost)
+			if remoteIP != nil && remoteIP.Equal(natIP) {
+				return fmt.Errorf("NAT IP %s is the same as STUN server IP", natIP)
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetPublicIPs attempts to discover public IP addresses using STUN servers.
+// It collects as many unique NAT IP addresses (by IP address only, ignoring port)
+// as possible within the specified timeout, and returns all results (unique successful ones and errors).
+func GetPublicIPs(network, bind string, timeout time.Duration, natIPUniq bool, shPktCon net.PacketConn) ([]*STUNResult, error) {
+	return GetPublicIPsContext(context.Background(), network, bind, timeout, natIPUniq, shPktCon)
+}
+
+// GetPublicIPsContext 是 GetPublicIPs 的 context 感知版本。parentCtx 取消时，
+// 各 worker 的 AfterFunc 会关闭自己的 stun client 解除阻塞，函数尽早返回 cause。
+func GetPublicIPsContext(parentCtx context.Context, network, bind string, timeout time.Duration, natIPUniq bool, shPktCon net.PacketConn) ([]*STUNResult, error) {
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+	defer cancel() // Ensure cancel is called to release context resources
+
+	resultsChan := make(chan STUNResult, len(STUNServers)) // Channel to collect results from goroutines
+	var wg sync.WaitGroup                                  // WaitGroup to wait for all goroutines to finish
+
+	netLower := strings.ToLower(network)
+	isIPv6 := strings.HasSuffix(netLower, "6")
+	netProto := "udp"
+	var UDPDialer *netx.UDPSessionDialer
+	if strings.HasPrefix(netLower, "tcp") {
+		netProto = "tcp"
+	} else {
+		listenNetwork := "udp4"
+		if isIPv6 {
+			listenNetwork = "udp6"
+		}
+		localAddr, err := net.ResolveUDPAddr(listenNetwork, bind)
+		if err != nil {
+			return nil, err
+		}
+		basedUDPConn := shPktCon
+		if basedUDPConn == nil {
+			sharedUDPConn, err := net.ListenUDP(listenNetwork, localAddr)
+			if err != nil {
+				return nil, err
+			}
+			defer sharedUDPConn.Close()
+			basedUDPConn = sharedUDPConn
+		}
+
+		logDiscard := misc.NewLog(io.Discard, "[UDPSession] ", log.LstdFlags|log.Lmsgprefix|log.Lshortfile)
+		UDPDialer, err = netx.NewUDPSessionDialer(basedUDPConn, false, 4096, logDiscard)
+		if err != nil {
+			return nil, err
+		}
+		defer UDPDialer.Close()
+	}
+
+	resolveAddr := func(proto string) (string, net.Addr, error) {
+		var network string
+		if proto == "tcp" {
+			network = "tcp4"
+			if isIPv6 {
+				network = "tcp6"
+			}
+			addr, err := net.ResolveTCPAddr(network, bind)
+			return network, addr, err
+		}
+		network = "udp4"
+		if isIPv6 {
+			network = "udp6"
+		}
+		addr, err := net.ResolveUDPAddr(network, bind)
+		return network, addr, err
+	}
+
+	resultNetwork := "udp4"
+	if netProto == "tcp" {
+		resultNetwork = "tcp4"
+	}
+	if isIPv6 {
+		resultNetwork = strings.TrimSuffix(resultNetwork, "4") + "6"
+	}
+	pendingResults := make(map[int]struct{})
+
+	for i, rawAddr := range STUNServers {
+		scheme := ""
+		addr := rawAddr
+
+		// Parse STUN server address scheme
+		if strings.HasPrefix(rawAddr, "udp://") {
+			scheme = "udp"
+			addr = strings.TrimPrefix(rawAddr, "udp://")
+		} else if strings.HasPrefix(rawAddr, "tcp://") {
+			scheme = "tcp"
+			addr = strings.TrimPrefix(rawAddr, "tcp://")
+		}
+
+		// Skip STUN servers that don't match the desired network protocol
+		if scheme != "" && scheme != netProto {
+			continue
+		}
+
+		pendingResults[i] = struct{}{}
+		wg.Add(1)
+		go func(index int, stunAddr string) {
+			defer wg.Done()
+			startedAt := time.Now()
+			sendResult := func(result STUNResult) {
+				result.Elapsed = time.Since(startedAt).Truncate(time.Millisecond)
+				resultsChan <- result
+			}
+
+			// Check if context is already canceled to avoid unnecessary dialing
+			if ctx.Err() != nil {
+				return
+			}
+			var err error
+
+			// Get the network type (e.g., "udp4", "tcp6")
+			useNetwork, laddr, err := resolveAddr(netProto)
+			if err != nil {
+				//logSTUN("stun resolve local addr: %s://%s err: %v\n", useNetwork, stunAddr, err)
+				sendResult(STUNResult{Index: index, Network: useNetwork, Err: fmt.Errorf("resolveAddr failed: %v", err)})
+				return
+			}
+			var conn net.Conn
+			dialer := &net.Dialer{LocalAddr: laddr}
+			if strings.HasPrefix(useNetwork, "tcp") {
+				dialer.Control = netx.ControlTCP
+				if strings.Contains(stunAddr, "?") {
+					conn, err = netx.DialRace(ctx, useNetwork, stunAddr, dialer.DialContext)
+				} else {
+					conn, err = dialer.DialContext(ctx, useNetwork, stunAddr)
+				}
+			} else {
+				if strings.Contains(stunAddr, "?") {
+					conn, err = netx.DialRace(ctx, useNetwork, stunAddr, UDPDialer.DialContext)
+				} else {
+					conn, err = UDPDialer.DialContext(ctx, useNetwork, stunAddr)
+				}
+			}
+
+			if err != nil {
+				sendResult(STUNResult{Index: index, Network: useNetwork, Err: fmt.Errorf("STUN dial failed: %v", err)})
+				return
+			}
+			defer conn.Close() // Ensure connection is closed when the goroutine finishes
+
+			// For TCP connections, set linger to 0 for immediate close
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				tcpConn.SetLinger(0)
+			}
+
+			client, err := stun.NewClient(conn, stun.WithRTO(120*time.Millisecond))
+			if err != nil {
+				sendResult(STUNResult{Index: index, Network: useNetwork, Err: fmt.Errorf("STUN NewClient failed: %v", err)})
+				return
+			}
+			defer client.Close() // Ensure client is closed when the goroutine finishes
+			// parentCtx 取消时强制 Close client，解除阻塞中的 stun.Do。
+			cancelCloseDone := make(chan struct{})
+			stopCancelClose := context.AfterFunc(ctx, func() {
+				_ = client.Close()
+				close(cancelCloseDone)
+			})
+			defer func() {
+				if !stopCancelClose() {
+					<-cancelCloseDone
+				}
+			}()
+
+			var xorAddr stun.XORMappedAddress
+			var noneXorAddr stun.MappedAddress
+			var callErr error
+
+			req := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
+
+			err = client.Do(req, func(e stun.Event) {
+				if e.Error != nil {
+					callErr = e.Error
+				} else if err := xorAddr.GetFrom(e.Message); err != nil {
+					// 尝试使用非 XOR-MAPPED-ADDRESS 获取地址（某些 STUN 服务器可能只返回 MAPPED-ADDRESS）
+					if err2 := noneXorAddr.GetFrom(e.Message); err2 != nil {
+						callErr = err
+					} else {
+						xorAddr.IP = noneXorAddr.IP
+						xorAddr.Port = noneXorAddr.Port
+					}
+				}
+			})
+
+			if err != nil {
+				sendResult(STUNResult{Index: index, Network: useNetwork, Err: fmt.Errorf("STUN Do failed: %v", err)})
+				return
+			}
+			if callErr != nil {
+				sendResult(STUNResult{Index: index, Network: useNetwork, Err: fmt.Errorf("STUN response error: %v", callErr)})
+				return
+			}
+
+			// Validate the returned NAT IP: reject private IPs and IPs matching the STUN server itself
+			if err := validateNatIP(xorAddr.IP, conn.RemoteAddr()); err != nil {
+				sendResult(STUNResult{Index: index, Network: useNetwork, Err: fmt.Errorf("STUN result invalid from %s: %v", stunAddr, err)})
+				return
+			}
+
+			// Send the successful result to the channel
+			sendResult(STUNResult{
+				Index:   index,
+				Network: useNetwork,
+				Local:   conn.LocalAddr().String(),
+				Nat:     xorAddr.String(),
+				Remote:  conn.RemoteAddr().String(),
+				Err:     nil,
+			})
+
+		}(i, addr)
+
+		// The UDP SO_REUSEADDR optimization is no longer necessary as we are not binding to a fixed port.
+		// Each dial will get a new random ephemeral port.
+	}
+
+	// Goroutine to close the results channel once all workers are done
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	// --- Collect and filter results ---
+	collectedResults := make([]*STUNResult, 0)
+	// Use a map to track unique NAT IP addresses (excluding port)
+	uniqueNatIPs := make(map[string]bool)
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Timeout or cancelled. Process collected results and exit.
+			for index := range pendingResults {
+				collectedResults = append(collectedResults, &STUNResult{
+					Index:   index,
+					Network: resultNetwork,
+					Elapsed: timeout.Truncate(time.Millisecond),
+					Err:     ctx.Err(),
+				})
+			}
+			// Drain the channel to ensure all goroutines can finish (and their defers run).
+			go func() {
+				for range resultsChan {
+					// Simply drain; defers in goroutines handle connection/client closure
+				}
+			}()
+			if cause := context.Cause(parentCtx); cause != nil {
+				return collectedResults, cause
+			}
+			if len(collectedResults) > 0 {
+				return collectedResults, nil
+			} else {
+				return nil, ctx.Err() // Return collected results and the context error
+			}
+
+		case r, ok := <-resultsChan:
+			if !ok {
+				// Channel closed, all goroutines finished.
+				// Return the collected unique results.
+				if cause := context.Cause(parentCtx); cause != nil {
+					return collectedResults, cause
+				}
+				return collectedResults, nil
+			}
+			delete(pendingResults, r.Index)
+
+			if r.Err == nil {
+				// Successfully got a STUN result.
+				// Extract the NAT IP address without the port for uniqueness check.
+				natIP, _, err := net.SplitHostPort(r.Nat)
+				if err != nil {
+					// Handle cases where nat string might not be a valid host:port
+					// If SplitHostPort fails, assume the whole string is the IP for uniqueness.
+					natIP = r.Nat
+				}
+				_, found := uniqueNatIPs[natIP]
+				if !natIPUniq || !found {
+					// This NAT IP is unique, add it to our collection.
+					uniqueNatIPs[natIP] = true
+					collectedResults = append(collectedResults, &STUNResult{
+						Index:   r.Index,
+						Network: r.Network,
+						Local:   r.Local,
+						Nat:     r.Nat,
+						Remote:  r.Remote,
+						Elapsed: r.Elapsed,
+						Err:     nil, // No error for successful results
+					})
+				}
+			} else {
+				_, found := uniqueNatIPs[""]
+				if !natIPUniq || !found {
+					// If there's an error, still create one STUNResult for it.
+					collectedResults = append(collectedResults, &STUNResult{
+						Index:   r.Index,
+						Network: r.Network,
+						Local:   r.Local,
+						Nat:     r.Nat, // Might be empty or partial if error occurred early
+						Remote:  r.Remote,
+						Elapsed: r.Elapsed,
+						Err:     r.Err,
+					})
+				}
+			}
+		}
+	}
+}
+
+// GetFreePort 尝试找到一个可同时绑定 TCP 和 UDP 的端口
+func GetFreePort() (int, error) {
+	const maxTry = 100
+
+	for i := 0; i < maxTry; i++ {
+		// 绑定 TCP 端口
+		tcpListener, err := net.Listen("tcp", ":0")
+		if err != nil {
+			return 0, fmt.Errorf("TCP listen failed: %v", err)
+		}
+
+		// 获取系统分配的端口
+		addr := tcpListener.Addr().(*net.TCPAddr)
+		port := addr.Port
+
+		// 尝试绑定相同端口的 UDP
+		udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			tcpListener.Close()
+			return 0, fmt.Errorf("ResolveUDPAddr failed: %v", err)
+		}
+		udpConn, err := net.ListenUDP("udp", udpAddr)
+		if err == nil {
+			// 成功，关闭后返回端口
+			udpConn.Close()
+			tcpListener.Close()
+			return port, nil
+		}
+
+		// UDP 绑定失败，关闭 TCP 后继续尝试
+		tcpListener.Close()
+	}
+
+	return 0, fmt.Errorf("no free TCP/UDP ports available")
+}
+
+func GetNetworksPublicIPs(networkList []string, bind string, timeout time.Duration, shPktCon net.PacketConn) ([]*STUNResult, error) {
+	return GetNetworksPublicIPsContext(context.Background(), networkList, bind, timeout, shPktCon)
+}
+
+// GetNetworksPublicIPsContext 是 GetNetworksPublicIPs 的 context 感知版本。
+// ctx 取消时，内部所有 GetPublicIPsContext 调用都会尽早返回 cause。
+func GetNetworksPublicIPsContext(ctx context.Context, networkList []string, bind string, timeout time.Duration, shPktCon net.PacketConn) ([]*STUNResult, error) {
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
+	}
+	var wg sync.WaitGroup
+	resultsChan := make(chan []*STUNResult, len(networkList))
+	errorsChan := make(chan error, len(networkList))
+	bindUnspecified := false
+	if bind == "" {
+		bindUnspecified = true
+		port, err := GetFreePort()
+		if err != nil {
+			return nil, err
+		}
+		bind = fmt.Sprintf(":%d", port)
+	} else if strings.HasSuffix(bind, ":0") {
+		host, _, err := net.SplitHostPort(bind)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bind address: %v", err)
+		}
+		port, err := GetFreePort()
+		if err != nil {
+			return nil, err
+		}
+		bind = net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	}
+
+	udpAttemptNumber := 0
+	for _, network := range networkList {
+		bindAddrCandidate := bind
+		if shPktCon != nil {
+			if !strings.HasPrefix(network, "udp") {
+				continue
+			}
+			// PacketConn 只支持 UDP
+		} else {
+			if udpAttemptNumber > 0 && bindUnspecified {
+				//并发的时候，除非第一个的udp需要调整端口，
+				//例如第一个GetPublicIPs(udp6，5555)成功接着GetPublicIPs(udp4, 5555)就无法绑定这个端口了
+				port, err := GetFreePort()
+				if err == nil {
+					bindAddrCandidate = fmt.Sprintf(":%d", port)
+				}
+			}
+		}
+		if strings.HasPrefix(network, "udp") {
+			udpAttemptNumber += 1
+		}
+		wg.Add(1)
+		go func(network string) {
+			defer wg.Done()
+			results, err := GetPublicIPsContext(ctx, network, bindAddrCandidate, timeout, false, shPktCon)
+			if err != nil {
+				errorsChan <- fmt.Errorf("network %s: %v", network, err)
+				return
+			}
+			resultsChan <- results
+		}(network)
+	}
+
+	wg.Wait()
+	close(resultsChan)
+	close(errorsChan)
+
+	// Collect and display results
+	var allResults []*STUNResult
+	for results := range resultsChan {
+		allResults = append(allResults, results...)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return allResults, cause
+	}
+
+	if len(allResults) == 0 {
+		return nil, fmt.Errorf("no public IP addresses found or all attempts failed")
+	} else {
+		return allResults, nil
+	}
+}
+
+type AnalyzedStunResult struct {
+	NATType string `json:"nattype"` // "easy", "hard", "symm"
+	Network string `json:"network"`
+	LAN     string `json:"lan"`
+	NAT     string `json:"nat"`
+}
+
+// NatIPLocalKey serves as a key to group results by NAT IP and local address,
+// to check port consistency for 'hard' vs 'symm' behavior within a specific NAT IP.
+type NatIPLocalKey struct {
+	Network string
+	Local   string
+	NATIP   string // Only NAT IP part
+}
+
+func succeededSTUNResults(allResults []*STUNResult) int {
+	succeed := 0
+	for _, r := range allResults {
+		if r.Err != nil {
+			continue // Only analyze successful results
+		}
+		succeed += 1
+	}
+	return succeed
+}
+
+// analyzeSTUNResults analyzes the collected STUN results to determine NAT types
+// based on the user's specific logic (primarily port consistency).
+func analyzeSTUNResults(allResults []*STUNResult) []*AnalyzedStunResult {
+	// Group all successful results by (Network, Local IP:Port)
+	groupedByNetworkLocal := make(map[NatIPLocalKey][]*STUNResult)
+	for _, r := range allResults {
+		if r.Err != nil {
+			continue // Only analyze successful results
+		}
+		natIP, _, _ := net.SplitHostPort(r.Nat)
+
+		key := NatIPLocalKey{Network: r.Network, Local: r.Local, NATIP: natIP}
+		groupedByNetworkLocal[key] = append(groupedByNetworkLocal[key], r)
+	}
+
+	var analyzedOutputs []*AnalyzedStunResult
+
+	for key, results := range groupedByNetworkLocal {
+		if len(results) == 0 {
+			continue
+		}
+		_, lanPortStr, _ := net.SplitHostPort(key.Local)
+		_, natPortStr, _ := net.SplitHostPort(results[0].Nat)
+		seenPorts := make(map[string]struct{})
+
+		for _, r := range results {
+			_, portStr, _ := net.SplitHostPort(r.Nat)
+			seenPorts[portStr] = struct{}{}
+		}
+
+		if len(results) == 1 {
+			if lanPortStr == natPortStr {
+				analyzedOutputs = append(analyzedOutputs, &AnalyzedStunResult{
+					NATType: "easy",
+					Network: key.Network,
+					LAN:     key.Local,
+					NAT:     results[0].Nat,
+				})
+			} else {
+				analyzedOutputs = append(analyzedOutputs, &AnalyzedStunResult{
+					NATType: "hard",
+					Network: key.Network,
+					LAN:     key.Local,
+					NAT:     results[0].Nat,
+				})
+			}
+
+		} else {
+			if len(seenPorts) == 1 {
+				if lanPortStr == natPortStr {
+					analyzedOutputs = append(analyzedOutputs, &AnalyzedStunResult{
+						NATType: "easy",
+						Network: key.Network,
+						LAN:     key.Local,
+						NAT:     results[0].Nat,
+					})
+				} else {
+					analyzedOutputs = append(analyzedOutputs, &AnalyzedStunResult{
+						NATType: "hard",
+						Network: key.Network,
+						LAN:     key.Local,
+						NAT:     results[0].Nat,
+					})
+				}
+			} else {
+				analyzedOutputs = append(analyzedOutputs, &AnalyzedStunResult{
+					NATType: "symm",
+					Network: key.Network,
+					LAN:     key.Local,
+					NAT:     results[0].Nat,
+				})
+			}
+		}
+	}
+
+	return analyzedOutputs
+}
+
+// func logSTUN(format string, v ...interface{}) {
+// 	now := time.Now()
+// 	ts := now.Format("15:04:05.000")
+// 	args := append([]interface{}{ts}, v...)
+// 	fmt.Fprintf(os.Stderr, "[%s] [STUN] "+format+"\n", args...)
+// }

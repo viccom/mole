@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>moleAgent Shell</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/wailsjs/runtime/runtime.js"></script>
+  <script src="/wailsjs/go/main/App.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="header-left">
+        <button id="btn-open-drawer" class="node-switch-trigger" type="button">
+          节点切换
+        </button>
+      </div>
+      <div class="header-center">
+        <div class="node-name-card">
+          <strong id="current-node-name">未选择</strong>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="current-node-status" class="status-pill offline">离线</span>
+        <button id="btn-refresh" class="btn">刷新</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="viewer-shell">
+        <iframe id="ui-frame" class="ui-frame" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
+        <div id="loading-overlay" class="overlay">
+          <div class="spinner"></div>
+          <div class="overlay-title">正在加载共享前端</div>
+          <div class="overlay-desc">桌面壳只负责承载，业务页面来自 `moleAgent_client /ui`。</div>
+        </div>
+        <div id="offline-overlay" class="overlay hidden">
+          <div class="overlay-icon">!</div>
+          <div class="overlay-title">当前前端不可用</div>
+          <div id="offline-message" class="overlay-desc">请检查当前节点或本地内置 HTTP 服务。</div>
+          <button id="btn-retry" class="btn btn-primary">重试</button>
+        </div>
+      </div>
+    </main>
+
+    <aside id="drawer" class="drawer">
+      <div class="drawer-header">
+        <div>
+          <h2>节点管理</h2>
+          <div id="drawer-subtitle" class="drawer-subtitle">仅保留桌面壳职责</div>
+        </div>
+        <button id="btn-close-drawer" class="icon-btn" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="drawer-body">
+        <div class="section-head">
+          <h3>已配置节点</h3>
+          <button id="btn-new-node" class="btn btn-primary btn-sm">新增节点</button>
+        </div>
+        <div id="node-list" class="node-list"></div>
+
+        <div class="section-head section-head-form">
+          <h3 id="form-title">新增节点</h3>
+        </div>
+
+        <form id="desktop-form" class="node-form hidden">
+          <input id="desktop-edit-id" type="hidden">
+          <div class="form-grid">
+            <label>显示名称</label>
+            <input id="desktop-name" type="text" placeholder="如: 生产节点">
+            <label>客户端名称</label>
+            <input id="desktop-node-name" type="text" placeholder="如: device-01">
+            <label>服务端地址</label>
+            <input id="desktop-server-addr" type="text" placeholder="host:9981">
+            <label>认证令牌</label>
+            <input id="desktop-token" type="text" placeholder="token">
+            <label>传输协议</label>
+            <select id="desktop-transport">
+              <option value="tcp">tcp</option>
+              <option value="ws">ws</option>
+              <option value="kcp">kcp</option>
+            </select>
+          </div>
+          <label class="checkbox-row"><input id="desktop-tls" type="checkbox"> 启用 TLS</label>
+          <label class="checkbox-row"><input id="desktop-default" type="checkbox"> 设为默认节点</label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">保存节点</button>
+          </div>
+        </form>
+
+        <form id="manager-form" class="node-form hidden">
+          <input id="manager-edit-id" type="hidden">
+          <div class="form-grid">
+            <label>节点名称</label>
+            <input id="manager-name" type="text" placeholder="如: 本地">
+            <label>地址</label>
+            <input id="manager-addr" type="text" placeholder="127.0.0.1">
+            <label>端口</label>
+            <input id="manager-port" type="number" placeholder="59870">
+          </div>
+          <label class="checkbox-row"><input id="manager-default" type="checkbox"> 设为默认节点</label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">保存节点</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+
+    <div id="drawer-backdrop" class="drawer-backdrop hidden"></div>
+    <div id="toast-container" class="toast-container"></div>
+  </div>
+
+  <script src="/main.js"></script>
+</body>
+</html>

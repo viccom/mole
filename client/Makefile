@@ -1,0 +1,202 @@
+.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish check-tag test test-race vet fmt-check
+
+.DEFAULT_GOAL := help
+
+help: ## 显示帮助信息
+	@echo "moleAgent_client $(VERSION)"
+	@echo ""
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Targets:"
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | sed 's/:.*## /: /' | column -t -s ':' | sed 's/^/  /'
+
+# This Makefile assumes a POSIX shell environment such as Git Bash/MSYS on Windows.
+# For native PowerShell builds, use scripts/build.ps1 and scripts/release.ps1.
+
+# 构建变量
+BINARY_NAME    := moleagent-client
+CMD_PATH       := ./cmd/moleagent-client
+RELEASE_DIR    := ../_release/molec
+DESKTOP_DIR    := ./cmd/moleagent-desktop
+DESKTOP_NAME   := moleAgent-desktop
+MANAGER_DIR    := ./cmd/moleagent-manager
+MANAGER_NAME   := moleAgent-manager
+WAILS_INSTALL  := github.com/wailsapp/wails/v2/cmd/wails@latest
+HOST_EXE       := $(if $(filter Windows_NT,$(OS)),.exe,)
+
+# 版本信息（从 git tag 获取，无 tag 时用 dev）
+VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+BUILD    := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE     := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+# 编译标志
+LDFLAGS  := -s -w \
+            -X moleAgent_client/internal/version.Version=$(VERSION) \
+            -X moleAgent_client/internal/version.GitHash=$(BUILD) \
+            -X moleAgent_client/internal/version.BuildDate=$(DATE)
+
+# 构建标签：P2P 打洞代码默认参与编译（internal/p2p fork 与 proxy/p2p 均以 p2p tag 隔离）
+TAGS     := p2p
+
+# 交叉编译目标（armv7 → GOARCH=arm, GOARM=7）
+TARGETS := \
+	linux/amd64 \
+	linux/arm64 \
+	linux/armv7 \
+	darwin/amd64 \
+	darwin/arm64 \
+	windows/amd64 \
+	windows/arm64
+
+ensure-wails: ## 检查并安装 Wails CLI
+	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
+	if [ -z "$$WAILS_BIN" ]; then \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	if [ -z "$$WAILS_BIN" ]; then \
+		echo ">> Wails not found, installing $(WAILS_INSTALL) ..."; \
+		go install $(WAILS_INSTALL); \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	if [ -z "$$WAILS_BIN" ]; then \
+		echo "!! Failed to locate wails after installation. Please add Go bin to PATH."; \
+		exit 1; \
+	fi; \
+	echo ">> Using Wails: $$WAILS_BIN"
+
+# 默认：编译当前平台
+build: ## 编译当前平台 CLI 二进制
+	@echo ">> Building $(BINARY_NAME) ($(VERSION), tags=$(TAGS))..."
+	@mkdir -p $(RELEASE_DIR)
+	CGO_ENABLED=0 go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(RELEASE_DIR)/$(BINARY_NAME) $(CMD_PATH)
+	@echo ">> Done: $(RELEASE_DIR)/$(BINARY_NAME)"
+
+build-desktop: ensure-wails ## 编译桌面版 GUI（Wails）
+	@echo ">> Building $(DESKTOP_NAME) ($(VERSION), tags=$(TAGS))..."
+	@mkdir -p $(RELEASE_DIR)
+	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
+	if [ -z "$$WAILS_BIN" ]; then \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	(cd $(DESKTOP_DIR) && "$$WAILS_BIN" build -clean -tags "$(TAGS)" -o $(DESKTOP_NAME)$(HOST_EXE) -ldflags "$(LDFLAGS)"); \
+	cp -f $(DESKTOP_DIR)/build/bin/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)
+	@echo ">> Done: $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE)"
+
+build-manager: ensure-wails ## 编译管理器 GUI（Wails）
+	@echo ">> Building $(MANAGER_NAME) ($(VERSION))..."
+	@mkdir -p $(RELEASE_DIR)
+	@WAILS_BIN=$$(command -v wails 2>/dev/null); \
+	if [ -z "$$WAILS_BIN" ]; then \
+		GOBIN=$$(go env GOBIN); \
+		if [ -z "$$GOBIN" ]; then GOBIN="$$(go env GOPATH)/bin"; fi; \
+		if [ -x "$$GOBIN/wails" ]; then WAILS_BIN="$$GOBIN/wails"; \
+		elif [ -x "$$GOBIN/wails.exe" ]; then WAILS_BIN="$$GOBIN/wails.exe"; fi; \
+	fi; \
+	(cd $(MANAGER_DIR) && "$$WAILS_BIN" build -clean -o $(MANAGER_NAME)$(HOST_EXE) -ldflags "$(LDFLAGS)"); \
+	cp -f $(MANAGER_DIR)/build/bin/$(MANAGER_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
+	@echo ">> Done: $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)"
+
+build-gui: build-desktop build-manager ## 编译全部 GUI 应用
+
+build-all: build build-gui ## 编译 CLI + 全部 GUI
+
+# 交叉编译所有平台
+release: ## 交叉编译所有平台二进制
+	@mkdir -p $(RELEASE_DIR)
+	@for target in $(TARGETS); do \
+		GOOS=$${target%/*}; \
+		GOARCH=$${target##*/}; \
+		GOARM=""; \
+		EXT=""; \
+		if [ "$$GOARCH" = "armv7" ]; then GOARCH="arm"; GOARM="7"; fi; \
+		if [ "$$GOOS" = "windows" ]; then EXT=".exe"; fi; \
+		ARCH_TAG=$${target##*/}; \
+		OUT=$(RELEASE_DIR)/$(BINARY_NAME)-$$GOOS-$$ARCH_TAG$$EXT; \
+		echo ">> Building $$OUT ..."; \
+		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH); \
+	done
+	@echo ">> All platforms built in $(RELEASE_DIR)/"
+
+# GUI 子模块（desktop/manager 各有独立 go.mod，根模块的 ./... 不覆盖它们）
+GUI_MODULES := cmd/moleagent-desktop cmd/moleagent-manager
+
+test: ## 运行全部测试（根模块双构建标签 + GUI 子模块）
+	@echo ">> go test ./... (default build)"
+	go test ./...
+	@echo ">> go test -tags p2p ./..."
+	go test -tags p2p ./...
+	@for m in $(GUI_MODULES); do echo ">> go test $$m"; (cd $$m && go test ./...); done
+
+test-race: ## 竞态检测（-tags p2p，含 fork 的并发测试；约 40s）
+	@echo ">> go test -race -tags p2p ./..."
+	go test -race -tags p2p ./...
+
+vet: ## go vet 两种构建标签 + GUI 子模块
+	go vet ./...
+	go vet -tags p2p ./...
+	@for m in $(GUI_MODULES); do echo ">> go vet $$m"; (cd $$m && go vet ./...); done
+
+fmt-check: ## 检查 gofmt 合规（internal/p2p 为上游 fork，豁免）
+	@UNFMT=$$(gofmt -l . | grep -v '^internal/p2p/' || true); \
+	if [ -n "$$UNFMT" ]; then \
+		echo "!! gofmt 不合规（internal/p2p fork 已豁免）："; \
+		echo "$$UNFMT"; \
+		exit 1; \
+	fi
+	@echo ">> gofmt OK"
+
+clean: ## 清理编译产物
+	@rm -f $(RELEASE_DIR)/$(BINARY_NAME) $(RELEASE_DIR)/$(BINARY_NAME)-*
+	@rm -f $(RELEASE_DIR)/$(DESKTOP_NAME)$(HOST_EXE) $(RELEASE_DIR)/$(MANAGER_NAME)$(HOST_EXE)
+	@echo ">> Cleaned $(BINARY_NAME) artifacts"
+
+# 生成 latest.json 并发布到升级服务器
+UPLOAD_DIR  := px:/lhcos-data/appupdater/molec
+UPDATE_BASE := https://fs.px.metme.top/app/molec
+
+# VERSION 必须是 HEAD 上的干净 tag（git describe 无 -N-g<hash> 后缀、无 -dirty）。
+# 否则 latest.json 的 version 例如 "v0.6.0-31-gfad1b01" 会被 selfupdater 的
+# fallbackParse 解析为 0.6.0 + pre-release，SemVer 判定其低于 0.6.0 —— 老客户端
+# 会认为「无更新」，升级永远不生效。
+check-tag:
+	@case "$(VERSION)" in \
+		*-dirty) echo "!! publish 中止：工作区有未提交改动（VERSION=$(VERSION)），请先提交"; exit 1;; \
+		*-*-g*) echo "!! publish 中止：HEAD 不在 tag 上（VERSION=$(VERSION)），请先 git tag"; exit 1;; \
+	esac
+
+publish: check-tag release ## 编译所有平台并发布到升级服务器
+	@echo ">> Generating latest.json ..."
+	@echo '{"version":"$(VERSION)","date":"$(DATE)","assets":{' > $(RELEASE_DIR)/latest.json
+	@first=true; \
+	for target in $(TARGETS); do \
+		GOOS=$${target%/*}; \
+		GOARCH=$${target##*/}; \
+		GOARM=""; \
+		EXT=""; \
+		if [ "$$GOARCH" = "armv7" ]; then GOARCH="arm"; GOARM="7"; fi; \
+		if [ "$$GOOS" = "windows" ]; then EXT=".exe"; fi; \
+		ARCH_TAG=$${target##*/}; \
+		FILE=$(BINARY_NAME)-$$GOOS-$$ARCH_TAG$$EXT; \
+		PATHFILE=$(RELEASE_DIR)/$$FILE; \
+		if [ ! -f "$$PATHFILE" ]; then continue; fi; \
+		SHA256=$$(sha256sum $$PATHFILE | cut -d' ' -f1); \
+		SIZE=$$(stat -c%s $$PATHFILE); \
+		if [ "$$first" = true ]; then first=false; else echo ',' >> $(RELEASE_DIR)/latest.json; fi; \
+		printf '"%s/%s":{"url":"$(UPDATE_BASE)/%s","sha256":"%s","size":%d}' \
+			$$GOOS $$GOARCH $$FILE $$SHA256 $$SIZE >> $(RELEASE_DIR)/latest.json; \
+	done; \
+	echo '}}' >> $(RELEASE_DIR)/latest.json
+	@echo ">> latest.json:"
+	@cat $(RELEASE_DIR)/latest.json | python3 -m json.tool
+	@echo ">> Uploading to $(UPLOAD_DIR) ..."
+	@scp -r $(RELEASE_DIR)/$(BINARY_NAME)-* $(RELEASE_DIR)/latest.json $(UPLOAD_DIR)/
+	@echo ">> Published $(VERSION) to $(UPLOAD_DIR)/"

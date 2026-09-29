@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "moleAgent-desktop",
+  "outputfilename": "moleAgent-desktop",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "mole"
+  },
+  "info": {
+    "productName": "moleAgent Desktop",
+    "copyright": "Copyright 2024",
+    "comments": "Desktop client for moleAgent with multi-node support"
+  },
+  "wailsjsdir": "./frontend",
+  "outputType": "desktop"
+}
