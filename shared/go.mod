@@ -1,3 +1,3 @@
 module mole/shared
 
-go 1.26.6
+go 1.25.8
