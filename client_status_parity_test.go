@@ -138,7 +138,7 @@ func TestWarnInvalidPushedTunnelsLogsButKeepsConfig(t *testing.T) {
 	buf := captureLog(t)
 
 	tunnels := []Tunnel{
-		{Name: "good", Type: TunnelTypeTCP, Target: "127.0.0.1:8080"},
+		{Name: "good", Type: TunnelTypeTCP, Target: "127.0.0.1:8080", ListenPort: 19100},
 		{Name: "bad-scheme", Type: TunnelTypeHTTP, Target: "http://127.0.0.1:8080"},
 		{Name: "bad-type", Type: "nonsense", Target: "127.0.0.1:1"},
 		{Name: "", Type: TunnelTypeTCP, Target: "127.0.0.1:9"},
@@ -162,12 +162,13 @@ func TestWarnInvalidPushedTunnelsLogsButKeepsConfig(t *testing.T) {
 	}
 }
 
-// 全部合法时不产生任何日志（防刷屏：tunnel_push 每次重连都会来一次）
+// 全部合法时不产生任何日志（防刷屏：tunnel_push 每次重连都会来一次）。
+// TCP 合法样例必须带 listen_port（REL-01 后零值非法，与服务端一致）
 func TestWarnInvalidPushedTunnelsSilentWhenAllValid(t *testing.T) {
 	buf := captureLog(t)
 
 	warnInvalidPushedTunnels([]Tunnel{
-		{Name: "a", Type: TunnelTypeTCP, Target: "127.0.0.1:8080"},
+		{Name: "a", Type: TunnelTypeTCP, Target: "127.0.0.1:8080", ListenPort: 19100},
 		{Name: "b", Type: TunnelTypeSer2MQ, Target: "COM3"},
 	})
 	if buf.Len() != 0 {
