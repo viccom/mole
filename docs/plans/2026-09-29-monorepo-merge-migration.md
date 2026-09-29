@@ -25,7 +25,9 @@ E:\Go_codes\mole\mole\            ← 新仓库（git.metme.top/viccom/mole.git�
 └── README.md
 ```
 
-**原则**：① 嵌套三模块（不做单一 go.mod——那要改数百文件 import，爆炸半径不必要）；② 旧仓库**归档只读、不删除**（生产部署与历史文档引用仍在）；③ 二进制名（moleagent-serv/moleagent-client）、更新源 URL、`latest.json` 语义一概不变；④ 旧工作目录 `E:\Go_codes\mole\{moleAgent_Serv,moleAgent_client}` 迁移完成前保留不动（回滚锚点）。
+**原则**：① **迁移全程对旧仓库零提交零改写**（新仓库只 fetch 读取；指路信息走 gitea 描述字段）；② 嵌套三模块（不做单一 go.mod——那要改数百文件 import，爆炸半径不必要）；③ 旧仓库**归档只读、不删除**（生产部署与历史文档引用仍在），归档时点 = 15 项验收全部通过之后；④ 二进制名（moleagent-serv/moleagent-client）、更新源 URL、`latest.json` 语义一概不变；⑤ 旧工作目录 `E:\Go_codes\mole\{moleAgent_Serv,moleAgent_client}` 迁移完成前保留不动（回滚锚点）。
+
+**迁移窗口期纪律**：会话 1 开始后旧仓库冻结新开发（一切改动进新仓库）。若期间必须对旧仓库做紧急修复（如生产 hotfix），修复合入旧仓库后在新仓库执行 `git fetch serv && git subtree pull --prefix=server serv master`（client 同理）重新同步——subtree 原生支持增量同步，这是设计冗余而非例外路径。
 
 **明确不做**（本次范围外）：单一 go.mod 合并、二进制/命令改名、发布 URL 变更、shared 模块对外发布。
 
@@ -82,7 +84,9 @@ git add _release && git commit -m "chore: _release harness 入仓（二进制 gi
 git remote add origin https://git.metme.top/viccom/mole.git   # 先在 gitea 建空仓
 git push -u origin master
 git push origin 'refs/tags/srv/*' 'refs/tags/cli/*'
-#   旧仓库在 gitea 设为 archived（只读）；旧 README 顶部加一行指向新仓库
+#   旧仓库在 gitea 设为 archived（只读）——**迁移全程对旧仓库零提交零改写**
+#   （fetch 是读操作；指路信息写 gitea 仓库描述字段/归档说明，不改旧仓库文件）
+#   归档时点 = 第五节 15 项验收全部通过之后；归档只读但 clone/ls-remote 仍可用
 ```
 
 **步骤红线**：第 2/4 步的 `tagOpt --no-tags` + 前缀映射**绝不可省**——否则 v0.5.0–v0.7.1 同名 tag 直接冲突覆盖，历史语义损坏。
