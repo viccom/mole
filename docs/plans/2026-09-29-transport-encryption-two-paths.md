@@ -73,6 +73,10 @@
 | KCP/WS 传输不在保护范围 | 范围使然 | 生产未用 WS/KCP 控制传输（生产日志全部 transport=tcp）；KCP 维持 kcp.key；文档明示 |
 | 与存量 `tls.enabled=true` 部署语义冲突 | 兼容性 | 互斥校验 fail-fast，不静默取舍 |
 
+## A.7 与方案 B 并行实施的组合规则
+
+两方案代码触点不相交（A：`main.go:160-199` 传输接线区 + `handleConnection` 入口 deadline；B：`control.go:470-474` 认证后插入区 + 认证服务），**可并行实施互不阻塞**。并行部署（或先后部署）时必须遵守 B.2 末尾的组合规则：9984/TLS 连接不参与 PSK 升级（单连接单加密）；B 的 `require=true` 把 TLS 传输视为已加密合规——**否则 A 收口（`control_port:""`）与 B 收口（`require=true`）同时生效会误拒全部已迁 9984 节点**。E2E 需补一条组合用例：TLS 连接 + `require=true` 必须放行。
+
 ---
 
 # 方案 B：PSK 协议内升级（自适应回落版，2026-09-29 负责人定稿）
@@ -132,6 +136,12 @@ B. ok 缺 enc 字段（旧服务端 / enabled=false）:
 
 **实现陷阱（必写进代码注释）——bufio 读者必须穿针**：noise 握手的 3 条消息用 2 字节长度前缀分帧，经**现有的同一个 `bufio.Reader`** 读写（服务端 `control.go:396`、客户端 `dialer.go:259` 创建的那个）。若 noiseConn 绕开该 reader 直接读底层 conn，reader 缓冲里可能已吞下后续密文字节 → 帧流错位 → 必然性解密失败。正确结构：noiseConn 持有该 reader 做分帧读；smux 再架在 noiseConn 之上（两端对称，`bufferedConn` 模式的自然延伸）。
 
+**与方案 A（双端口 TLS）并行实施的组合规则**（2026-09-29 组合审查补，两条均为必守）：
+
+1. **单连接单加密机制（防双重加密）**：客户端 `UseTLS`（`-tls`，即走 9984）时**不发 `enc:1`**；服务端对 `transportName=="tls"` 的连接**不携带 `enc` 字段**（即便客户端误发也不应答升级）。无此规则会出现 TCP→TLS→Noise→smux 的双重加密，全部隧道载荷白白付两份加解密开销。
+2. **`require` 的合规语义 =「TLS 传输 或 Noise 升级，二者其一」**：纯明文 smux 才拒绝。**当前文档若不加此条，两方案同时收口（A：`control_port:""` 全量迁 9984 + B：`require=true`）会把全部已迁 9984 的节点误拒**——节点经 TLS 连接、客户端按规则 1 不发 enc、服务端按旧语义判"未升级"拒绝。这是两方案间唯一一处硬冲突，规则 2 即为其修复。
+3. （非规则，说明）节点级可混布：同舰队内「9981+Noise」与「9984+TLS」的节点并存互不干扰；`Node authenticated` 日志的 `tls=`/`enc=` 双字段（A、B 各贡献一个）即区分手段。
+
 **覆盖面**：升级层位于传输之上，**TCP / WS / KCP 三种传输统一生效**（含 KCP 载荷——`kcp.key` 在全量收敛后可退役）；WS 路径升级发生在 WS 字节流上，与 TCP 同码路径。
 
 ## B.3 服务端改动点
@@ -188,6 +198,7 @@ B. ok 缺 enc 字段（旧服务端 / enabled=false）:
 | 11 | WS/KCP 传输 | 同码路径（升级层在传输之上）；noiseConn 只依赖 Read/Write/Deadline 语义 | E2E 每传输一条 | KCP 载荷同时受保护 |
 | 12 | 时钟漂移 | 无影响（无时间窗依赖：challenge-response + Noise，均不含时间戳） | — | 相比 orbien 时间戳方案的固有优势 |
 | 13 | smux keepalive/长连接 | noiseConn 透传 Read/Write，Deadline 委托底层 conn | 现有 keepalive 日志 | 10s 握手 deadline 进入 smux 前已清除 |
+| 14 | TLS 传输连接（方案 A 并行部署） | 客户端不发 enc、服务端不答 enc（组合规则 1）；`require` 视为已加密（规则 2） | 日志 `tls=true enc=false` | 单连接单加密；A/B 并行时必测 |
 
 ## B.8 风险
 
