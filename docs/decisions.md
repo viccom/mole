@@ -18,9 +18,31 @@
 
 ## 遗留跟踪
 
-- push（裁决 #7）：待用户建仓后执行，随后补验收 #5-8、#11-15（会话 3 范围）
+- push（裁决 #7）：待用户建仓后执行（用户明示不着急）；命令：`git push -u origin master && git push origin 'refs/tags/srv/*' 'refs/tags/cli/*'`
 - `_release` 原位置空目录壳（裁决 #6）：句柄释放后删除
-- `cli/v0.2.0-test` 测试 tag 已随迁移带入：会话 3 改造 Makefile `describe --match` 时注意其可能被匹配为「最近 tag」（已改造完成，见裁决 #12；test tag 位于历史早期不影响近期 describe）
+- server storage `TestAccessTokenRepo_Update` 时间精度 flaky（同微秒 `After` 判假，重跑 3 次全过）：旧仓库带来的既有问题，非迁移/shared 引入；后续可加 `>=` 或 sleep 修
+- tunnelvalidate 抽取（组件 2，裁决表见下节）：实施待做——限额中断后由主会话/子代理续
+- staging 冒烟物料（staging_setup.sh / staging_server.py）：已用毕删除；`_release/molec/latest.json` 为 #8 干跑产物（v0.9.0-e2etest），gitignore 内不入库，下次真发布时会被覆盖
+
+## 2026-09-29 15 项验收完成记录（本地，push 前）
+
+| # | 验收项 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 双端 build/vet | ✅ | exit=0×4 |
+| 2 | 双端 test 全绿 | ✅ | server 15 包；client 仅 nodeid 2 例 Windows 既有基线（旧仓库原位复跑同样失败） |
+| 3 | go.work 整体编译 + 互不 import | ✅ | `go build ./server/... ./client/... ./shared/...` exit=0；import 语句检索为空（跨引用仅注释） |
+| 4 | 历史可达 + tag 哈希 | ✅ | 405→413 commit 对账；srv/v0.7.1、srv/v0.7.0、cli/v0.8.0 及全量 21 tag 哈希与原仓库一致 |
+| 5 | server make release | ✅ | 6 平台产物落 _release/moles/；版本自报 `v0.7.1-202-g5bdc8cb` 无 srv/ 残留 |
+| 6 | client make release | ✅ | 7 平台落 _release/molec/（含 armv7）；自报 `v0.8.0-243-g5bdc8cb`；TAGS:=p2p 且二进制含 nat-exchange 符号 |
+| 7 | check-tag 实测 | ✅ | 被拒×2（`-N-g` 后缀、`-dirty` 工作区脏）；临时 tag 后放行（测毕 tag 已删、commit 已回退） |
+| 8 | latest.json 键集 | ✅ | 7 键含 `linux/arm`→armv7 产物映射；version `v0.9.0-e2etest` 剥前缀干净 |
+| 9 | tag 映射完整性 | ✅ | 零裸 v*；srv 10/10、cli 11/11 |
+| 10 | 旧仓库 ls-remote | ✅ | 双仓库 heads 可读（归档动作待全部收尾后用户在 gitea 执行） |
+| 11 | staging 自更新冒烟 | ✅ | v0.8.0→v0.9.0-e2etest 全链路：判定/下载 13.6MB/sha256/替换/重启/自报新版本；staging 访问日志双重印证。**陷阱记录**：WSL 代理变量（https_proxy）令首轮判定取到真实生产 latest.json 假信号，客户端进程须 NO_PROXY=fs.px.metme.top |
+| 12 | 17 场景 E2E | ✅ | `PASS=20 FAIL=0` 与基线逐字一致（WSL 重铺自 mole/_release/e2e） |
+| 13 | 17 计数仓库可核 | ✅ | run1to6×6 + 显式场景 7-17 标记 11 行 |
+| 14 | AGENTS.md 合并版 + docs/plans 随树 | ✅ | 三块约定落库；plans 全量在 server/docs/plans |
+| 15 | 回滚演练 | ✅ | 临时 clone 自包含（无 alternates）完整后删除；旧仓库双端 HEAD/工作区原样 |
 
 ## 2026-09-29 shared 抽取第一拍：隧道校验差异裁决表（组件 2）
 
