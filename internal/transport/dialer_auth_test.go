@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -116,5 +117,70 @@ func TestAuthenticate_ServerErrReturnsError(t *testing.T) {
 	err := dialFakeAuth(t, srvAddr, testToken)
 	if err == nil || !strings.Contains(err.Error(), "auth failed") {
 		t.Fatalf("authenticate must fail with auth error, got %v", err)
+	}
+}
+
+// F1 认证应答读取必须加上限：恶意/故障服务端在应答阶段灌入超限的无换行
+// 数据时，authenticate 必须立即以超限错误返回，而不是无界累计到 10s
+// deadline 兜底（裸连接未过 smux，无界读是内存放大点）
+func TestAuthenticate_OversizeResponseRejected(t *testing.T) {
+	const testToken = "secret-token-for-test"
+
+	srvAddr := startFakeAuthServer(t, func(conn net.Conn) {
+		if _, err := conn.Write(make([]byte, 32)); err != nil { // challenge
+			return
+		}
+		if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil { // auth 行
+			return
+		}
+		// 应答阶段：灌入 128KB 无换行垃圾（远超 64KB 上限）。单次大块写入：
+		// 超限触发点（第 65537 字节）落在字节流中部，随 full-size 段即时
+		// 到达——若拆成 64KB+1B 两次写，最后的 1 字节小段会被 Nagle
+		// hold 住，超限触发被人为拖延（首版实现实测拖 2s 即此坑）。
+		// 写完即返回触发 FIN：绿路径必须靠客户端读到超限字节自行报错，
+		// 而不是等服务端关连接或 deadline 兜底
+		if _, err := conn.Write(bytes.Repeat([]byte{'a'}, 128*1024)); err != nil {
+			return
+		}
+	})
+
+	start := time.Now()
+	err := dialFakeAuth(t, srvAddr, testToken)
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("authenticate must fail with too-large error, got %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("超限应立即返回而不是吃满 deadline，耗时 %v", elapsed)
+	}
+}
+
+// F1 边界：恰好 64KB（含换行）的应答行在上限内必须放行——上限只拦
+// 「超限仍无换行」的无界累计，不截断合法边界。走完整 authenticate 路径
+// 验证（超大但合法的 JSON 会因 cmd!=ok 报 auth failed，读侧不报超限即绿）
+func TestAuthenticate_ExactLimitWithNewlineAccepted(t *testing.T) {
+	const testToken = "secret-token-for-test"
+
+	srvAddr := startFakeAuthServer(t, func(conn net.Conn) {
+		if _, err := conn.Write(make([]byte, 32)); err != nil { // challenge
+			return
+		}
+		if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil { // auth 行
+			return
+		}
+		// 65535 字节 msg + JSON 包装 + 换行，整行恰好 64KB
+		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": strings.Repeat("m", 65535 - len(`{"cmd":"err","msg":""}`))})
+		line := append(resp, '\n')
+		if len(line) != 64*1024 {
+			t.Errorf("test fixture: line length = %d, want %d", len(line), 64*1024)
+		}
+		conn.Write(line)
+	})
+
+	err := dialFakeAuth(t, srvAddr, testToken)
+	// 恰好 64KB 含换行：读侧必须放行，最终因 cmd!=ok 报 auth failed
+	if err == nil || !strings.Contains(err.Error(), "auth failed") {
+		t.Fatalf("exact-limit line must be accepted then rejected by cmd, got %v", err)
 	}
 }
