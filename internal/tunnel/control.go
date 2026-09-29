@@ -609,21 +609,26 @@ var errAuthLineTooLarge = errors.New("auth line too large")
 // 修复 OOM 必须只限制"这一行"的长度：绝不能用 io.LimitedReader 包装连接——
 // 其 N 计数覆盖连接全生命周期，认证完成后节点→服务端的所有流量继续扣减，
 // 累计 64KB 后全部读取返回 EOF，整条节点连接死亡（生产事故根因）。
+// 跨 bufio 缓冲（4KB）的行由多个 ReadSlice 分片组成：必须 append 累计全部
+// 分片（与客户端 readBoundedCmdLine 同手法）——只返回末片会把 4KB-64KB
+// 间的合法行静默截断成残缺 JSON
 func readBoundedLine(r *bufio.Reader, limit int) (string, error) {
 	var total int
+	var line []byte
 	for {
 		frag, err := r.ReadSlice('\n')
 		total += len(frag)
 		if total > limit {
 			return "", errAuthLineTooLarge
 		}
+		line = append(line, frag...)
 		if err != nil {
 			if errors.Is(err, bufio.ErrBufferFull) {
 				continue // 单个 bufio 缓冲无 \n，继续累计
 			}
 			return "", err
 		}
-		return string(frag), nil
+		return string(line), nil
 	}
 }
 

@@ -1306,3 +1306,21 @@ func TestReadBoundedLine(t *testing.T) {
 		t.Fatalf("post-line traffic must be unlimited: got %d bytes, err %v (want %d)", len(rest), err, tail)
 	}
 }
+
+// 跨 bufio 缓冲（默认 4KB）的合法长行（4KB-64KB）必须完整返回：
+// 旧实现只返回最后一个 ReadSlice 分片，前段被静默截断（认证行 JSON 损坏）
+func TestReadBoundedLine_MultiBufferLineNotTruncated(t *testing.T) {
+	payload := strings.Repeat("a", 8*1024) // 8KB：跨两个 4KB bufio 缓冲
+	line := "{\"pad\":\"" + payload + "\"}\n"
+
+	got, err := readBoundedLine(bufio.NewReaderSize(strings.NewReader(line), 4096), maxAuthLineBytes)
+	if err != nil {
+		t.Fatalf("multi-buffer line within limit must read OK: %v", err)
+	}
+	if got != line {
+		t.Fatalf("line must be complete across bufio buffers: got %d bytes, want %d", len(got), len(line))
+	}
+	if !json.Valid([]byte(strings.TrimRight(got, "\n"))) {
+		t.Fatalf("accumulated line must be valid JSON, got %d bytes", len(got))
+	}
+}
