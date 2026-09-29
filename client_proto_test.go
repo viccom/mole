@@ -3,6 +3,7 @@ package moleAgent_client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -483,5 +484,104 @@ func TestDispatchStream_NormalWebSSHHeaderRouted(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "webssh tunnel not found") {
 		t.Fatalf("正常短名头必须路由到 websshMgr（未见 not found 告警）:\n%s", buf.String())
+	}
+}
+
+// startRegisterServer 起本地 TCP 假服务端：完整走 transport 认证
+// （challenge → proof 行 → ok 应答）+ smux 服务端，accept 一条 register
+// 流后延迟 respDelay 再回 ok 应答。用于复现服务端 probeOldSession
+// （同节点重连且旧会话假死时最长 8s 探测发生在写应答之前）拖慢 register
+// 应答的场景。
+func startRegisterServer(t *testing.T, respDelay time.Duration) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// 认证阶段：challenge → 收 proof 行 → ok（与 transport.authenticate 对应）
+		if _, err := conn.Write(make([]byte, 32)); err != nil {
+			return
+		}
+		if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil {
+			return
+		}
+		if _, err := conn.Write([]byte(`{"cmd":"ok","msg":"authenticated"}` + "\n")); err != nil {
+			return
+		}
+		// smux 服务端：收 register 流，延迟应答
+		sess, err := smux.Server(conn, &smux.Config{
+			Version:           2,
+			KeepAliveDisabled: true,
+			MaxFrameSize:      32768,
+			MaxReceiveBuffer:  1 << 20,
+			MaxStreamBuffer:   64 * 1024,
+		})
+		if err != nil {
+			return
+		}
+		defer sess.Close()
+		stream, err := sess.AcceptStream()
+		if err != nil {
+			return
+		}
+		defer stream.Close()
+		if _, err := bufio.NewReader(stream).ReadString('\n'); err != nil { // register 命令行
+			return
+		}
+		time.Sleep(respDelay)
+		stream.Write([]byte(`{"cmd":"ok","msg":"registered"}` + "\n"))
+		// 保活至客户端读完应答（close 过早会以 RST 冲掉未读数据）
+		time.Sleep(500 * time.Millisecond)
+	}()
+	return ln.Addr().String()
+}
+
+// connectRegisterClient 用真实 transport 路径连假服务端并执行 register
+func connectRegisterClient(t *testing.T, srvAddr string) error {
+	t.Helper()
+	c := newStatusTestClient(t)
+	if err := c.transport.Connect(context.Background(), srvAddr, c.cfg.Token); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.transport.Disconnect()
+	return c.register(context.Background())
+}
+
+// TestRegisterResponseOutlastsHeartbeatTimeout F2：服务端 probeOldSession
+// 假死探测最长 8s 发生在写 register 应答之前，客户端 HeartbeatTimeout
+// 默认 5s 先超时——每次假死重连必损失一轮。register 应答必须用独立
+// 超时（覆盖 8s 探测 + 处理余量），6s（>5s 心跳超时）延迟下必须等到 ok。
+func TestRegisterResponseOutlastsHeartbeatTimeout(t *testing.T) {
+	srvAddr := startRegisterServer(t, 6*time.Second)
+
+	start := time.Now()
+	if err := connectRegisterClient(t, srvAddr); err != nil {
+		t.Fatalf("register 应答延迟 6s（>HeartbeatTimeout 5s、<12s 独立上限）不应超时: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 6*time.Second {
+		t.Fatalf("应等到延迟后的应答，耗时 %v", elapsed)
+	}
+}
+
+// TestRegisterResponseStillTimesOutBeyond12s F2 防误放：延迟超过独立
+// 上限（12s）时 register 仍必须超时报错，而不是无限等待。
+func TestRegisterResponseStillTimesOutBeyond12S(t *testing.T) {
+	srvAddr := startRegisterServer(t, 13*time.Second)
+
+	start := time.Now()
+	err := connectRegisterClient(t, srvAddr)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("13s 延迟（>12s 独立上限）必须超时")
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("超时应发生在 12s 上限附近，耗时 %v", elapsed)
 	}
 }
