@@ -54,7 +54,7 @@
 | 分叉 | server 现状 | client 现状 | 裁决 |
 |---|---|---|---|
 | 空 target 放行集合 | ser2mq/vpn-manager/ser2tcp/ser2udp/webssh 空 target 合法（+p2p 走 para 分支） | 仅 vpn-manager（+p2p）；四类本地隧道要求非空 target（但 dropInvalidTunnels 用占位串 `client-local-no-target` 架空、warnInvalidPushedTunnels 有同集合豁免） | shared `Validate` 接受 `AllowEmptyTarget` 集合参数，双端各传现状集合；client 的占位串/豁免路径不动 |
-| target scheme 检查 | 无（`http://h:p` 可通过） | http/https 拒 `://` | shared 参数 `RejectSchemeInTarget`（server false / client true） |
+| target scheme 检查 | 无（差异清单 a-5 原称「server 放行 http://h:p」——**实测推翻**：net.SplitHostPort 对多冒号输入直接报错，server 实际也拒绝，双端判定一致，差异仅在文案） | http/https 拒 `://`（文案更明确） | shared 参数 `RejectSchemeInTarget`（server false / client true）——保留的是**文案分叉**而非判定分叉 |
 | rate_limit 形态 | `*TunnelRateLimit`（结构化） | `json.RawMessage` 透传（校验时临时 unmarshal） | shared 定义 `RateLimit` struct + 上限具名常量单源（100000 / 10737418240，消 client 三处散落字面量）；client 适配层仅校验时转换、存储仍 RawMessage 透传（防回传清空服务端限速）；client 独有的 RawMessage 反序列化错误文案留在适配层 |
 
 ### 文案差异——统一版本（⚠️ 标注输出变化端）
