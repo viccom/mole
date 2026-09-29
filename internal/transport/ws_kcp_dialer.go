@@ -35,7 +35,9 @@ func NewWSDialer(cfg WSDialerConfig) DialFunc {
 			if strings.HasPrefix(addr, "wss://") && tlsConfig == nil {
 				tlsConfig = &tls.Config{InsecureSkipVerify: true}
 				// 配置未启用 tls 时对 wss:// 只能跳过证书校验（兼容自签名部署），
-				// 但必须让用户知情：该连接可被中间人窃取（含节点 token）
+				// 但必须让用户知情：中间人可中继/劫持会话（proof 认证后节点
+				// token 不再上线，proof 绑定一次性 challenge 亦不可重放，但流量
+				// 机密性仍依赖 TLS——跳过校验即放弃这层防护）
 				log.Printf("警告: %s 为 wss:// 地址但配置未启用 tls，已跳过证书校验（存在中间人风险）", addr)
 			}
 		} else {
