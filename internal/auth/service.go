@@ -13,8 +13,12 @@ import (
 )
 
 // dummyBcryptHash 登录时序防用户名枚举（QUA-06）：包初始化时按生产默认
-// cost（12，与 config 默认一致）生成一次，用户不存在路径对输入口令执行
-// 等价 bcrypt 比较，消除与「密码错误」路径的响应时序差
+// cost 生成一次，Login 全部「bcrypt 前返回」的快路径对输入口令执行等价
+// bcrypt 比较，消除与「密码错误」路径的响应时序差。
+// cost 取 12：与 internal/config DefaultConfig 的 bcrypt_cost 默认值（字面量
+// 12，无导出常量）一致。未引用 config 是有意取舍——auth 是低层包，为取一个
+// int 引入整个 YAML 配置包（含其依赖树）不成比例；config 默认值变更时需
+// 同步此处（config_test 对 4-31 范围有校验，值漂移可被其单测捕获）
 var dummyBcryptHash = func() []byte {
 	h, err := bcrypt.GenerateFromPassword([]byte("timing-equalizer-dummy-password"), 12)
 	if err != nil {
@@ -53,12 +57,17 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (str
 	}
 
 	if user.Status == core.UserStatusDisabled {
+		// QUA-06 残余：禁用路径同样先做等量 bcrypt 功再返回——本路径在哈希
+		// 比较前返回，快路径的时序差可被用来枚举用户名（文案保持不变）
+		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 		slog.Warn("User login failed", "username", username, "reason", "user disabled")
 		return "", "", core.ErrUserDisabled
 	}
 
 	hash, err := s.userRepo.GetPasswordHash(user.ID)
 	if err != nil {
+		// QUA-06 残余：哈希缺失路径同理（用户存在但从未设密）
+		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 		slog.Warn("User login failed", "username", username, "reason", "no password")
 		return "", "", core.ErrInvalidCredentials
 	}

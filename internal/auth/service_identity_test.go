@@ -254,6 +254,55 @@ func TestAuthServiceLogin_UserNotFoundPerformsBcryptWork(t *testing.T) {
 	}
 }
 
+// QUA-06 残余：禁用用户与哈希缺失两条快路径补 dummy bcrypt 后，错误文案
+// 必须保持不变（行为守卫）——修复只加时序功，不改对外语义：
+//   - 禁用路径仍回 ErrUserDisabled（auth handler 与 ErrInvalidCredentials
+//     同样映射为 401 "Invalid username or password"，HTTP 层文案一致）
+//   - 哈希缺失路径仍回 ErrInvalidCredentials，与「密码错误」逐字一致
+func TestAuthServiceLogin_FastPathsKeepCredentialErrorText(t *testing.T) {
+	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
+	if err != nil {
+		t.Fatalf("failed to open in-memory redka: %v", err)
+	}
+	defer db.Close()
+
+	userRepo := newMemoryUserRepo()
+	roleRepo := &mockRoleRepo{roles: map[string]*core.Role{}}
+	authSvc := NewAuthService(NewJWTManager("test-secret", time.Hour), userRepo, roleRepo, NewRBACEngine(db, roleRepo), db)
+
+	// 禁用用户（哈希存在）
+	if err := userRepo.Create(&core.User{ID: "u-dis", Username: "disabled-user", Status: core.UserStatusDisabled}, "some-hash"); err != nil {
+		t.Fatalf("Create disabled user: %v", err)
+	}
+	// 活跃用户但哈希缺失
+	if err := userRepo.Create(&core.User{ID: "u-nohash", Username: "nohash-user", Status: core.UserStatusActive}, ""); err != nil {
+		t.Fatalf("Create nohash user: %v", err)
+	}
+	delete(userRepo.password, "u-nohash")
+	// 活跃用户 + 错误密码（对照路径）
+	hash, err := HashPassword("right-pass-123", 4)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	if err := userRepo.Create(&core.User{ID: "u-wp", Username: "wrongpass-user", Status: core.UserStatusActive}, hash); err != nil {
+		t.Fatalf("Create wrongpass user: %v", err)
+	}
+
+	_, _, errDisabled := authSvc.Login(context.Background(), "disabled-user", "whatever-pass")
+	if !errors.Is(errDisabled, core.ErrUserDisabled) {
+		t.Fatalf("disabled path must keep ErrUserDisabled semantics, got %v", errDisabled)
+	}
+
+	_, _, errNoHash := authSvc.Login(context.Background(), "nohash-user", "whatever-pass")
+	_, _, errWrongPass := authSvc.Login(context.Background(), "wrongpass-user", "bad-pass")
+	if !errors.Is(errNoHash, core.ErrInvalidCredentials) || !errors.Is(errWrongPass, core.ErrInvalidCredentials) {
+		t.Fatalf("no-hash and wrong-password must both be ErrInvalidCredentials: %v / %v", errNoHash, errWrongPass)
+	}
+	if errNoHash.Error() != errWrongPass.Error() {
+		t.Fatalf("no-hash path text must equal wrong-password text (anti-enumeration), %q vs %q", errNoHash.Error(), errWrongPass.Error())
+	}
+}
+
 func TestAuthServiceLogin_PreservesUserIDAndUsernameSeparation(t *testing.T) {
 	db, err := redka.Open(":memory:", &redka.Options{DriverName: "sqlite"})
 	if err != nil {
