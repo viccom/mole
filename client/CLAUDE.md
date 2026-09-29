@@ -154,11 +154,11 @@ applyTunnelMutation() 在快照上执行增/删/替换
 
 ## 关键约定
 
-1. **不要修改 `internal/protocol/types.go`** 的字段名和 JSON tag（与服务端共享协议）
+1. **不要修改 `shared/proto` 的字段名和 JSON tag**（跨端协议单源；`internal/protocol/types.go` 与服务端 `tunnel/control.go` 仅剩类型别名与常量 re-export——改协议即改 `shared/proto`，双端自动同步，锁值单测兜底）
 2. **节点 ID**：固定 8 字符，首字符字母，其余字母或数字
-3. **HTTP/HTTPS 隧道 Target**：必须是裸 `host:port`（如 `127.0.0.1:8080`），**不得含 `://`**。`Validate()` 会拒绝任何含 scheme 的 target（服务端 `validateTunnel` 同样拒绝——`SplitHostPort` 对含 scheme 的值报 too many colons），scheme 由 `dispatchStream` 按隧道类型缺省补齐。`tcp`/`udp` 同样为 `host:port`。**注意两端已知分歧**：对 ser2mq/ser2tcp/ser2udp/webssh，服务端不校验 target（空 target 可落库），客户端 `Validate()` 更严（要求非空）——`tunnel_push` 告警对这类空 target 静默跳过
-3.1 **`Validate()` 实际约束清单**（`tunnel.go`）：name 非空且不含 `\x00`/`\n`/`\r`（名称进入 `\x00<name>\n` 代理头，控制字符会破坏定界）；type 必须是 10 个已注册常量之一；target 必填（`vpn-manager`/`p2p` 空 target 豁免）；http/https/tcp/udp 的 target 需 host 非空 + 端口 1-65535；rate_limit 若存在须为对象且 max_conns 0-100000、max_bandwidth 0-10737418240、至少一项非零（`null` 或省略 = 清除）。**`listen_port` 两端均不校验**
-4. **TunnelType**：使用类型化常量，不用原始字符串
+3. **HTTP/HTTPS 隧道 Target**：必须是裸 `host:port`（如 `127.0.0.1:8080`），**不得含 `://`**。`Validate()` 会拒绝任何含 scheme 的 target（服务端同样拒绝——`SplitHostPort` 对含 scheme 的值报 too many colons，只是错误文案不同：服务端报 format 错、客户端报更明确的 scheme 错），scheme 由 `dispatchStream` 按隧道类型缺省补齐。`tcp`/`udp` 同样为 `host:port`。**两端已知分歧（单源后参数化保留）**：对 ser2mq/ser2tcp/ser2udp/webssh，服务端放行空 target（空 target 可落库），客户端 `Validate()` 更严（要求非空）——分叉经 `shared/tunnelvalidate` 的 `Options.AllowEmptyTarget` 保留；`tunnel_push` 告警对这类空 target 静默跳过
+3.1 **`Validate()` 实际约束清单**（规则单源于 `shared/tunnelvalidate`，`tunnel.go` 是薄适配）：name 非空且不含 `\x00`/`\n`/`\r`（名称进入 `\x00<name>\n` 代理头，控制字符会破坏定界）；type 必须是 10 个已注册常量之一；target 必填（`vpn-manager`/`p2p` 空 target 豁免，四类本地隧道客户端收紧必填）；http/https/tcp/udp 的 target 需 host 非空 + 端口 1-65535；**TCP/UDP 的 `listen_port` 双端均校验**（1-65535 且避开保留端口集合 `shared/listenport`，REL-01；HTTP/HTTPS 零值合法）；rate_limit 若存在须为对象且 max_conns 0-100000、max_bandwidth 0-10737418240、至少一项非零（`null` 或省略 = 清除；上限常量单源于 `shared/tunnelvalidate`）
+4. **TunnelType**：使用类型化常量，不用原始字符串（枚举值单源于 `shared/proto`，根包 re-export）
 5. **串口读写**：使用 copy-and-release 模式，不持锁跨 I/O
 6. **MQTT 连接**：每隧道独立连接，非共享池
 7. **Para 字段**：使用 `json.RawMessage` 延迟解析，各 Manager 按需反序列化
@@ -179,7 +179,7 @@ applyTunnelMutation() 在快照上执行增/删/替换
     - **保持 diff 最小且可分离**：一处缺陷一处修复，便于逐项回推；不要为图省事把独立修复揉成一个 commit
     - **回推上游并重同步**：累积到一定量（或上游发版前）把修复推回 p2punch，然后重新 fork 同步，避免单向分叉。**2026-09-18 已回推** `mode_v6_tcp.go` 的 `preferDial` 确定性配对 + ECDHE 公钥序平局打破、`heartbeat` 的取时顺序。**剩余欠账**（上游缺、fork 有）：`session/session_secure.go` 入站流 deadline 加固、`netx`（`UDPConn`/`udp_bridge`/`race_conn` 的并发与资源修复）、`easyp2p` 的 `lan.go`/`p2p.go` 并发修复、`tunnel/tcp.go` accept 瞬态错误重试、`engine/mode_v4_relay.go` ctx 看门狗、`engine/mode_lan.go` socket 泄漏、`session/filetransfer.go` 截断检测。另有**合法 fork 扩展**（非欠账，不回推）：`easyp2p/mqtt_signal.go` + `engine/dep.go` 的 MQTT 信令凭据注入（moleAgent 节点级 token 鉴权所需）
     - **不引入新的 gofmt 违规**：`make fmt-check` 豁免 `internal/p2p/**` 的既有原因见「构建」段
-17. **p2p Para 两层契约**：连接参数 + `mappings[]` 的 schema 与校验规则（§0.2/§0.3）和服务端逐字一致，共享测试向量 I1-I12/V1-V7 改契约时两端同步更新；映射变更 = Handler 重建 + 会话重打洞（对端零配置）；信令默认公共 MQTT broker 优先 + 服务端内嵌 broker 兜底
+17. **p2p Para 两层契约**：连接参数 + `mappings[]` 的 schema 与校验规则（§0.2/§0.3）**单源于 `shared/tunnelvalidate.ValidateP2PPara`**（双端薄适配，一致性由单源+锁值单测保证，不再需要"两端同步更新"）；共享测试向量 I1-I12/V1-V7 仍存于两端（client `internal/proxy/p2p/config_test.go`、server `internal/core/validate_para_test.go`），改契约时连同 shared 单测一起更新；映射变更 = Handler 重建 + 会话重打洞（对端零配置）；信令默认公共 MQTT broker 优先 + 服务端内嵌 broker 兜底
 18. **p2p 多隧道并行**：一个节点可同时运行多条 p2p 隧道（Manager 按隧道名分发，每条独立 Handler + session，fork 原生支持多隧道），但有两条硬约束：
     - **`local_port` 全节点唯一（跨隧道）**：`manager.go` 启动前登记所有在跑隧道已占端口，冲突的新隧道整条跳过（slog.Error 不启动）。服务端只保证同 para 内不重复（§0.3 I12），跨隧道唯一性仅客户端检查
     - **`mqtt_brokers` 全节点同质**：签名不一致的新隧道拒绝启动。根因是 fork 的 easyp2p 服务器列表与信令凭据均为**包级全局单值**（`SetServers`/`SetSignalCredentials` 写全局，`MQTTSignal` 读全局），混用会把 A 隧道 token 发给 B 隧道配置的第三方 broker——安全考量，宁可拒绝。默认配置下不受影响（`DefaultMQTTBrokers` 只依赖 serverHost，不随 room 变）；手工给不同隧道配不同 broker 列表才会触发。要支持多 broker 需改造 fork，非配置可绕过
@@ -188,7 +188,7 @@ applyTunnelMutation() 在快照上执行增/删/替换
 ## 开发约束
 
 - **修改代码前必须先 `git pull` 同步最新远程代码**
-- 新增隧道类型：`tunnel.go` 的 `TunnelType` 常量 + `Validate()` 注册 + `client.go` 的 `dispatchStream()` 和 `notifyManagers()` 添加分支
+- 新增隧道类型：`shared/proto` 加 TunnelType 常量（`tunnel.go` re-export）+ `shared/tunnelvalidate` 的类型分支 + `client.go` 的 `dispatchStream()` 和 `notifyManagers()` 添加分支
 - ser2mq 同串口禁止重复创建
 - vpn-manager 同程序名互斥
 - 所有隧道变更（增删改、启用禁用）必须经过 `notifyManagers()` 通知 Manager，否则 ser2mq/vpn 不会生效
@@ -214,12 +214,15 @@ go build ./cmd/moleagent-client              # 无 P2P
 go build -tags p2p ./cmd/moleagent-client    # 含 P2P（等价于 make build）
 ```
 
-### 发布纪律
+### 发布纪律（monorepo tag 前缀版，详见根 AGENTS.md）
 
-`publish` 依赖 `check-tag` 前置守卫：**VERSION 必须是 HEAD 上的干净 tag**。
-`git describe` 若带 `-N-g<hash>`（未打 tag）或 `-dirty`（工作区脏），publish 立即中止。
+`publish` 依赖 `check-tag` 前置守卫：**VERSION 必须是 HEAD 恰在其上的干净 `cli/*` tag**。
+VERSION 由 `git describe --match 'cli/*'` 剥前缀得到；若带 `-N-g<hash>`（HEAD 越过
+最近 cli tag——含纯服务端提交之后）或 `-dirty`（工作区脏），publish 立即中止。
 原因：`latest.json` 里的 `version` 例如 `v0.6.0-31-gfad1b01` 会被 selfupdater 的
 `fallbackParse` 解析成 `0.6.0` + pre-release，按 SemVer 低于 `0.6.0`，老客户端会
-判定「无更新」——升级永远不生效。发布顺序：**先 `git tag` → 再 `make publish`**。
+判定「无更新」——升级永远不生效。发布顺序：**先 `git tag cli/vX.Y.Z` → 再
+`make publish`**；纯服务端提交后发客户端需补打新 `cli/` tag（防 server-only 提交
+触发全舰队客户端自更新，是特性不是缺陷）。禁止裸 `v*` tag。
 
 `scripts/build.ps1` / `scripts/release.ps1`（Windows）已同步带 `-tags p2p`。

@@ -7,7 +7,7 @@ moleAgent_Serv + moleAgent_client 合并 monorepo（2026-09 迁移，subtree mer
 ```
 server/   ← 原 moleAgent_Serv（module 名不变：moleAgent_Serv）
 client/   ← 原 moleAgent_client（module 名不变：moleAgent_client）
-shared/   ← 新模块 mole/shared（仅 go.work 内本地引用，不发布）
+shared/   ← 新模块 mole/shared（仅 go.work 内本地引用，不发布；已落地 listenport/proto/tunnelvalidate 三件单源化）
 _release/ ← 发布产物目录 + e2e harness（仅三脚本入仓，产物 gitignore）
 go.work   ← use ./server ./client ./shared
 ```
@@ -23,4 +23,4 @@ go.work   ← use ./server ./client ./shared
 
 ## 旧仓库
 
-`git.metme.top/viccom/moleAgent_Serv` / `moleAgent_client`：已归档只读（历史锚点，clone/ls-remote 仍可用）。
+`git.metme.top/viccom/moleAgent_Serv` / `moleAgent_client`：迁移完成、已冻结（本仓库 push 并通过全部验收后在 gitea 归档只读；归档前 clone/ls-remote 均可用）。历史 tag 已全量前缀映射（`srv/*`、`cli/*`），本仓库 `git log` 可直达原仓库全部历史。

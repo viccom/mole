@@ -1,6 +1,6 @@
 # 双仓库合并 monorepo 迁移方案（moleAgent_Serv + moleAgent_client → mole）
 
-> **状态**：方案设计（未实施）
+> **状态**：**已实施完成（2026-09-29，三段单日完成）**——15 项验收本地全部通过、shared 第一拍三件（listenport/proto/tunnelvalidate）全部单源化。实施与方案的偏差裁决与验收证据见仓库根 `docs/decisions.md`。push 待 gitea 建仓后执行；旧仓库归档在 push 之后。以下正文为原始方案（未改写，留档）。
 > **前置**：双仓库 master 干净已推送（Serv `dbdc498` / Client `cca1e13`）、生产稳定、方案 B（PSK 协议内升级）**未实施**——合并先行，B 作为新布局的首个特性落地（B 的对称代码因此单源化）。
 > **目标**：单仓库 `mole/`（`server/` + `client/` + `shared/` 三 Go 模块 + `go.work`），**历史完整保留、现有 import 路径零改写、二进制名与发布 URL 不变、生产零影响**。
 > **已核实的关键事实**（本节所有锚点均已查证）：

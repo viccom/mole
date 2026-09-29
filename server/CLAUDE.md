@@ -226,7 +226,7 @@ config.Load() → logging.Init() → storage.Init()
 
 ### p2p 隧道（两层契约）
 
-- **Para 两层结构**（契约 §0.2，与客户端逐字一致）：连接参数（`room/modes/relay_server/mqtt_brokers/stun_servers`，两端对称）+ `mappings[]`（仅访问发起端配置，随 `TUNNEL:OPEN` 在线传对端）。校验在 `core/validate_para.go` 的 `ValidateP2PPara`（§0.3 规则，含同 para 内 local_port 去重；旧顶层单组映射字段已废弃）
+- **Para 两层结构**（契约 §0.2，双端**单源**于 `shared/tunnelvalidate.ValidateP2PPara`——`core/validate_para.go` 仅剩薄适配与 `P2PRoom` 提取）：连接参数（`room/modes/relay_server/mqtt_brokers/stun_servers`，两端对称）+ `mappings[]`（仅访问发起端配置，随 `TUNNEL:OPEN` 在线传对端）。校验规则（§0.3，含同 para 内 local_port 去重；旧顶层单组映射字段已废弃）
 - **room 配对不变量**：`service/tunnel_service.go` 的 `validateP2PRoomPairing`——同 room 全局最多 2 条记录且分属 2 个不同节点（p2punch 假设 room 内恰两端，第三端持同 room 入场等于把流量隧穿给陌生节点，必须挡在落库前）
 - **信令凭据**：C→S 控制命令 `p2p_signal_token` → `P2PSignalTokenService` 签发（TTL 24h，仅存 hash）；内嵌 MQTT Broker 的 authHook 校验 `p2p-signal:<tokenID>` 用户名。客户端信令默认**公共 broker 优先（同 p2punch）+ 本服务端 broker 兜底**
 - **内嵌 STUN**：`:3478`（`stun/server.go`），作客户端打洞地址探测的兜底之一
@@ -276,11 +276,15 @@ cd admin && npm install && npm run build    # 产物在 admin/dist/
 cd admin && npm run dev
 ```
 
-**发布纪律**：`make publish` 依赖 `check-tag` 前置守卫——**VERSION 必须是 HEAD 上的
-干净 tag**。`git describe` 若带 `-N-g<hash>`（未打 tag）或 `-dirty`（工作区脏），
-publish 立即中止。原因：`latest.json` 里的 `version` 例如 `v0.5.0-26-g28e7e03` 会被
-selfupdater 的 `fallbackParse` 解析成 `0.5.0` + pre-release，按 SemVer 低于 `0.5.0`，
-老服务端会判定「无更新」——升级永远不生效。发布顺序：**先 `git tag` → 再 `make publish`**。
+**发布纪律**（monorepo tag 前缀版，详见根 AGENTS.md）：`make publish` 依赖 `check-tag`
+前置守卫——**VERSION 必须是 HEAD 恰在其上的干净 `srv/*` tag**。VERSION 由
+`git describe --match 'srv/*'` 剥前缀得到；若带 `-N-g<hash>`（HEAD 越过最近 srv tag）
+或 `-dirty`（工作区脏），publish 立即中止。原因：`latest.json` 里的 `version` 例如
+`v0.5.0-26-g28e7e03` 会被 selfupdater 的 `fallbackParse` 解析成 `0.5.0` + pre-release，
+按 SemVer 低于 `0.5.0`，老服务端会判定「无更新」——升级永远不生效。发布顺序：
+**先 `git tag srv/vX.Y.Z` → 再 `make publish`**。注意：纯客户端提交后发服务端同样会被
+拒（describe 越过后端 tag），需先补打新 `srv/` tag——这是防「client-only 提交触发
+服务端发布」的特性。禁止裸 `v*` tag（与客户端 tag 全重叠，必冲突）。
 
 环境变量覆盖配置:
 

@@ -9,7 +9,7 @@
   - `server/`：module `moleAgent_Serv`（服务端，模块内细节见其 CLAUDE.md）
   - `client/`：module `moleAgent_client`（客户端；发布产物必须 `-tags p2p`，裸 `go build` 不含 P2P——发布一律走 make）
   - `shared/`：module `mole/shared`，**仅 go.work 内本地引用，不对外发布**；双端 go.mod 以 `require + replace => ../shared` 接线（workspace 与单模块两种形态都可构建）
-- 远端：git.metme.top/viccom/mole；旧仓库 moleAgent_Serv / moleAgent_client 已归档只读（历史锚点，ls-remote/clone 可用，禁止再提交）
+- 远端：git.metme.top/viccom/mole；旧仓库 moleAgent_Serv / moleAgent_client 已冻结待归档（本仓库 push 后在 gitea 设 archived 只读；归档前后 ls-remote/clone 均可用，禁止再提交）
 - 迁移方案与验收清单：[server/docs/plans/2026-09-29-monorepo-merge-migration.md](server/docs/plans/2026-09-29-monorepo-merge-migration.md)；实施裁决记录：[docs/decisions.md](docs/decisions.md)
 
 ## 常用命令
@@ -32,7 +32,7 @@
 - `latest.json` 的 `version` 字段是干净的 `vX.Y.Z`（与合并前产物逐字节同构）——存量 v0.8.0 客户端自更新判定零变化；**注意 `cli/v0.2.0-test` 测试 tag 会被 `--match 'cli/*'` 匹配**
 - **纯单端提交后发另一端会被 `check-tag` 拒绝**（describe 越过最近 tag 带上 `-N-g` 后缀）→ 需先补打另一端新 tag（即便该端代码无变化）。这是特性：防「server-only 提交触发全舰队客户端自更新」
 - **每次 publish 前必须过 staging 自更新冒烟**（gen_manifest 事故红线：发布工具链改动后未实测不得上生产更新源）
-- 发布顺序：**先 `git tag` → 再 `make publish`**（原因见 server/CLAUDE.md 发布纪律节：脏 version 会被 selfupdater 的 fallbackParse 解析成 pre-release，升级永不生效）
+- 发布顺序：**先 `git tag <srv|cli>/vX.Y.Z` → 再 `make publish`**（原因见 server/CLAUDE.md 发布纪律节：脏 version 会被 selfupdater 的 fallbackParse 解析成 pre-release，升级永不生效）
 
 ## _release 规则
 
