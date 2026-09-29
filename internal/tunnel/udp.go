@@ -15,11 +15,23 @@ const udpSessionTimeout = 60 * time.Second
 
 // claimUDPSession 持锁把新建会话回插 sessions[key]（REL-03 的 CAS 语义）：
 // 同 key 已有并发创建者时，新会话是败者——不落 map，返回既有会话，
-// 由调用方负责关闭败者资源（cancel/读协程退出/配额释放）
+// 由调用方负责关闭败者资源（cancel/读协程退出/配额释放）。
+// 审查②：读协程先于回插发现流死亡时，候选已置 destroyed 且配额归还，
+// 临界区内必须复核候选自身状态——死会话落 map 会让该 key 永久黑洞
+// （destroySession 幂等跳过、永无转发路径）。map 有活的既有者则返回之，
+// 否则返回 (nil,false) 由调用方丢弃本包（客户端重传触发重建）。
+// 败者路径的既有会话 lastSeen 刷新同样在锁内完成（原实现调用方锁外写，数据竞争）
 func claimUDPSession(mu *sync.Mutex, sessions map[string]*udpSession, key string, s *udpSession) (winner *udpSession, inserted bool) {
 	mu.Lock()
 	defer mu.Unlock()
+	if s.destroyed {
+		if existing, ok := sessions[key]; ok && existing != s {
+			return existing, false
+		}
+		return nil, false
+	}
 	if existing, ok := sessions[key]; ok && existing != s {
+		existing.lastSeen = time.Now()
 		return existing, false
 	}
 	sessions[key] = s
@@ -260,9 +272,15 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					fwdStream = sess.stream
 					curSKey = newSKey
 				} else {
-					destroySession(key, sess)
+					destroySession(key, sess) // 幂等：候选已死时直接返回，不二次释放
+					if winner == nil {
+						// 候选在回插前已 destroy 且无既有会话可复用：
+						// 丢弃本包，客户端重传时走全新建会话路径
+						slog.Debug("UDP session destroyed before claim, dropping packet",
+							"tunnel", tunnel.Name, "src", key)
+						continue
+					}
 					slog.Debug("UDP session lost insert race, using existing", "tunnel", tunnel.Name, "src", key)
-					winner.lastSeen = time.Now()
 					fwdStream = winner.stream
 					curSKey = winner.sKey
 				}

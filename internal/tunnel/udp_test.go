@@ -47,6 +47,46 @@ func TestClaimUDPSession(t *testing.T) {
 	}
 }
 
+// 审查②：读协程可能先于回插发现流死亡并 destroySession（destroyed=true、
+// 配额已归还），claimUDPSession 临界区内必须复核候选自身状态——死会话落
+// map 会把该 key 变成永久黑洞（destroySession 幂等跳过、永无转发路径）。
+// 另：败者路径的 winner.lastSeen 刷新必须发生在锁内（原实现锁外写，-race 竞争）
+func TestClaimUDPSession_DestroyedCandidate(t *testing.T) {
+	mu := &sync.Mutex{}
+	sessions := make(map[string]*udpSession)
+
+	// 空 map + destroyed 候选：无可用转发路径，返回 (nil,false)，map 不得落死会话
+	dead := &udpSession{destroyed: true}
+	got, inserted := claimUDPSession(mu, sessions, "k", dead)
+	if inserted || got != nil {
+		t.Fatalf("destroyed candidate with empty map must return (nil,false), got (%p,%v)", got, inserted)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("destroyed session must not be inserted into map, map=%v", sessions)
+	}
+
+	// map 有活会话 + destroyed 候选：返回既有活会话供本包转发
+	live := &udpSession{}
+	sessions["k"] = live
+	got, inserted = claimUDPSession(mu, sessions, "k", dead)
+	if inserted || got != live {
+		t.Fatalf("destroyed candidate must yield the live existing session, got (%p,%v) want live=%p", got, inserted, live)
+	}
+	if sessions["k"] != live {
+		t.Fatal("map entry must remain the live session")
+	}
+
+	// 败者路径 lastSeen 在 claimUDPSession 锁内刷新
+	old := time.Now().Add(-time.Hour)
+	live.lastSeen = old
+	if _, inserted := claimUDPSession(mu, sessions, "k", &udpSession{}); inserted {
+		t.Fatal("fresh candidate must lose to existing session")
+	}
+	if !live.lastSeen.After(old) {
+		t.Fatal("loser path must refresh existing.lastSeen inside the claim lock")
+	}
+}
+
 // ===== REL-04：UDP 会话并发信号量 =====
 
 // startUDPEchoNode 构造模拟节点：对每条新建流先读掉隧道标识头行，
