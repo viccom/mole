@@ -1,4 +1,4 @@
-.PHONY: help build release clean build-admin build-mobile copy-admin copy-mobile publish check-tag
+.PHONY: help build build-go build-frontend release release-go clean build-admin build-mobile copy-admin copy-mobile publish check-tag
 
 .DEFAULT_GOAL := help
 
@@ -72,15 +72,18 @@ copy-mobile: ## 拷贝手机端前端到发行目录
 	@cp -R $(MOBILE_DIST) $(RELEASE_MOBILE_DIR)
 	@echo ">> Done: $(RELEASE_MOBILE_DIST)"
 
-# 默认：编译当前平台
-build: build-admin build-mobile copy-admin copy-mobile ## 构建前端 + 编译当前平台二进制
+# 前端构建链（需要 npm）——`build`/`release` 依赖它，`build-go`/`release-go` 不依赖
+build-frontend: build-admin build-mobile copy-admin copy-mobile ## 构建前端产物并拷贝到发行目录
+
+# 纯 Go 编译当前平台（不依赖 npm/前端工具链）——后端迭代与 CI 用这个
+build-go: ## 仅编译当前平台二进制（不构建前端）
 	@echo ">> Building $(BINARY_NAME) ($(VERSION))..."
 	@mkdir -p $(RELEASE_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(RELEASE_DIR)/$(BINARY_NAME) $(CMD_PATH)
 	@echo ">> Done: $(RELEASE_DIR)/$(BINARY_NAME)"
 
-# 交叉编译所有平台
-release: build-admin build-mobile copy-admin copy-mobile ## 交叉编译所有平台二进制
+# 纯 Go 交叉编译所有平台（不依赖 npm/前端工具链）
+release-go: ## 仅交叉编译所有平台二进制（不构建前端）
 	@mkdir -p $(RELEASE_DIR)
 	@for target in $(TARGETS); do \
 		GOOS=$${target%/*}; \
@@ -92,9 +95,19 @@ release: build-admin build-mobile copy-admin copy-mobile ## 交叉编译所有�
 		ARCH_TAG=$${target##*/}; \
 		OUT=$(RELEASE_DIR)/$(BINARY_NAME)-$$GOOS-$$ARCH_TAG$$EXT; \
 		echo ">> Building $$OUT ..."; \
-		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM go build -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH); \
+		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM go build -trimpath -ldflags "$(LDFLAGS)" -o $$OUT $(CMD_PATH) || exit 1; \
 	done
 	@echo ">> All platforms built in $(RELEASE_DIR)/"
+
+# 默认：编译当前平台（含前端）
+build: ## 构建前端 + 编译当前平台二进制
+	@$(MAKE) --no-print-directory build-frontend
+	@$(MAKE) --no-print-directory build-go
+
+# 交叉编译所有平台（含前端）
+release: ## 交叉编译所有平台二进制（含前端）
+	@$(MAKE) --no-print-directory build-frontend
+	@$(MAKE) --no-print-directory release-go
 
 clean: ## 清理编译产物
 	@rm -f $(RELEASE_DIR)/$(BINARY_NAME) $(RELEASE_DIR)/$(BINARY_NAME)-*
