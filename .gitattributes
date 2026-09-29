@@ -1,0 +1,4 @@
+# 行尾统一 LF——本仓库含 go:embed 的 web 资源（client/internal/shellui）与
+# 需在 WSL/bash 执行的 harness 脚本（_release/e2e），CRLF 会破坏行尾敏感断言与 bash 执行。
+# 覆盖 core.autocrlf=true 的本机默认（attributes 优先于配置），对任何 clone 环境一致。
+* text=auto eol=lf
