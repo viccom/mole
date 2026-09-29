@@ -75,7 +75,9 @@
 
 ---
 
-# 方案 B：PSK 协议内升级（认证后在同一条连接上协商加密）
+# 方案 B：PSK 协议内升级（自适应回落版，2026-09-29 负责人定稿）
+
+> **决策记录**：降级策略由「enc 硬要求」改为「自动回落」（2026-09-29 负责人决策）。新客户端默认首选 PSK 加密；**仅当 ok 应答缺 `enc` 字段（旧服务端信号）时回落明文**。已知代价（知情采纳）：过渡期（`require=false`）内主动中间人剥除 `enc` 字段可致静默明文（被动窃听两版设计等价，均无 token 泄漏）；收益：实现与运维复杂度下降、**部署顺序自由**、**回滚零接触**。收口 `require=true` 后该弱点自动消除——收口为承诺项，不无限期停留。**加密握手本身的失败（服务端已宣告能力后）任何情况下都不回落**（见 B.2）。
 
 ## B.1 目标形态与协议时序
 
@@ -83,15 +85,26 @@
 
 ```
 服务端 → 客户端: challenge (32B 随机)                              [现状不变]
-客户端 → 服务端: {"proof":"<hex>", "enc":1}          ← enc 请求位（新增字段）
+客户端 → 服务端: {"proof":"<hex>", "enc":1}          ← enc 请求位（新增字段；enc=off 时不发）
 服务端 → 客户端: {"cmd":"ok","msg":"authenticated","enc":{"v":1}}
-                 ↑ enc 能力宣告（新增字段；enabled 时携带）
-── 以下仅当双方 enc 就绪时执行（B 插入段）──
-Noise XXpsk2 握手（3 条消息，psk = sha256(token) 的 32 字节值）
-双方: smux 会话建立在加密层之上；其后所有控制命令与隧道载荷均为密文
+                 ↑ enc 能力宣告（新增字段；enabled 且客户端带 enc 时携带；否则无此字段）
+── 分支 ──
+A. 双方 enc 就绪: Noise XXpsk2 握手（3 条消息，psk = sha256(token) 32 字节）
+                 → smux 建立在加密层上，其后控制命令与隧道载荷全部密文
+B. ok 缺 enc 字段（旧服务端 / enabled=false）:
+                 → 新客户端自动回落明文 smux（WARN 一次/每服务端/每进程，见 B.2）
+                 → 旧客户端本就无感知，直接明文 smux
 ```
 
-旧客户端/旧服务端互不感知：未知 JSON 字段被双方标准 `json.Unmarshal` 自动忽略，旧组合直接进入 smux（明文，受服务端 `require` 开关管制）。
+**兼容矩阵**：
+
+| 客户端 \ 服务端 | 旧服务端（现行 v0.7.x） | 新服务端 `enabled=true` | 新服务端 `require=true` |
+|---|---|---|---|
+| 旧客户端 v0.8.0 | 明文（现状） | 明文放行 + WARN（限频） | 拒绝 + 专属日志 |
+| 新客户端 `enc=on`（默认） | **自动回落明文** + WARN | **加密** | 加密 |
+| 新客户端 `-enc=off`（调试用） | 明文 | 明文 + WARN | 拒绝 |
+
+旧客户端/旧服务端互不感知：未知 JSON 字段被双方标准 `json.Unmarshal` 自动忽略。**部署顺序自由**（服务端与客户端谁先升级都可以，加密在两端都就绪的下一次重连自动激活）——这是回落策略带来的、硬要求版不具备的性质。
 
 **psk 推导（零数据迁移）**：客户端 `sha256(token)` 本地计算；服务端 proof 认证匹配成功的 token 记录的 `TokenHash` 字段就是该值的 hex（`node_access_auth.go:93` 解码即 32 字节 psk）。token 轮换时 psk 随之变化，连接每次重新认证自然携带新 psk。
 
@@ -104,14 +117,20 @@ Noise XXpsk2 握手（3 条消息，psk = sha256(token) 的 32 字节值）
 - 转录绑定内建：双终结中继（MITM 两端各跑一条加密腿）在 msg2 即失败，**无需手工 channel binding**——这是选 Noise 而非"TLS 自签 + 手工 MAC"的决定性理由，后者要把转录绑定做对非常容易出错。
 - 升级后加密层：Noise `CipherState` 流式读写（2 字节长度前缀 + AEAD，单消息上限 65535，库标准用法）；smux 帧在其上无感知传输。
 
-**降级策略（安全红线，写死在代码与文档）**
+**降级与失败策略（本版核心，两类信号严格区分）**
 
-- 新客户端默认 `enc=on` **硬要求**：ok 应答缺 `enc` 字段 → 连接失败并记明确错误（服务端先行部署后生产中不存在无 enc 的服务端）。**绝不静默明文继续**；唯一逃生口 `-enc=off`（显式配置，记 WARN，仅限实验室/降级排查）。
-- 服务端 `channel_encryption.enabled=true`（过渡期）：新客户端自动加密，旧客户端明文放行 + WARN。
-- 服务端 `require=true`（收口）：客户端带 `enc:1` 但握手失败、或未带 enc 的客户端 → 拒绝 + 记日志（漏网未升级节点的观测点）。
-- MITM 剥除/篡改 `enc` 字段：客户端收不到 enc → 硬失败（非降级）；伪造 enc 值 → msg2 解密失败。剥除对**旧客户端**无意义（本就明文，过渡期属性与 R1 的 legacy 门控同构）。
+| 信号 | 判定 | 行为 |
+|---|---|---|
+| ok 应答**缺 `enc` 字段** | 旧服务端 / enabled=false（**未认证的缺席**，与剥除攻击不可区分——已知并采纳） | 新客户端回落明文继续 + **WARN（每服务端地址每进程一次**，防 5s 重连循环刷屏——见异常矩阵 #1） |
+| **握手阶段失败**（服务端已宣告 enc 后：网络错误、消息畸形、MAC 失败、超时） | 攻击或链路损坏；**绝不是**旧服务端信号（旧服务端不会发 enc） | **两端一律硬失败断开，绝不回落**——若在此处回落，主动中间人只需破坏 msg2 即可获得明文，比缺席回落更糟。客户端带专属错误串走重连循环（可观测） |
 
-**握手预算**：升级握手超时 10s（对齐 `DefaultAuthTimeout`），失败计入 `connAuthLimiter`（复用 SEC-13 限流，防握手风暴）；deadline 在进入 smux 前清除。
+- 服务端 `channel_encryption.enabled=true`：新客户端自动加密；旧客户端/enc=off 客户端明文放行 + WARN（按 IP 限频，每 IP 每 5 分钟一条）。
+- 服务端 `require=true`（收口）：认证行无 `enc` 的客户端 → 拒绝 + 专属日志关键词（漏网未升级节点的观测点，对应 R2 `Legacy node auth rejected` 的角色）。
+- MITM 剥除 `enc` 字段：过渡期内表现为静默明文（已采纳的残余风险，收口后消除）；收口后（require=true）服务端等 Noise msg1 却收到明文 smux → 拒绝，客户端连接失败循环（**DoS 而非降级**）。篡改 enc 值/握手消息 → msg2 解密失败 → 硬失败。
+
+**握手预算与限流边界**：升级握手超时 10s（对齐 `DefaultAuthTimeout`），deadline 覆盖握手全程、进入 smux 前清除。**握手失败不计入 `connAuthLimiter`**（SEC-13 限流语义是"未认证尝试"；此时客户端已通过 proof 认证，计入会混淆限流统计并在攻击下误锁合法节点）——失败仅 WARN + 断开，由客户端 5s 重连间隔自然节流。
+
+**实现陷阱（必写进代码注释）——bufio 读者必须穿针**：noise 握手的 3 条消息用 2 字节长度前缀分帧，经**现有的同一个 `bufio.Reader`** 读写（服务端 `control.go:396`、客户端 `dialer.go:259` 创建的那个）。若 noiseConn 绕开该 reader 直接读底层 conn，reader 缓冲里可能已吞下后续密文字节 → 帧流错位 → 必然性解密失败。正确结构：noiseConn 持有该 reader 做分帧读；smux 再架在 noiseConn 之上（两端对称，`bufferedConn` 模式的自然延伸）。
 
 **覆盖面**：升级层位于传输之上，**TCP / WS / KCP 三种传输统一生效**（含 KCP 载荷——`kcp.key` 在全量收敛后可退役）；WS 路径升级发生在 WS 字节流上，与 TCP 同码路径。
 
@@ -119,9 +138,9 @@ Noise XXpsk2 握手（3 条消息，psk = sha256(token) 的 32 字节值）
 
 | 文件 | 改动 | 细节 |
 |---|---|---|
-| `internal/service/node_access_auth.go` | `AuthenticateNodeProof` 返回值扩展为 `(grant *core.NodeAccessGrant, psk []byte, err error)` | :93 处已解码出 32 字节 key，匹配成功时随 grant 一并返回；legacy 路径（若启用）psk = `sha256(MA_NODE_TOKEN)`（env 明文在手） |
+| `internal/service/node_access_auth.go` | `AuthenticateNodeProof` 返回值扩展为 `(grant *core.NodeAccessGrant, psk []byte, err error)` | :93 处已解码出 32 字节 key，匹配成功时随 grant 一并返回。**psk 不放进 grant 结构体**（grant 会被整体打日志，混入即泄漏密钥材料）；legacy 路径（若启用）psk = `sha256(MA_NODE_TOKEN)`（env 明文在手），但 legacy 客户端本无 enc，实际不可达，仅在代码上闭环 |
 | `internal/config/config.go` | 新增 `ChannelEncryption{Enabled bool, Require bool yaml:"channel_encryption"}`（默认全 false）+ `MA_CHANNEL_ENC_*` env | 校验：`require && !enabled` 报错（require 蕴含 enabled） |
-| `internal/tunnel/control.go` | ① ok 应答在 `enabled` 时携带 `enc` 字段（`writeControlResp` 调用处 :470 传参扩展）；② **插入点 :470-474 之间**（`writeControlResp("ok")` 之后、`setupSmuxAndAccept` 之前）：客户端带 `enc:1` 且 enabled → 执行 Noise 握手（wrap conn），成功后 `setupSmuxAndAccept` 收到的 conn 换为 noiseConn（`bufferedConn` 结构照旧，套在加密层之上）；③ `require=true` 且客户端未升级 → 拒绝 + 专属日志关键词；④ 握手失败 → `authFail(ip)` + 断开 | 插入点两侧锚点已核实；认证行解析结构体加 `Enc int json:"enc"` 字段（旧客户端无此字段为零值） |
+| `internal/tunnel/control.go` | ① ok 应答在 `enabled` 且客户端带 `enc:1` 时携带 `enc` 字段（`writeControlResp` 调用处 :470 旁新增 ok-with-enc 写入）；② **插入点 :470-474 之间**（ok 之后、`setupSmuxAndAccept` 之前）：客户端带 `enc:1` 且 enabled → Noise 握手（经现有 `reader` 分帧，见 B.2 陷阱），成功后 `setupSmuxAndAccept` 收到的 conn 换为 noiseConn；③ `require=true` 且认证行无 `enc` → 拒绝 + 专属日志关键词；④ 握手失败/超时 → WARN（remote + 原因）+ 断开，**不计入 authFail/connAuthLimiter**（见 B.2 限流边界） | 插入点两侧锚点已核实；认证行解析结构体加 `Enc int json:"enc"` 字段（旧客户端无此字段为零值） |
 | 新文件 `internal/tunnel/noiseconn.go` | `noiseConn` 实现 `net.Conn`（Read/Write 走 CipherState，Deadline 委托底层 conn） | 服务端/客户端对称实现可放各自仓库，接口语义一致 |
 | `cmd/moleagent-serv/main.go` | `controlSrv.SetChannelEncryption(cfg.ChannelEncryption)` 注入 | 与 `SetNodeAuthOptions` 同模式 |
 | 日志 | `Node authenticated` 行加 `enc=true/false`；升级握手成功/失败计数；`require` 拒绝专属关键词 | 收口期观测点（对应 R2 的 `Legacy node auth rejected` 角色） |
@@ -130,36 +149,54 @@ Noise XXpsk2 握手（3 条消息，psk = sha256(token) 的 32 字节值）
 
 | 文件 | 改动 | 细节 |
 |---|---|---|
-| `internal/transport/dialer.go` | ① 认证行（:248-254）加 `"enc":1` 字段（mode=on 时）；② 应答解析（:268-278 的 struct）加 `Enc` 字段检测；③ **插入点 :140-162 之间**（`authenticate` 返回后、`smux.Client` 前）：应答带 enc → Noise 握手，`sessionConn` 换 noiseConn；应答无 enc → 按 mode：on 硬失败 / off 继续（WARN） | `bufferedConn`（:283-290）照旧，reader 绕在加密层之上 |
+| `internal/transport/dialer.go` | ① 认证行（:248-254）`enc=on` 时加 `"enc":1` 字段；② 应答解析（:268-278 的 struct）加 `Enc` 字段检测；③ **插入点 :140-162 之间**（`authenticate` 返回后、`smux.Client` 前）分派：应答带 enc → Noise 握手（经同一 reader 分帧），成功后 `sessionConn` 换 noiseConn、失败→硬失败**不回落**（专属错误串）；应答无 enc 且 enc=on → **回落明文**（WARN 每服务端地址每进程一次，之后静默计数）；`-enc=off` → 不发 enc 位、收到 enc 应答也忽略走明文 | `bufferedConn`（:283-290）照旧，reader 穿针到 noiseConn（B.2 陷阱）；WARN 限频防旧服务端场景下 5s 重连刷屏 |
 | 新文件 `internal/transport/noiseconn.go` | 与服务端对称的 noiseConn | |
 | `config.go` | 新增 `EncMode string json:"enc"`（默认 `"on"`，取值 on/off） | 旧配置文件无此字段 → 默认 on（缺省即加密，与 UseTLS 的 bool 语义陷阱无关，本字段天生字符串） |
-| `cmd/moleagent-client/main.go` | 新增 `-enc` 旗标（`flag.String`，默认 `"on"`；用 `-enc=off` 形式，避免 bool 陷阱） | 逃生口仅此一处 |
+| `cmd/moleagent-client/main.go` | 新增 `-enc` 旗标（`flag.String`，默认 `"on"`；用 `-enc=off` 形式，避免 bool 陷阱） | 回落已自动化后此旗标降级为**调试杆**（强制明文对照排查/抓包对比），非运维必需 |
 | `client.go` | **无需改动**（升级封装在 dialer 层内完成，装配点 130-153 不感知） | |
 
-## B.5 实施与迁移路径
+## B.5 实施与迁移路径（最优路线：顺序自由、回滚零接触）
 
 | 阶段 | 动作 | 验证 | 回滚 |
 |---|---|---|---|
-| 0 依赖与审查 | vendor `flynn/noise`（锁版本）；**独立对抗性密码学审查**（模式选型/nonce/降级路径/转录）通过后才进 1 | 审查报告 | — |
-| 1 服务端 | 发版部署：`channel_encryption.enabled=true`（require=false），重启 | 9 节点（尚为 v0.8.0）明文放行 + WARN；服务稳定 | `enabled=false` 恢复 |
-| 2 客户端 | 发布 v0.9（默认 enc=on），节点自更新（**零参数改动**，复用已验证的自更新通道） | 服务端日志各节点 `enc=true` 逐个出现；抓包 server↔client 段确认密文 | 客户端二进制回退（v0.8.0 明文可用） |
-| 3 收口 | 全量 enc=true 后 `require=true` 重启 | 未升级/握手失败客户端被拒 + 专属日志；用 v0.8.0 客户端探测验证拒绝路径（复用 R2 方法论） | require=false |
-| 回滚总则 | 服务端 `enabled=false` 会使 enc=on 的 v0.9 客户端失联——**回滚序列必须**：先在各节点 `-enc=off`（或回退客户端二进制），再关服务端 enabled；文档与运维手册写明顺序 | | |
+| 0 依赖与审查 | vendor `flynn/noise`（锁版本）；**独立对抗性密码学审查**（模式选型/nonce/回落边界/转录/分帧）通过后才进 1 | 审查报告 | — |
+| 1 双端发布（顺序不限，可同窗） | 服务端：`channel_encryption.enabled=true`（require=false）重启；客户端：发布 v0.9（默认 enc=on）经自更新铺开。**谁先谁后都不断链**：新客户端×旧服务端自动回落、旧客户端×新服务端明文放行；加密在"两端都新"的下一次重连自动激活 | 服务端日志逐节点出现 `enc=true`；抓包 server↔client 段确认密文；明文 WARN 与 enc 覆盖率对账（对应 agent_version 收敛，复用 R2 观测方法） | **零接触**：服务端 `enabled=false` → 全部新客户端下次重连自动回落明文；或单节点 `-enc=off`/二进制回退 |
+| 2 收口（全量 enc=true 且连续 N 天无明文 WARN 后） | `require=true` 重启 | 旧客户端/enc=off 客户端被拒 + 专属日志关键词；用 v0.8.0 二进制探测验证拒绝路径（复用 R2 探测纪律：token 不落日志、一次性节点 ID） | `require=false`（客户端自动恢复加密或回落，无失联窗口） |
+
+与硬要求版的本质差异：**回滚不再是"序列操作"**。硬要求版关 enabled 会让 enc=on 客户端失联、必须先动客户端再动服务端；本版服务端单开关回滚即全舰队自动回落，客户端无感。
 
 ## B.6 测试要点
 
-- 单测：XXpsk2 握手成/败；psk 错配（客户端 token 与服务端记录不符）必败；noiseConn 读写/deadline 委托/半关闭；`enc` 字段新旧互忽略（带 enc 的新 JSON 喂旧解析器、旧 JSON 喂新解析器均正常）；握手超时与 authFail 计数。
-- E2E（扩展 WSL harness）：① 新×新（enabled/require 各态）自动加密 + 抓包；② 旧客户端×新服务端（enabled）明文放行 WARN；③ 旧客户端×require=true 拒绝；④ 新客户端×旧服务端（无 enc）**硬失败**（降级红线实测）；⑤ MITM 模拟：中间代理剥除/篡改 `enc` 字段 → 客户端必须失败；⑥ 三传输（tcp/ws/kcp）各一条升级链路；⑦ 重连风暴下握手失败限流生效。
-- 收口探测：v0.8.0 二进制对 require=true 生产探测（只读方法，复用 R2 的探测纪律：token 不落日志、一次性节点 ID）。
+- 单测：XXpsk2 握手成/败；psk 错配（客户端 token 与服务端记录不符）必败；noiseConn 读写/deadline 委托/**reader 穿针**（构造 reader 预吞后续字节验证不丢帧）；`enc` 字段新旧互忽略（带 enc 的新 JSON 喂旧解析器、旧 JSON 喂新解析器均正常）；握手超时路径；回落 WARN 限频（每服务端一次）。
+- E2E（扩展 WSL harness）：① 新×新（enabled/require 各态）自动加密 + 抓包；② 旧客户端×新服务端（enabled）明文放行 WARN 限频；③ 旧客户端×require=true 拒绝；④ **新客户端×旧服务端 → 回落明文成功 + WARN 一次**（本版核心行为）；⑤ **握手失败绝不回落**：中间代理破坏 msg2 → 客户端必须硬失败（专属错误串）而非明文连上；⑥ MITM 剥除 enc 字段：过渡期表现为明文连接（已采纳风险，断言 WARN/日志可见）；require=true 后表现为连接拒绝；⑦ 三传输（tcp/ws/kcp）各一条升级链路；⑧ 服务端 enabled=false 回滚 → 新客户端自动回落（零接触回滚实测）。
+- 收口探测：v0.8.0 二进制对 require=true 生产探测（R2 探测纪律）。
 
-## B.7 风险
+## B.7 异常情况处理矩阵
+
+| # | 异常 | 双端行为 | 可观测性 | 备注 |
+|---|---|---|---|---|
+| 1 | 新客户端 × 旧服务端（或 enabled=false） | 客户端回落明文正常工作 | 客户端 WARN **每服务端地址每进程一次**（防 5s 重连刷屏），后续静默计数；服务端（旧）无感知 | 本版设计行为；长期停留此态=加密未生效，靠服务端侧 agent_version 与 enc 覆盖对账发现 |
+| 2 | 旧客户端 × 新服务端（enabled） | 明文放行 | 服务端 WARN 按 IP 限频（每 IP/5min 一条） | 收口期观测点 |
+| 3 | 旧客户端 × require=true | 拒绝 | 服务端专属关键词日志（收口探测断言它） | 对应 R2 `Legacy node auth rejected` 角色 |
+| 4 | 握手网络失败/超时（10s） | **双端硬断开，绝不回落**；客户端 5s 重连（重走完整认证+握手） | 客户端专属错误串；服务端 WARN（remote+原因），**不计入 SEC-13 限流**（见 B.2） | 与 #1 严格区分：此态服务端已宣告能力，失败=攻击/损坏 |
+| 5 | MITM 剥除 enc 字段 | 过渡期：客户端视角=#1，静默明文（**已采纳残余风险**）；require 后：连接失败循环 | 过渡期双端无告警（这正是该风险的性质）；require 后客户端失败日志 | 收口即消除；收口承诺写入运维节奏 |
+| 6 | MITM 篡改/伪造握手消息 | msg2 解密失败 → #4 路径 | 同 #4 | Noise 转录绑定拦截双终结中继 |
+| 7 | token 轮换 | psk 每连接现推导（认证时刻的 token），无缓存无状态 | — | 轮换窗口内新连接自然用新 psk |
+| 8 | token 在认证后、握手前被吊销 | 本连接 psk 已定（认证时刻快照），连接继续；下次重连认证失败 | 认证失败路径（现有） | 可接受：会话级快照语义 |
+| 9 | 服务端重启（握手前/中/后） | TCP 断 → 客户端 5s 重连重走全程 | 现有重连日志 | 与现状同构 |
+| 10 | bufio 缓冲预吞字节 | reader 穿针设计（B.2 陷阱）保证不丢帧 | 单测覆盖 | 实现期最易错点 |
+| 11 | WS/KCP 传输 | 同码路径（升级层在传输之上）；noiseConn 只依赖 Read/Write/Deadline 语义 | E2E 每传输一条 | KCP 载荷同时受保护 |
+| 12 | 时钟漂移 | 无影响（无时间窗依赖：challenge-response + Noise，均不含时间戳） | — | 相比 orbien 时间戳方案的固有优势 |
+| 13 | smux keepalive/长连接 | noiseConn 透传 Read/Write，Deadline 委托底层 conn | 现有 keepalive 日志 | 10s 握手 deadline 进入 smux 前已清除 |
+
+## B.8 风险
 
 | 风险 | 性质 | 对策 |
 |---|---|---|
 | 密码协议组合正确性（本方案最高风险） | 安全性 | Noise 库内建转录绑定（不手搓 TLS+MAC）；B.5 阶段 0 的独立对抗审查为硬前置；实现只做"接线"不做密码学 |
 | `flynn/noise` 维护状态与供应链 | 依赖性 | vendor 锁版本；上线前对其做一次 pass（代码量小，可审） |
-| 降级策略被"优化"掉（后人把硬要求改成自动回落） | 纪律性 | 红线写入代码注释与本文；`-enc=off` 是唯一显式逃生口且记 WARN |
-| 回滚序列复杂（enabled=false × enc=on 客户端 = 失联） | 运维性 | B.5 回滚总则文档化；收口前保持 v0.8.0 探测能力 |
-| 握手失败风暴 × connAuthLimiter 交互 | 可用性 | 失败计入限流（复用 SEC-13）；重连 5s 固定间隔为已知遗留（退避改进独立议题） |
+| **过渡期静默降级**（本版采纳的残余风险） | 安全性 | 已知情决策（见 B.1 决策记录）；缓解=收口 `require=true` 设定期限（建议 enabled 后 ≤30 天）；被动窃听两版等价、token 任何阶段不上线 |
+| 「握手失败不回落」被后人"优化"成回落 | 纪律性 | #4 与 #1 的区分写入代码注释（这是安全边界，不是不便）；`-enc=off` 是唯一显式明文方式 |
 | 三传输下 noise 分帧与各传输 conn 语义差异 | 正确性 | E2E 每传输一条链路；noiseConn 只依赖 Read/Write/deadline 语义 |
 | 兼容矩阵扩大（新旧 × enabled/require × 3 传输） | 测试面 | E2E 矩阵清单化（B.6），全部进 harness |
+| 回落 WARN 被当噪音忽略（加密长期未生效无人知） | 观测性 | 服务端侧对账：明文会话数 vs 在线节点数（收口判据），不只靠客户端 WARN |
