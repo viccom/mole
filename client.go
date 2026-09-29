@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -349,10 +350,8 @@ func (c *Client) UpdateTunnels(tunnels []Tunnel) error {
 	if !c.Connected() {
 		return fmt.Errorf("not connected to server, tunnel operations require active connection")
 	}
-	for _, t := range tunnels {
-		if err := t.Validate(); err != nil {
-			return err
-		}
+	if err := validateTunnelList(tunnels); err != nil {
+		return err
 	}
 	return c.requestTunnelMutation(tunnelMutation{
 		kind:    tunnelMutationReplaceAll,
@@ -546,6 +545,15 @@ func applyTunnelMutation(current []Tunnel, mutation tunnelMutation) ([]Tunnel, e
 
 // register 向服务端注册节点和隧道
 func (c *Client) register(ctx context.Context) error {
+	c.mu.RLock()
+	tunnels := toProtocols(c.tunnels)
+	c.mu.RUnlock()
+	// 条数上限（REL-02，与服务端 MaxRegisterTunnels 同值同义）：超限在
+	// 构造 register 前本地报错，不把超大列表送到服务端被拒后无限重连
+	if len(tunnels) > maxRegisterTunnels {
+		return fmt.Errorf("tunnel count %d exceeds max %d (register rejected)", len(tunnels), maxRegisterTunnels)
+	}
+
 	session := c.transport.Session()
 	if session == nil {
 		return fmt.Errorf("no session")
@@ -556,10 +564,6 @@ func (c *Client) register(ctx context.Context) error {
 		return fmt.Errorf("open register stream: %w", err)
 	}
 	defer stream.Close()
-
-	c.mu.RLock()
-	tunnels := toProtocols(c.tunnels)
-	c.mu.RUnlock()
 
 	cmd := protocol.ControlCmd{
 		Cmd:     "register",
@@ -572,7 +576,9 @@ func (c *Client) register(ctx context.Context) error {
 		return fmt.Errorf("send register: %w", err)
 	}
 
-	resp, err := readResponse(stream, c.cfg.HeartbeatTimeout)
+	// 独立超时：见 registerReadTimeout——服务端假死探测最长 8s 在写应答
+	// 之前，默认 HeartbeatTimeout 5s 会先超时；用户显式调大的配置不被封顶
+	resp, err := readResponse(stream, registerReadTimeout(c.cfg.HeartbeatTimeout))
 	if err != nil {
 		return fmt.Errorf("read register response: %w", err)
 	}
@@ -898,14 +904,26 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 
 	// 尝试作为控制命令（tunnel_push）
 	if peek[0] == '{' {
-		if c.handleServerCmd(stream, br) {
+		handled, oversize := c.handleServerCmd(stream, br)
+		if oversize {
+			// 超限即协议违规，必须断开本流：一旦放行 fall-through，
+			// http.ReadRequest 的请求行读取无字节上限（仅受 deadline
+			// 约束），会把 maxCmdLineBytes 防护在 '{' 路径整个架空。
+			return
+		}
+		if handled {
 			return
 		}
 	}
 
 	// 检查 TCP/UDP 代理协议头：\x00<tunnel-name>\n
 	if peek[0] == 0x00 {
-		line, err := br.ReadBytes('\n')
+		line, err := readBoundedCmdLine(br, maxCmdLineBytes)
+		if errors.Is(err, errCmdLineTooLarge) {
+			// 隧道名以 \n 定界且远短于上限——超限即协议违规，断开本流
+			log.Printf("tunnel name header exceeds %d bytes without newline, dropping stream", maxCmdLineBytes)
+			return
+		}
 		if err == nil && len(line) > 1 {
 			tunnelName := string(line[1 : len(line)-1]) // 跳过 \x00 和 \n
 			stream.SetReadDeadline(time.Time{})
@@ -926,7 +944,12 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	// 检查 WebSSH 代理协议头：<tunnel-name>
 
 	if peek[0] == 0x01 {
-		line, err := br.ReadBytes('\n')
+		line, err := readBoundedCmdLine(br, maxCmdLineBytes)
+		if errors.Is(err, errCmdLineTooLarge) {
+			// 同 \x00 头：WebSSH 隧道名远短于上限，超限即协议违规，断开本流
+			log.Printf("webssh tunnel name header exceeds %d bytes without newline, dropping stream", maxCmdLineBytes)
+			return
+		}
 		if err == nil && len(line) > 1 {
 			tunnelName := string(line[1 : len(line)-1])
 			stream.SetReadDeadline(time.Time{})
@@ -940,6 +963,8 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	}
 
 	// 尝试作为 HTTP 请求
+	// 残余窗口（master 既有行为，本次不扩范围）：非 '{'/\x00/\x01 起头的流
+	// 落到这里时，http.ReadRequest 的读行无字节上限，仅受下方 5s deadline 约束。
 	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	req, err := http.ReadRequest(br)
 	if err == nil {
@@ -987,16 +1012,24 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	}, "")
 }
 
-// handleServerCmd 处理服务端推送的控制命令（tunnel_push / tunnel_action / restart）
-func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
+// handleServerCmd 处理服务端推送的控制命令（tunnel_push / tunnel_action / restart）。
+// 返回 handled=命令已被处理；oversize=命令行超过 maxCmdLineBytes 上限
+// （协议违规，调用方必须断开本流，不得 fall-through 继续复用 br）。
+func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) (handled, oversize bool) {
 	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
-	line, err := br.ReadBytes('\n')
+	line, err := readBoundedCmdLine(br, maxCmdLineBytes)
+	if errors.Is(err, errCmdLineTooLarge) {
+		// 超过上限仍未遇换行——视为协议违规，断开本流。
+		// 正常控制命令（KB 级 JSON）远小于 1MB 上限，无误伤面。
+		log.Printf("server command line exceeds %d bytes without newline, dropping stream", maxCmdLineBytes)
+		return false, true
+	}
 	if err != nil {
 		// No newline found — use whatever we have so far (trimmed).
 		// Don't wait for \x00 which would block until deadline.
 		line = bytes.TrimRight(line, "\x00")
 		if len(line) == 0 {
-			return false
+			return false, false
 		}
 	}
 
@@ -1009,7 +1042,7 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 		Tunnels []protocol.Tunnel `json:"tunnels"`
 	}
 	if json.Unmarshal(line, &cmd) != nil {
-		return false
+		return false, false
 	}
 
 	switch cmd.Cmd {
@@ -1035,18 +1068,18 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 
 		// 配置变更后上报最新隧道状态
 		go c.sendTunnelStatus()
-		return true
+		return true, false
 
 	case "tunnel_action":
 		c.handleTunnelAction(stream, cmd.Name, cmd.Action)
-		return true
+		return true, false
 
 	case "restart":
 		c.handleRestart(stream, cmd.Delay, cmd.Reason)
-		return true
+		return true, false
 
 	default:
-		return false
+		return false, false
 	}
 }
 
@@ -1246,6 +1279,28 @@ func (c *Client) sleep(ctx context.Context, d time.Duration) {
 // maxControlMsgSize 单条控制消息的大小上限
 const maxControlMsgSize = 1 << 20 // 1MB
 
+// maxCmdLineBytes 服务端控制命令行（tunnel_push 等 JSON 行）的长度上限。
+// 与 readControlMsg 的 maxControlMsgSize 同量级：合法控制命令远小于此值；
+// 恶意/故障服务端在 deadline 内灌入超大无换行数据时在此截断（防内存尖峰）。
+const maxCmdLineBytes = 1 << 20 // 1MB
+
+// registerResponseTimeout register 应答的独立读超时下限：服务端同节点重连且
+// 旧会话假死时，probeOldSession 探测最长 8s（probeOldSessionTimeout）发生在
+// 写应答之前，HeartbeatTimeout 默认 5s 会先超时——每次假死重连必损失一轮。
+// 12s = 覆盖 8s 探测 + 处理余量；仅用于 register，tunnel_update 等服务端
+// 即时应答的路径仍用 HeartbeatTimeout。
+const registerResponseTimeout = 12 * time.Second
+
+// registerReadTimeout 返回 register 应答读超时：registerResponseTimeout 是
+// 下限而非封顶——用户为慢环境显式调大的 HeartbeatTimeout（如 30s）必须原样
+// 生效，否则 master 上能注册成功的慢环境会每轮必超时。
+func registerReadTimeout(hb time.Duration) time.Duration {
+	if hb > registerResponseTimeout {
+		return hb
+	}
+	return registerResponseTimeout
+}
+
 // readControlMsg 从流中读取一条完整的 JSON 控制消息。
 // 每条流仅承载一条消息；服务端响应以 '\n' 结尾（writeJSONLine），
 // 同时兼容无换行的裸 JSON：每读到一批数据就尝试解析，解析成功即视为
@@ -1267,6 +1322,34 @@ func readControlMsg(r io.Reader, maxSize int) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+}
+
+// errCmdLineTooLarge 命令行超过长度上限（协议违规，调用方应断开）
+var errCmdLineTooLarge = errors.New("control command line too large")
+
+// readBoundedCmdLine 读取以 '\n' 定界的一条服务端命令行，累计超限即报
+// errCmdLineTooLarge。不能拿 io.LimitedReader 包 br：br 由 dispatchStream
+// 创建，handleServerCmd 返回 false 后还要继续喂给代理转发路径复用，包装层
+// 的 N 计数/嵌套缓冲会吞掉换行之后的字节。故用 ReadSlice 手动累计、每轮
+// 检查累计长度，只限制"这一行"（与服务端 readBoundedLine 同一手法）。
+// 与服务端版本不同：非超限错误（EOF/deadline）时把已累计的部分数据交还
+// 调用方，保持"取已有内容、TrimRight \x00、空则 false"的旧兜底语义。
+func readBoundedCmdLine(br *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		frag, err := br.ReadSlice('\n')
+		line = append(line, frag...)
+		if len(line) > limit {
+			return nil, errCmdLineTooLarge
+		}
+		if err == nil {
+			return line, nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue // 单个 bufio 缓冲内无 '\n'，继续累计
+		}
+		return line, err
 	}
 }
 

@@ -3,6 +3,7 @@ package moleAgent_client
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -51,7 +52,8 @@ type KCPConfig struct {
 // minDuration 时间量配置下限：拦截负值与"秒数误写成纳秒"的配置错误
 const minDuration = 10 * time.Millisecond
 
-// LoadConfigFile 从 JSON 文件加载配置
+// LoadConfigFile 从 JSON 文件加载配置。隧道列表做容错处理：非法隧道剔除
+// 并记 WARN 日志，合法隧道继续（见 dropInvalidTunnels）。
 func LoadConfigFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -61,7 +63,58 @@ func LoadConfigFile(path string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
+	dropInvalidTunnels(cfg)
 	return cfg, nil
+}
+
+// dropInvalidTunnels 对配置文件加载的隧道做容错剔除：单条非法的剔除并记
+// WARN 日志（含名称与原因），合法的继续——把「服务端整单拒绝 → 无限重连
+// → 整节点瘫」变成「本地剔除 → 节点带合法隧道上线」。仅用于本地配置
+// 加载这一处入口；服务端 tunnel_push 下发的隧道已过服务端校验，接收
+// 路径不做剔除（剔除会让推送的隧道在后续上报时从服务端持久化中消失）。
+//
+// 列表级规则镜像服务端 core.ValidateTunnels，采用「剔除后到重复者」策略
+//（与「剔除非法保合法」同哲学）：单条校验通过后，名称或 TCP/UDP
+// listen_port 与已保留项冲突的剔除并记 WARN——否则 register 仍会被服务端
+// 整单拒绝。与已剔除项的冲突不算冲突（被剔除者不占位，其名称/端口可被
+// 后续合法项复用）；HTTP/HTTPS 不参与端口去重（零 listen_port 不占位）。
+//
+// 空 target 豁免：服务端对 ser2mq/ser2tcp/ser2udp/webssh 不校验 target
+//（空 target 合法落库，见 serverAllowsEmptyTarget），漏写 target 的这四类
+// 用副本占位校验只免 target 检查，其余规则照常；AddTunnel/UpdateTunnels
+// 的单条严格度维持现状（另一层语义），不加此豁免。
+func dropInvalidTunnels(cfg *Config) {
+	valid := make([]Tunnel, 0, len(cfg.Tunnels))
+	names := make(map[string]bool, len(cfg.Tunnels))
+	// listen_port -> 已保留隧道名（仅 TCP/UDP 参与）
+	ports := make(map[int]string, len(cfg.Tunnels))
+	for _, t := range cfg.Tunnels {
+		// 四类本地隧道空 target 合法：副本填占位串跑单条校验——这四类不进
+		// host:port 校验分支，占位串不做格式检查，名称/类型/rate_limit 等
+		// 其余规则照常生效；副本通过则保留原项（target 仍为空）
+		check := t
+		if t.Target == "" && serverAllowsEmptyTarget(t.Type) {
+			check.Target = "client-local-no-target"
+		}
+		if err := check.Validate(); err != nil {
+			log.Printf("WARNING: dropping invalid tunnel %q (type %s) from config: %v (valid tunnels continue)", t.Name, t.Type, err)
+			continue
+		}
+		if names[t.Name] {
+			log.Printf("WARNING: dropping invalid tunnel %q (type %s) from config: duplicate tunnel name %q with kept tunnel (valid tunnels continue)", t.Name, t.Type, t.Name)
+			continue
+		}
+		if t.Type == TunnelTypeTCP || t.Type == TunnelTypeUDP {
+			if prev, dup := ports[t.ListenPort]; dup {
+				log.Printf("WARNING: dropping invalid tunnel %q (type %s) from config: duplicate listen_port %d conflicts with kept tunnel %q (valid tunnels continue)", t.Name, t.Type, t.ListenPort, prev)
+				continue
+			}
+			ports[t.ListenPort] = t.Name
+		}
+		names[t.Name] = true
+		valid = append(valid, t)
+	}
+	cfg.Tunnels = valid
 }
 
 // DefaultConfig 返回默认配置
