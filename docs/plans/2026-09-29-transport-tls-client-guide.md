@@ -12,9 +12,9 @@ SEC-01 认证层已收口（v0.8.0，proof 认证上线，token 不再明文传�
 | # | 改动 | 文件 | 要点 |
 |---|---|---|---|
 | C1 | `-tls` 从 bool 扩展为三档 `off`/`auto`/`strict`（默认 `auto`） | `cmd/moleagent-client/main.go:107` | 旧 bool 语义映射为 `strict`，保持存量脚本行为 |
-| C2 | `auto` 档接线**既有但未使用**的 `InsecureSkipVerify` 字段 | `internal/transport/dialer.go:69-71, 84-86` | 发起 TLS 但不校验证书（防窃听；身份仍由 proof 认证保证） |
+| C2 | `auto` 档接线**既有但未使用**的 `InsecureSkipVerify` 字段 | `internal/transport/dialer.go:69-71, 84-86` | 发起 TLS 但不校验证书（防窃听；身份由 proof 认证保证） |
 | C3 | `strict` 档支持配置 CA / server_name | `internal/transport/dialer.go` + `config.go` | 防中间人的完整档位 |
-| C4 | **TLS 握手失败自动回落明文**（连旧服务端不炸） | `internal/transport/dialer.go` | 低破坏的关键；回落记 WARN |
+| C4 | **禁止静默降级**：`auto`/`strict` 握手失败即连接失败 | `internal/transport/dialer.go` | ⚠️ **安全红线**：绝不自动回落明文（攻击者丢包即诱导降级）。连旧服务端须**显式** `-tls=off` |
 | C5 | WS 路径同步（`ws://` 上套 TLS，对齐服务端 wss） | `internal/transport/ws_kcp_dialer.go:32-52` | 已是「升级后字节流包 TLS」结构，改动小 |
 | C6 | KCP 保持 `kcp.key` 现状，文档明确独立加密路径 | — | 不做协议改造 |
 
@@ -23,15 +23,24 @@ SEC-01 认证层已收口（v0.8.0，proof 认证上线，token 不再明文传�
 | 客户端 \ 服务端 | 旧服务端 | 新服务端 force=false | 新服务端 force=true |
 |---|---|---|---|
 | 旧客户端 ≤v0.8.0 | ✅ 明文 | ✅ 明文放行 | ❌ 拒绝（预期） |
-| `-tls=auto` | ✅ 回落明文 | ✅ 加密 | ✅ 加密 |
+| `-tls=auto` | ❌ **连接失败**（须 `-tls=off` 或先升级服务端） | ✅ 加密 | ✅ 加密 |
 | `-tls=off` | ✅ 明文 | ⚠️ 明文+WARN | ❌ 拒绝 |
 | `-tls=strict` | ❌ 握手失败 | ✅ 加密+验证 | ✅ 加密+验证 |
 
-最关键的两格：**`auto` ↔ 旧服务端必须回落成功**（否则新客户端无法连未升级的服务端）；**旧客户端 ↔ 新服务端 force=false 必须放行**（否则服务端升级即断服）。
+两格最关键的：
 
-## 依赖顺序
+- **`auto` ↔ 旧服务端：必须「连接失败」而非回落明文**（早期草案的自动回落已删除——那是降级攻击面，攻击者丢包即可诱导明文，而 `auto` 档不验证书无法区分「旧服务端」与「攻击者」）
+- **旧客户端 ↔ 新服务端 force=false 必须放行**（否则服务端升级即断服）
 
-客户端改造可先于服务端部署完成（因 `auto` 能回落明文），但要等**服务端 T1 上线**（`auto_self_signed: true`）后才有实际加密效果。服务端 T1 部署时客户端零改动。
+## 降级攻击红线（审查时必须确认）
+
+1. 客户端**不存在**「TLS 握手失败 → 重试明文」的任何代码路径
+2. 模拟阻断 TLS（iptables DROP 握手包）：客户端必须**连接失败**，日志记明确错误，不得明文连上
+3. 服务端 `force=false` 期间的「明文放行」是**过渡态**：必须记 WARN，且不对外宣称「已强制加密」——只要 `force=false`，攻击者总能冒充旧客户端让服务端放行明文
+
+## 依赖顺序（不可颠倒）
+
+**服务端 T1 必须先上线**（`auto_self_signed: true`），再推客户端 `auto` 档。因为客户端不再回落明文，若客户端先升级而服务端未就绪，节点会直接失联。服务端 T1 部署时客户端零改动。
 
 ## 注意
 
