@@ -23,8 +23,10 @@ RELEASE_ADMIN_DIST := $(RELEASE_ADMIN_DIR)/dist
 RELEASE_MOBILE_DIR := $(RELEASE_DIR)/mobile
 RELEASE_MOBILE_DIST := $(RELEASE_MOBILE_DIR)/dist
 
-# 版本信息（从 git tag 获取，无 tag 时用 dev）
-VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# 版本信息（从本组件前缀 tag srv/* 获取并剥前缀，无 tag 时用 dev）
+# monorepo 双前缀 tag（srv/cli）必须 --match 本组件，否则 VERSION 会数到另一端的 tag
+VERSION  := $(shell git describe --tags --always --dirty --match 'srv/*' 2>/dev/null | sed 's|^srv/||')
+VERSION  := $(if $(VERSION),$(VERSION),dev)
 BUILD    := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE     := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 

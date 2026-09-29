@@ -20,4 +20,44 @@
 
 - push（裁决 #7）：待用户建仓后执行，随后补验收 #5-8、#11-15（会话 3 范围）
 - `_release` 原位置空目录壳（裁决 #6）：句柄释放后删除
-- `cli/v0.2.0-test` 测试 tag 已随迁移带入：会话 3 改造 Makefile `describe --match` 时注意其可能被匹配为「最近 tag」
+- `cli/v0.2.0-test` 测试 tag 已随迁移带入：会话 3 改造 Makefile `describe --match` 时注意其可能被匹配为「最近 tag」（已改造完成，见裁决 #12；test tag 位于历史早期不影响近期 describe）
+
+## 2026-09-29 shared 抽取第一拍：隧道校验差异裁决表（组件 2）
+
+依据双端逐条差异清单（会话内产出，要点：3 个语义分叉 + 6 条文案差异 + 9 处「注释声称一致实有暗差」）。
+裁决原则：**双端行为语义不变**（分叉参数化保留现状）；错误文案统一为单一版本（一端输出文本变化，逐条记录如下）。
+
+### 语义分叉——shared 参数化保留双端现状
+
+| 分叉 | server 现状 | client 现状 | 裁决 |
+|---|---|---|---|
+| 空 target 放行集合 | ser2mq/vpn-manager/ser2tcp/ser2udp/webssh 空 target 合法（+p2p 走 para 分支） | 仅 vpn-manager（+p2p）；四类本地隧道要求非空 target（但 dropInvalidTunnels 用占位串 `client-local-no-target` 架空、warnInvalidPushedTunnels 有同集合豁免） | shared `Validate` 接受 `AllowEmptyTarget` 集合参数，双端各传现状集合；client 的占位串/豁免路径不动 |
+| target scheme 检查 | 无（`http://h:p` 可通过） | http/https 拒 `://` | shared 参数 `RejectSchemeInTarget`（server false / client true） |
+| rate_limit 形态 | `*TunnelRateLimit`（结构化） | `json.RawMessage` 透传（校验时临时 unmarshal） | shared 定义 `RateLimit` struct + 上限具名常量单源（100000 / 10737418240，消 client 三处散落字面量）；client 适配层仅校验时转换、存储仍 RawMessage 透传（防回传清空服务端限速）；client 独有的 RawMessage 反序列化错误文案留在适配层 |
+
+### 文案差异——统一版本（⚠️ 标注输出变化端）
+
+| 触发 | server 原文 | client 原文 | 统一为 | 变化端 |
+|---|---|---|---|---|
+| 未知类型 | `unknown tunnel type %q` | `invalid tunnel type: %s` | server 版 | client |
+| target host 空 | `tunnel target host is required` | `... , got %q` | client 版（带 got 利排障） | server |
+| rate_limit 范围 | `max_conns must be 1-%d, got %d` / `max_bandwidth must be 1-%d bytes/sec, got %d` | `rate_limit out of range: ...`（单条合并） | server 版（逐字段定位） | client |
+| rate_limit 全零 | `...use null to clear` | `...(omit or null to clear)` | server 版 | client |
+| p2p JSON 非法 | `p2p para is not valid JSON` | `...: %w`（带 cause） | client 版 | server |
+
+错误前缀维持各端现状：shared 返回裸错误，server 适配层 `%w` 包装 `ErrTunnelInvalid`，client 裸用。
+
+### 结构与边界
+
+- p2p Para 校验（room/modes/relay/mappings 全部规则与文案）双端逐字一致 → 整体抽入 shared
+- 列表级去重两规则 + 文案主体一致 → 抽入 shared `ValidateList`；256 上限常量单源（`MaxRegisterTunnels`）；register 路径的条数检查文案两版不同（`tunnel list exceeds limit of %d` vs `tunnel count %d exceeds max %d (register rejected)`）→ **留在各端调用点**（属调用方逻辑非校验器）
+- server 独有跨节点校验（validateCrossNodeTunnelNames / validateListenPortConflicts / validateP2PRoomPairing / validateNodeRateLimit）→ 不抽，留 server service 层
+- client 独有 dropInvalidTunnels（逐条丢弃 + 占位串）→ 不抽，client config 层现状保持
+- readBoundedLine 双端错误路径行为差（server 丢弃已读 vs client 交还部分数据）→ **第一拍不抽行为函数**，随方案 B 第二拍裁决
+- TunnelType 常量单源在 shared/proto（组件 3 先行），tunnelvalidate 复用
+
+### 镜像注释暗差修正清单（实现时顺带）
+
+- server internal/tunnel/control.go:49 ControlCmd.Cmd 注释补全 9 命令字（漏 tunnel_push/p2p_signal_token）——组件 3 范围
+- client tunnel.go 各「与服务端对齐」注释：抽取后改指 shared 单源，消除 6 处不准确的镜像声明（125-127/77-79/170-171/104-106）与 validate_para.go:42「逐字一致」声明
+- server errors.go ErrTunnelInvalid 文案被 client 注释误引为 `invalid tunnel:`——顺带修正引用文本

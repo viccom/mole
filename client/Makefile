@@ -24,8 +24,11 @@ MANAGER_NAME   := moleAgent-manager
 WAILS_INSTALL  := github.com/wailsapp/wails/v2/cmd/wails@latest
 HOST_EXE       := $(if $(filter Windows_NT,$(OS)),.exe,)
 
-# 版本信息（从 git tag 获取，无 tag 时用 dev）
-VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# 版本信息（从本组件前缀 tag cli/* 获取并剥前缀，无 tag 时用 dev）
+# monorepo 双前缀 tag（srv/cli）必须 --match 本组件，否则 VERSION 会数到另一端的 tag；
+# 注意 cli/v0.2.0-test 历史测试 tag 也会被 --match 匹配（仅影响极早期 commit 的 describe）
+VERSION  := $(shell git describe --tags --always --dirty --match 'cli/*' 2>/dev/null | sed 's|^cli/||')
+VERSION  := $(if $(VERSION),$(VERSION),dev)
 BUILD    := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE     := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
