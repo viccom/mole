@@ -34,6 +34,7 @@
 |---|---|---|
 | `internal/config/config.go` | 新增 `Server.ControlTLSPort string yaml:"control_tls_port"`（默认空）+ 环境变量 `MA_CONTROL_TLS_PORT` | 校验规则：① `control_tls_port != ""` 时要求 `tls.cert_file/key_file` 非空（复用 316-323 现有校验形态）；② 与 `tls.enabled` **互斥**（`tls.enabled` 语义是"把 9981 本身包成 TLS"，与额外 TLS 口并列会产生歧义，直接报错）；③ 收口态支持 `control_port: ""`（仅当 `control_tls_port != ""` 时允许关闭明文口；沿用现有"无控制监听则启动失败退出码 1"路径） |
 | `cmd/moleagent-serv/main.go` | ① 把 160-171 的证书加载提取为 `buildTLSConfig(cfg) *tls.Config`；② 新增接线：`if cfg.Server.ControlTLSPort != "" { controlSrv.AddTransport(cfg.Server.ControlTLSPort, tunnel.NewTCPTransport(tlsConfig)) }` | **零新传输代码**：`TCPTransport.Listen` 的 TLS 分支（`transport.go:38-39`）与 `Name()="tls"`（:43-44）现成，`AddTransport` 模式与 ws_port/kcp_port 相同 |
+| 新文件 `internal/tunnel/certreloader.go` | **证书热加载**：`buildTLSConfig` 用 `GetCertificate` 回调替代一次性 `Certificates` 加载——reloader 缓存已解析证书 + 两文件 mtime，每次握手前 stat 比对，mtime 变化才重新解析（握手路径只多一次 stat）；**重载失败（续期瞬间文件被移动/暂缺）时继续用旧证书并记 WARN**，不做 fail | 现状 `LoadX509KeyPair` 是启动时一次性读入内存，LE 续期（90 天证书 / ~60 天一续）后**必须重启才生效**；热加载后新连接立即用新证书、旧连接自然结束，**续期零重启零中断**。启动时首次加载仍 fail-fast（复用现有 `os.Exit(1)`） |
 | `internal/tunnel/control.go` | **TLS 握手超时加固**：`handleConnection` 入口对 `*tls.Conn`（类型断言）设 `SetDeadline(now+10s)`，认证完成后清除（与现有 395-412 的读超时合并为同一窗口） | `tls.NewListener` 的握手是惰性的（首次 Read/Write 触发）：challenge 写出（:389）即触发握手，若客户端连上不回 ClientHello，**Write 会无限期挂住同步 worker**（worker 池 `NumCPU*2`，`control.go:349-353`）——慢速攻击可占满 worker 池致拒绝服务。此加固项必做 |
 | `internal/tunnel/control.go` | 认证成功日志（:471 `Node authenticated` 行）增加连接加密标志 | 迁移期核对"哪些节点已加密"的唯一观测点；从 `conn.(*tls.Conn)` 断言即可，transportName 已自然显示 `tls` |
 | `internal/core/listen_port.go` | 保留端口集合追加 `9984` | 防隧道 `listen_port` 撞控制 TLS 口（REL-01 同理）。**注意**：客户端 `tunnel.go` 的 `reservedListenPorts` 是手工副本（已知漂移风险点 G-4），两处同步改 |
@@ -65,7 +66,7 @@
 | 风险 | 性质 | 对策 |
 |---|---|---|
 | TLS 握手惰性触发 + 同步 worker → 慢速攻击占满 worker 池 | 可用性（本方案引入的主路径） | A.2 的 deadline 加固**必做**；TDD 覆盖慢客户端场景 |
-| 证书过期/续期失败 | 运营性 | 复用 1panel/LE 自动续期；启动校验 + 剩余天数告警；过期 fail-fast 拒绝启动（优于静默失效） |
+| 证书过期/续期失败 | 运营性 | 复用 1panel/LE 自动续期；**续期生效不需重启**（GetCertificate 热加载，见 A.2）；启动校验 + 剩余天数告警；过期 fail-fast 拒绝启动（优于静默失效）；续期短暂失败的兜底 = 服务继续用旧证书运行（90 天证书留有充足余量，告警提前量足够） |
 | 防火墙漏放行 9984 | 部署性 | 上线检查单；迁移前先从外部探测 9984 |
 | 逐节点改参数的人工成本 | 运营性 | 9 节点经 WebSSH 脚本化；单节点秒级中断、即时回滚；无窗口压力 |
 | 双监听日志混淆 | 观测性 | transportName 已区分（tcp/tls）；认证日志补加密标志 |
