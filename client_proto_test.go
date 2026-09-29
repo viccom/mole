@@ -221,9 +221,9 @@ func newSmuxStreamPair(t *testing.T) (cliStream, srvStream *smux.Stream, teardow
 }
 
 // TestHandleServerCmd_OversizeLineRejected 恶意/故障服务端在 5s deadline 内
-// 灌入超过上限的无换行数据——handleServerCmd 必须视为协议违规返回 false，
+// 灌入超过上限的无换行数据——handleServerCmd 必须视为协议违规（oversize），
 // 且读侧必须在上限处停止消费（写侧因 smux v2 按流窗口被反压），而不是
-// 把数据全部吞进内存。防内存尖峰是本修复的全部意义，故除 false 外还
+// 把数据全部吞进内存。防内存尖峰是本修复的全部意义，故除 oversize 外还
 // 断言写侧成功写入量与耗时。
 func TestHandleServerCmd_OversizeLineRejected(t *testing.T) {
 	c := newStatusTestClient(t)
@@ -248,11 +248,11 @@ func TestHandleServerCmd_OversizeLineRejected(t *testing.T) {
 	}()
 
 	start := time.Now()
-	ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream))
+	ok, oversize := c.handleServerCmd(cliStream, bufio.NewReader(cliStream))
 	elapsed := time.Since(start)
 
-	if ok {
-		t.Fatal("超过上限的无换行数据必须判协议违规（返回 false），got true")
+	if ok || !oversize {
+		t.Fatalf("超过上限的无换行数据必须判协议违规（oversize=true），got handled=%v oversize=%v", ok, oversize)
 	}
 	teardown() // 关闭会话解除写侧阻塞，取回实际写入量
 	total := <-written
@@ -275,8 +275,8 @@ func TestHandleServerCmd_NormalCommandStillWorks(t *testing.T) {
 		t.Fatalf("write command: %v", err)
 	}
 
-	if ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); !ok {
-		t.Fatal("正常 tunnel_push 命令必须被处理（返回 true）")
+	if ok, oversize := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); !ok || oversize {
+		t.Fatal("正常 tunnel_push 命令必须被处理（true 且非超限）")
 	}
 
 	// 成功路径必须回 ok 应答（writeResp 走 JSON Lines 约定）
@@ -305,7 +305,7 @@ func TestHandleServerCmd_BareJSONNoNewlineCompat(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 		_ = srvStream.Close() // 触发读侧 EOF
-		if ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); !ok {
+		if ok, oversize := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); !ok || oversize {
 			t.Fatal("无换行裸 JSON 的兼容语义回退（应取已有内容继续解析）")
 		}
 	})
@@ -314,8 +314,8 @@ func TestHandleServerCmd_BareJSONNoNewlineCompat(t *testing.T) {
 		c := newStatusTestClient(t)
 		cliStream, srvStream, _ := newSmuxStreamPair(t)
 		_ = srvStream.Close()
-		if ok := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); ok {
-			t.Fatal("空数据 EOF 必须返回 false")
+		if ok, oversize := c.handleServerCmd(cliStream, bufio.NewReader(cliStream)); ok || oversize {
+			t.Fatal("空数据 EOF 必须返回 false 且不算超限")
 		}
 	})
 }
@@ -382,6 +382,22 @@ func TestDispatchStream_OversizeTunnelNameHeaderRejected(t *testing.T) {
 func TestDispatchStream_OversizeWebSSHHeaderRejected(t *testing.T) {
 	c := newStatusTestClient(t)
 	elapsed, total := dispatchOversizeProbe(t, c, 0x01)
+	if total > 2*maxCmdLineBytes {
+		t.Fatalf("读侧应在 1MB 上限处停止消费，写侧却成功写入 %d 字节", total)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("超限应立即断开而不是等满 5s deadline，耗时 %v", elapsed)
+	}
+}
+
+// TestDispatchStream_OversizeServerCmdRejected '{' 起头的控制命令行超过
+// 上限仍无换行——协议违规，dispatchStream 必须断开本流。旧实现里
+// handleServerCmd 超限返回 false 后 dispatchStream 继续 fall-through：
+// \x00/\x01 分支因首字节不匹配跳过，最终进 http.ReadRequest（读行无
+// 字节上限，仅受 deadline 约束），超限防护在 '{' 路径被整个架空。
+func TestDispatchStream_OversizeServerCmdRejected(t *testing.T) {
+	c := newStatusTestClient(t)
+	elapsed, total := dispatchOversizeProbe(t, c, '{')
 	if total > 2*maxCmdLineBytes {
 		t.Fatalf("读侧应在 1MB 上限处停止消费，写侧却成功写入 %d 字节", total)
 	}

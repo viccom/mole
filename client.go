@@ -899,7 +899,14 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 
 	// 尝试作为控制命令（tunnel_push）
 	if peek[0] == '{' {
-		if c.handleServerCmd(stream, br) {
+		handled, oversize := c.handleServerCmd(stream, br)
+		if oversize {
+			// 超限即协议违规，必须断开本流：一旦放行 fall-through，
+			// http.ReadRequest 的请求行读取无字节上限（仅受 deadline
+			// 约束），会把 maxCmdLineBytes 防护在 '{' 路径整个架空。
+			return
+		}
+		if handled {
 			return
 		}
 	}
@@ -951,6 +958,8 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	}
 
 	// 尝试作为 HTTP 请求
+	// 残余窗口（master 既有行为，本次不扩范围）：非 '{'/\x00/\x01 起头的流
+	// 落到这里时，http.ReadRequest 的读行无字节上限，仅受下方 5s deadline 约束。
 	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	req, err := http.ReadRequest(br)
 	if err == nil {
@@ -998,22 +1007,24 @@ func (c *Client) dispatchStream(stream *smux.Stream) {
 	}, "")
 }
 
-// handleServerCmd 处理服务端推送的控制命令（tunnel_push / tunnel_action / restart）
-func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
+// handleServerCmd 处理服务端推送的控制命令（tunnel_push / tunnel_action / restart）。
+// 返回 handled=命令已被处理；oversize=命令行超过 maxCmdLineBytes 上限
+// （协议违规，调用方必须断开本流，不得 fall-through 继续复用 br）。
+func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) (handled, oversize bool) {
 	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	line, err := readBoundedCmdLine(br, maxCmdLineBytes)
 	if errors.Is(err, errCmdLineTooLarge) {
 		// 超过上限仍未遇换行——视为协议违规，断开本流。
 		// 正常控制命令（KB 级 JSON）远小于 1MB 上限，无误伤面。
 		log.Printf("server command line exceeds %d bytes without newline, dropping stream", maxCmdLineBytes)
-		return false
+		return false, true
 	}
 	if err != nil {
 		// No newline found — use whatever we have so far (trimmed).
 		// Don't wait for \x00 which would block until deadline.
 		line = bytes.TrimRight(line, "\x00")
 		if len(line) == 0 {
-			return false
+			return false, false
 		}
 	}
 
@@ -1026,7 +1037,7 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 		Tunnels []protocol.Tunnel `json:"tunnels"`
 	}
 	if json.Unmarshal(line, &cmd) != nil {
-		return false
+		return false, false
 	}
 
 	switch cmd.Cmd {
@@ -1052,18 +1063,18 @@ func (c *Client) handleServerCmd(stream *smux.Stream, br *bufio.Reader) bool {
 
 		// 配置变更后上报最新隧道状态
 		go c.sendTunnelStatus()
-		return true
+		return true, false
 
 	case "tunnel_action":
 		c.handleTunnelAction(stream, cmd.Name, cmd.Action)
-		return true
+		return true, false
 
 	case "restart":
 		c.handleRestart(stream, cmd.Delay, cmd.Reason)
-		return true
+		return true, false
 
 	default:
-		return false
+		return false, false
 	}
 }
 
