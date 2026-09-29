@@ -5,3 +5,7 @@ use ./server
 use ./client
 
 use ./shared
+
+use ./client/cmd/moleagent-desktop
+
+use ./client/cmd/moleagent-manager
