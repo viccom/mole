@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -240,11 +241,13 @@ func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := h.tunnelSvc.ReplaceTunnels(r.Context(), id, req.Tunnels); err != nil {
-			if err == core.ErrNodeNotFound {
+			// 审查③：service 层校验错误均经 %w 包装哨兵，必须用 errors.Is——
+			// == 比较是死分支，非法配置会落 500 generic 而非 400+原因
+			if errors.Is(err, core.ErrNodeNotFound) {
 				ResponseError(w, http.StatusNotFound, 404, "Node not found")
 				return
 			}
-			if err == core.ErrTunnelInvalid {
+			if errors.Is(err, core.ErrTunnelInvalid) {
 				ResponseError(w, http.StatusBadRequest, 400, err.Error())
 				return
 			}
@@ -503,11 +506,12 @@ func (h *NodeHandler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.tunnelSvc.UpdateNodeRateLimit(r.Context(), id, rl); err != nil {
-		if err == core.ErrTunnelInvalid {
+		// 审查③：同上，%w 包装链必须 errors.Is 判哨兵
+		if errors.Is(err, core.ErrTunnelInvalid) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}
-		if err == core.ErrNodeNotFound {
+		if errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}

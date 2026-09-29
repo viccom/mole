@@ -1029,7 +1029,9 @@ func (s *TunnelConfigService) BatchUpdateRateLimit(ctx context.Context, items []
 		}
 		node, ok := s.nodeMgr.Get(ctx, item.NodeID)
 		if !ok {
-			return nil, fmt.Errorf("node %s not found", item.NodeID)
+			// 审查③：必须 %w 包装哨兵——handler 侧以 errors.Is 判定，
+			// 裸文案会让 ErrNodeNotFound 分支变死代码、非法请求落 500
+			return nil, fmt.Errorf("node %s: %w", item.NodeID, core.ErrNodeNotFound)
 		}
 		found := false
 		for _, t := range node.Tunnels {

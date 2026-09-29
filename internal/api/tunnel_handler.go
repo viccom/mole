@@ -284,7 +284,7 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		result, err = h.tunnelSvc.ApplyTunnel(r.Context(), req.NodeID, newTunnel)
 	}
 	if err != nil {
-		if err == core.ErrNodeNotFound {
+		if errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
@@ -357,7 +357,7 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.tunnelSvc.RemoveTunnel(r.Context(), targetNodeID, name)
 	if err != nil {
-		if err == core.ErrNodeNotFound {
+		if errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusNotFound, 404, "Node not found")
 			return
 		}
@@ -532,7 +532,9 @@ func (h *TunnelHandler) BatchRateLimit(w http.ResponseWriter, r *http.Request) {
 	}
 	results, err := h.tunnelSvc.BatchUpdateRateLimit(r.Context(), req.Items)
 	if err != nil {
-		if errors.Is(err, core.ErrTunnelInvalid) || err == core.ErrNodeNotFound {
+		// 审查③：service 层以 %w 包装哨兵（ErrTunnelInvalid/ErrNodeNotFound），
+		// 必须 errors.Is 判定——== 比较对包装链是死分支
+		if errors.Is(err, core.ErrTunnelInvalid) || errors.Is(err, core.ErrNodeNotFound) {
 			ResponseError(w, http.StatusBadRequest, 400, err.Error())
 			return
 		}

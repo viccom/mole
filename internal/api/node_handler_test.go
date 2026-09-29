@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -612,5 +613,35 @@ func TestNodeHandlerUpdate_SanitizesInternalErrors(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "/var/lib/mole/redka.db") {
 		t.Fatal("log must contain the real storage error")
+	}
+}
+
+// 审查③：校验错误经 %w 包装（core.ValidateTunnels 全系如此），handler 必须
+// 用 errors.Is 判哨兵——== 比较是死分支，非法配置会落 500 generic 而非 400+原因
+func TestNodeHandlerUpdate_WrappedValidationErrorMaps400(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	if err := nodeMgr.Add(ctx, &core.Node{ID: "NodeA1", Name: "a1", Status: core.NodeStatusOnline, OwnerUserID: "admin"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	repo := newTestNodeRepo()
+	// 与真实 service 对 listen_port=0 的返回一致：%w 包装的 ErrTunnelInvalid
+	validationErr := fmt.Errorf("%w: listen_port must be 1-65535, got 0", core.ErrTunnelInvalid)
+	tunnelSvc := &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: repo, replaceErr: validationErr}
+	handler := NewNodeHandler(nodeMgr, repo, tunnelSvc, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"tunnels": []map[string]any{{"name": "bad", "type": "tcp", "target": "127.0.0.1:22", "listen_port": 0}},
+	})
+	req := reqWithClaims(http.MethodPut, "/api/v1/nodes/NodeA1", body,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("wrapped validation error must map to 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "listen_port must be 1-65535") {
+		t.Fatalf("response body must contain the validation reason, body=%s", w.Body.String())
 	}
 }
