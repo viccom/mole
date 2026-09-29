@@ -237,9 +237,11 @@ func main() {
 
 	// 所有依赖注入完成后再启动监听：否则启动窗口内 authenticator/tunnelSvc
 	// 为 nil，连接会走明文 token 比对兜底、配置命令被静默丢弃
+	controlStartFailed := make(chan struct{})
 	go func() {
 		if err := controlSrv.Start(ctx); err != nil {
 			slog.Error("Control server error", "error", err)
+			close(controlStartFailed)
 			cancel()
 		}
 	}()
@@ -398,6 +400,13 @@ func main() {
 	}
 
 	slog.Info("moleAgent_Serv stopped gracefully")
+	// 控制面监听失败是致命的启动故障：优雅停机后必须以非零码退出，
+	// 否则 systemd/容器编排无法感知失败并告警重启（此前恒退 0 被掩盖）
+	select {
+	case <-controlStartFailed:
+		os.Exit(1)
+	default:
+	}
 }
 
 // maxAPIBodyBytes API 请求体统一上限：多数端点裸读 JSON 且无任何
