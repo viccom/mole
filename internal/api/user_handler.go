@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -36,6 +37,18 @@ func (h *UserHandler) SetBindingRepos(feishu core.FeishuBindingRepo, dingtalk co
 // UserID 有 RBAC 旁路（access_key）或归属语义（system），允许注册同名
 // 账号等于把旁路权限发给普通人
 var reservedUserIDs = map[string]bool{"access_key": true, "system": true}
+
+// validateUserStatus QUA-07：状态值白名单——core.UserStatus 是字符串类型，
+// 任意值会被原样落库并回显（如 "hacked"），下游按 Status 分支的语义被污染。
+// 合法集 = core.UserStatus 常量全集；Create/Update/setStatus 三入口统一调用
+func validateUserStatus(status string) error {
+	switch core.UserStatus(status) {
+	case core.UserStatusActive, core.UserStatusDisabled:
+		return nil
+	default:
+		return fmt.Errorf("invalid status %q: must be one of: active, disabled", status)
+	}
+}
 
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	users, err := h.userRepo.GetAll()
@@ -86,6 +99,10 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	status := req.Status
 	if status == "" {
 		status = string(core.UserStatusActive)
+	}
+	if err := validateUserStatus(status); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, err.Error())
+		return
 	}
 
 	user := &core.User{
@@ -190,6 +207,10 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		user.Username = req.Username
 	}
 	if req.Status != "" {
+		if err := validateUserStatus(req.Status); err != nil {
+			ResponseError(w, http.StatusBadRequest, 400, err.Error())
+			return
+		}
 		user.Status = core.UserStatus(req.Status)
 	}
 	if req.Password != "" {
@@ -377,12 +398,9 @@ func (h *UserHandler) setStatus(w http.ResponseWriter, r *http.Request, userID s
 		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
 		return
 	}
-	// QUA-07：状态值白名单——core.UserStatus 是字符串类型，任意值会被
-	// 原样落库并回显（如 "hacked"），下游按 Status 分支的语义被污染
-	switch core.UserStatus(req.Status) {
-	case core.UserStatusActive, core.UserStatusDisabled:
-	default:
-		ResponseError(w, http.StatusBadRequest, 400, "Invalid status: must be one of: active, disabled")
+	// QUA-07：状态值白名单（与 Create/Update 同一校验函数）
+	if err := validateUserStatus(req.Status); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	user.Status = core.UserStatus(req.Status)

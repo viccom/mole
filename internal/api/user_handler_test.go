@@ -258,6 +258,60 @@ func TestUserHandler_SetStatus_RejectsUnknownStatus(t *testing.T) {
 	}
 }
 
+// QUA-07：白名单必须覆盖全部三个落库入口——Create/Update 原先直接
+// core.UserStatus(req.Status) 落库，任意字符串（如 "hacked"）被原样存储回显
+func TestUserHandler_Create_RejectsUnknownStatus(t *testing.T) {
+	userRepo := newMockUserRepo()
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
+
+	req := reqWithClaims(http.MethodPost, "/api/v1/users",
+		[]byte(`{"username":"bob","password":"Str0ngPass!x","status":"hacked"}`),
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Create with unknown status must 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if u, err := userRepo.GetByUsername("bob"); err == nil {
+		t.Fatalf("invalid-status user must not be persisted, got %+v", u)
+	}
+
+	// 合法值与默认值路径不受影响
+	req = reqWithClaims(http.MethodPost, "/api/v1/users",
+		[]byte(`{"username":"bob","password":"Str0ngPass!x","status":"disabled"}`),
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w = httptest.NewRecorder()
+	handler.Create(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create with valid status must 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := userRepo.GetByUsername("bob")
+	if u.Status != core.UserStatusDisabled {
+		t.Fatalf("expected disabled persisted, got %s", u.Status)
+	}
+}
+
+func TestUserHandler_Update_RejectsUnknownStatus(t *testing.T) {
+	userRepo := newMockUserRepo()
+	userRepo.Create(&core.User{
+		ID: "userA", Username: "alice", Status: core.UserStatusActive,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}, "hash")
+	handler := NewUserHandler(userRepo, nil, 10, nil, nil, nil)
+
+	req := reqWithClaims(http.MethodPut, "/api/v1/users/userA",
+		[]byte(`{"status":"hacked"}`), &core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Update with unknown status must 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := userRepo.GetByID("userA")
+	if u.Status != core.UserStatusActive {
+		t.Fatalf("invalid status must not be persisted, got %s", u.Status)
+	}
+}
+
 // REL-07：级联步骤（AccessToken 禁用）失败时 Delete 返回 500，
 // 不静默继续删除用户
 func TestUserHandler_Delete_AccessTokenDisableFailure_500(t *testing.T) {
