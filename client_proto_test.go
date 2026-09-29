@@ -587,6 +587,21 @@ func TestRegisterResponseStillTimesOutBeyond12S(t *testing.T) {
 	}
 }
 
+// TestRegisterReadTimeoutFloorsAt12sAndRespectsLargerHeartbeat 第三轮 Y-1：
+// 12s 是独立下限而非封顶——用户为慢环境显式调大的 HeartbeatTimeout（如 30s）
+// 不能被固定 12s 吞掉（master 行为：register 跟随 HeartbeatTimeout）。
+func TestRegisterReadTimeoutFloorsAt12sAndRespectsLargerHeartbeat(t *testing.T) {
+	if got := registerReadTimeout(5 * time.Second); got != registerResponseTimeout {
+		t.Fatalf("HeartbeatTimeout 5s（默认）: want 12s 下限, got %v", got)
+	}
+	if got := registerReadTimeout(registerResponseTimeout); got != registerResponseTimeout {
+		t.Fatalf("HeartbeatTimeout 12s: want 12s, got %v", got)
+	}
+	if got := registerReadTimeout(30 * time.Second); got != 30*time.Second {
+		t.Fatalf("HeartbeatTimeout 30s（用户显式调大）: want 30s 不被吞掉, got %v", got)
+	}
+}
+
 // TestRegisterRejectsTooManyTunnels F3 REL-02：register 携带隧道条数上限
 // 256（与服务端 MaxRegisterTunnels 同值同义），超限必须在构造 register
 // 前本地报错。条数检查先于会话检查——无需连接即可验证。

@@ -578,9 +578,9 @@ func (c *Client) register(ctx context.Context) error {
 		return fmt.Errorf("send register: %w", err)
 	}
 
-	// 独立超时：见 registerResponseTimeout——服务端假死探测最长 8s 在
-	// 写应答之前，不能用 HeartbeatTimeout（默认 5s 会先超时）
-	resp, err := readResponse(stream, registerResponseTimeout)
+	// 独立超时：见 registerReadTimeout——服务端假死探测最长 8s 在写应答
+	// 之前，默认 HeartbeatTimeout 5s 会先超时；用户显式调大的配置不被封顶
+	resp, err := readResponse(stream, registerReadTimeout(c.cfg.HeartbeatTimeout))
 	if err != nil {
 		return fmt.Errorf("read register response: %w", err)
 	}
@@ -1286,12 +1286,22 @@ const maxControlMsgSize = 1 << 20 // 1MB
 // 恶意/故障服务端在 deadline 内灌入超大无换行数据时在此截断（防内存尖峰）。
 const maxCmdLineBytes = 1 << 20 // 1MB
 
-// registerResponseTimeout register 应答的独立读超时：服务端同节点重连且
+// registerResponseTimeout register 应答的独立读超时下限：服务端同节点重连且
 // 旧会话假死时，probeOldSession 探测最长 8s（probeOldSessionTimeout）发生在
 // 写应答之前，HeartbeatTimeout 默认 5s 会先超时——每次假死重连必损失一轮。
 // 12s = 覆盖 8s 探测 + 处理余量；仅用于 register，tunnel_update 等服务端
 // 即时应答的路径仍用 HeartbeatTimeout。
 const registerResponseTimeout = 12 * time.Second
+
+// registerReadTimeout 返回 register 应答读超时：registerResponseTimeout 是
+// 下限而非封顶——用户为慢环境显式调大的 HeartbeatTimeout（如 30s）必须原样
+// 生效，否则 master 上能注册成功的慢环境会每轮必超时。
+func registerReadTimeout(hb time.Duration) time.Duration {
+	if hb > registerResponseTimeout {
+		return hb
+	}
+	return registerResponseTimeout
+}
 
 // readControlMsg 从流中读取一条完整的 JSON 控制消息。
 // 每条流仅承载一条消息；服务端响应以 '\n' 结尾（writeJSONLine），
