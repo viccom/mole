@@ -130,3 +130,52 @@ func TestValidateP2PParaRules(t *testing.T) {
 		}
 	}
 }
+
+// F1 列表级校验对齐服务端 core.ValidateTunnels：单条合法但列表内重名或
+// TCP/UDP listen_port 重复的提交会被服务端整单拒绝（register/tunnel_update），
+// 必须在本地提交前拦下（重名区分大小写精确匹配；HTTP/HTTPS 走域名路由，
+// 零 listen_port 不占端口位）
+func TestValidateTunnelListRules(t *testing.T) {
+	t.Parallel()
+
+	tun := func(name string, typ TunnelType, port int) Tunnel {
+		tt := Tunnel{Name: name, Type: typ}
+		switch typ {
+		case TunnelTypeHTTP, TunnelTypeHTTPS, TunnelTypeTCP, TunnelTypeUDP:
+			tt.Target = "127.0.0.1:8080"
+			tt.ListenPort = port
+		}
+		return tt
+	}
+
+	cases := []struct {
+		name         string
+		tunnels      []Tunnel
+		wantErr      bool
+		wantContains string
+	}{
+		{"无重复放行", []Tunnel{tun("a", TunnelTypeTCP, 19100), tun("b", TunnelTypeUDP, 19101), tun("c", TunnelTypeHTTP, 0)}, false, ""},
+		{"重名拒绝", []Tunnel{tun("dup", TunnelTypeTCP, 19100), tun("dup", TunnelTypeUDP, 19101)}, true, "duplicate tunnel name"},
+		{"大小写不同不算重名（区分大小写精确匹配）", []Tunnel{tun("Foo", TunnelTypeTCP, 19100), tun("foo", TunnelTypeTCP, 19101)}, false, ""},
+		{"TCP 同 listen_port 拒绝", []Tunnel{tun("a", TunnelTypeTCP, 19100), tun("b", TunnelTypeTCP, 19100)}, true, "duplicate listen_port"},
+		{"TCP+UDP 同 listen_port 拒绝", []Tunnel{tun("a", TunnelTypeTCP, 19100), tun("b", TunnelTypeUDP, 19100)}, true, "duplicate listen_port"},
+		{"两条 HTTP 零 listen_port 放行", []Tunnel{tun("h1", TunnelTypeHTTP, 0), tun("h2", TunnelTypeHTTP, 0)}, false, ""},
+	}
+	for _, c := range cases {
+		err := validateTunnelList(c.tunnels)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: validateTunnelList() error = %v, wantErr %v", c.name, err, c.wantErr)
+			continue
+		}
+		if c.wantErr && !strings.Contains(err.Error(), c.wantContains) {
+			t.Errorf("%s: 错误文案应含 %q, got %q", c.name, c.wantContains, err.Error())
+		}
+	}
+
+	// 单条非法仍按单条错误报：第二项缺 target（单条错误）且与第一项同
+	// listen_port（列表错误），单条校验先短路——与现状逐条 Validate 语义一致
+	err := validateTunnelList([]Tunnel{tun("ok", TunnelTypeTCP, 19100), {Name: "bad", Type: TunnelTypeTCP, ListenPort: 19100}})
+	if err == nil || strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("单条非法应报单条错误而非列表级 duplicate, got %v", err)
+	}
+}

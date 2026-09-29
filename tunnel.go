@@ -167,6 +167,39 @@ func validateListenPort(port int) error {
 	return nil
 }
 
+// validateTunnelList 在单条 Validate 之上补两条列表级规则，精确镜像服务端
+// core.ValidateTunnels（单条语义与逐条 Validate 完全一致，不放宽不收紧）：
+//   - 隧道名在列表内唯一（区分大小写，精确匹配）
+//   - 仅 TCP/UDP 的 listen_port 参与列表内去重（HTTP/HTTPS 走域名路由，
+//     零值不占端口位）
+//
+// 单条合法但列表级违规的提交会被服务端整单拒绝（register/tunnel_update），
+// 必须在本地提交前拦下。错误文案沿用客户端风格（无 "invalid tunnel:"
+// 前缀），但保留服务端同款关键词（duplicate tunnel name / duplicate
+// listen_port）便于检索
+func validateTunnelList(tunnels []Tunnel) error {
+	names := make(map[string]bool, len(tunnels))
+	// listen_port -> 隧道名：TCP/UDP 网关监听是全局端口空间，同一次提交的
+	// 列表内 listen_port 必须唯一
+	ports := make(map[int]string, len(tunnels))
+	for i := range tunnels {
+		if err := tunnels[i].Validate(); err != nil {
+			return err
+		}
+		if names[tunnels[i].Name] {
+			return fmt.Errorf("duplicate tunnel name %q", tunnels[i].Name)
+		}
+		names[tunnels[i].Name] = true
+		if tunnels[i].Type == TunnelTypeTCP || tunnels[i].Type == TunnelTypeUDP {
+			if prev, dup := ports[tunnels[i].ListenPort]; dup {
+				return fmt.Errorf("duplicate listen_port %d (tunnel %q and %q)", tunnels[i].ListenPort, prev, tunnels[i].Name)
+			}
+			ports[tunnels[i].ListenPort] = tunnels[i].Name
+		}
+	}
+	return nil
+}
+
 // p2pPara / p2pMapping 是 p2p 隧道 Para 的两层结构（协议契约 §0.2）：
 // 连接参数（room/modes/relay_server/mqtt_brokers/stun_servers）两端对称；
 // 端口映射 mappings[] 仅访问发起端配置，随 TUNNEL:OPEN 在线传给对端。

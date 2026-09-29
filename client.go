@@ -350,10 +350,8 @@ func (c *Client) UpdateTunnels(tunnels []Tunnel) error {
 	if !c.Connected() {
 		return fmt.Errorf("not connected to server, tunnel operations require active connection")
 	}
-	for _, t := range tunnels {
-		if err := t.Validate(); err != nil {
-			return err
-		}
+	if err := validateTunnelList(tunnels); err != nil {
+		return err
 	}
 	return c.requestTunnelMutation(tunnelMutation{
 		kind:    tunnelMutationReplaceAll,
