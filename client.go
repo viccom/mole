@@ -547,6 +547,15 @@ func applyTunnelMutation(current []Tunnel, mutation tunnelMutation) ([]Tunnel, e
 
 // register 向服务端注册节点和隧道
 func (c *Client) register(ctx context.Context) error {
+	c.mu.RLock()
+	tunnels := toProtocols(c.tunnels)
+	c.mu.RUnlock()
+	// 条数上限（REL-02，与服务端 MaxRegisterTunnels 同值同义）：超限在
+	// 构造 register 前本地报错，不把超大列表送到服务端被拒后无限重连
+	if len(tunnels) > maxRegisterTunnels {
+		return fmt.Errorf("tunnel count %d exceeds max %d (register rejected)", len(tunnels), maxRegisterTunnels)
+	}
+
 	session := c.transport.Session()
 	if session == nil {
 		return fmt.Errorf("no session")
@@ -557,10 +566,6 @@ func (c *Client) register(ctx context.Context) error {
 		return fmt.Errorf("open register stream: %w", err)
 	}
 	defer stream.Close()
-
-	c.mu.RLock()
-	tunnels := toProtocols(c.tunnels)
-	c.mu.RUnlock()
 
 	cmd := protocol.ControlCmd{
 		Cmd:     "register",

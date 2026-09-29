@@ -3,6 +3,7 @@ package moleAgent_client
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -51,7 +52,8 @@ type KCPConfig struct {
 // minDuration 时间量配置下限：拦截负值与"秒数误写成纳秒"的配置错误
 const minDuration = 10 * time.Millisecond
 
-// LoadConfigFile 从 JSON 文件加载配置
+// LoadConfigFile 从 JSON 文件加载配置。隧道列表做容错处理：非法隧道剔除
+// 并记 WARN 日志，合法隧道继续（见 dropInvalidTunnels）。
 func LoadConfigFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -61,7 +63,25 @@ func LoadConfigFile(path string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
+	dropInvalidTunnels(cfg)
 	return cfg, nil
+}
+
+// dropInvalidTunnels 对配置文件加载的隧道逐条 Validate：非法的剔除并记
+// WARN 日志（含名称与原因），合法的继续——把「服务端整单拒绝 → 无限重连
+// → 整节点瘫」变成「本地剔除 → 节点带合法隧道上线」。仅用于本地配置
+// 加载这一处入口；服务端 tunnel_push 下发的隧道已过服务端校验，接收
+// 路径不做剔除（剔除会让推送的隧道在后续上报时从服务端持久化中消失）。
+func dropInvalidTunnels(cfg *Config) {
+	valid := make([]Tunnel, 0, len(cfg.Tunnels))
+	for _, t := range cfg.Tunnels {
+		if err := t.Validate(); err != nil {
+			log.Printf("WARNING: dropping invalid tunnel %q (type %s) from config: %v (valid tunnels continue)", t.Name, t.Type, err)
+			continue
+		}
+		valid = append(valid, t)
+	}
+	cfg.Tunnels = valid
 }
 
 // DefaultConfig 返回默认配置

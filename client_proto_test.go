@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -583,5 +584,25 @@ func TestRegisterResponseStillTimesOutBeyond12S(t *testing.T) {
 	}
 	if elapsed > 15*time.Second {
 		t.Fatalf("超时应发生在 12s 上限附近，耗时 %v", elapsed)
+	}
+}
+
+// TestRegisterRejectsTooManyTunnels F3 REL-02：register 携带隧道条数上限
+// 256（与服务端 MaxRegisterTunnels 同值同义），超限必须在构造 register
+// 前本地报错。条数检查先于会话检查——无需连接即可验证。
+func TestRegisterRejectsTooManyTunnels(t *testing.T) {
+	c := newStatusTestClient(t)
+
+	tunnels := make([]Tunnel, maxRegisterTunnels+1)
+	for i := range tunnels {
+		tunnels[i] = Tunnel{Name: fmt.Sprintf("t%d", i), Type: TunnelTypeTCP, Target: "127.0.0.1:8080", ListenPort: 20000 + i}
+	}
+	c.mu.Lock()
+	c.tunnels = tunnels
+	c.mu.Unlock()
+
+	err := c.register(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "256") {
+		t.Fatalf("超限（%d 条）必须报错并指明上限，got %v", len(tunnels), err)
 	}
 }
