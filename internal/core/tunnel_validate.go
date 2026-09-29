@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 )
 
 // MaxRegisterTunnels register 命令携带隧道列表的条数上限（REL-02）：
@@ -24,6 +25,11 @@ const MaxConnsUpperBound = maxConnsUpperBound
 func ValidateTunnel(t Tunnel) error {
 	if t.Name == "" {
 		return fmt.Errorf("%w: tunnel name is required", ErrTunnelInvalid)
+	}
+	// 名称进入代理协议头 `\x00<name>\n`，自带控制字符会使流路由按行解析错位
+	// （客户端 tunnel.Validate 同款拒绝，两端规则对齐，跨端审查 🟡-4）
+	if strings.ContainsAny(t.Name, "\x00\n\r") {
+		return fmt.Errorf("%w: tunnel name must not contain \\x00, \\n or \\r", ErrTunnelInvalid)
 	}
 
 	switch t.Type {
