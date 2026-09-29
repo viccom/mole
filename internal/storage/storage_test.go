@@ -132,6 +132,35 @@ func TestUserRepoDelete_PropagatesCascadeErrors(t *testing.T) {
 	}
 }
 
+// Delete 前置 GetByID 的真错误必须上抛：吞错会把 existing 折叠成 nil，
+// 跳过 usernames 索引清理（孤儿索引指向已删用户）且对调用方谎报成功。
+// 注入手法：把 users 记录改写为非法 JSON——GetByID 解码失败是真 DB 语义
+// 错误（≠ ErrUserNotFound），而 deleteField seam 保持可用
+func TestUserRepoDelete_PropagatesGetByIDError(t *testing.T) {
+	setupTestDB(t)
+	repo := NewUserRepo(db).(*userRepo)
+
+	if err := repo.Create(&core.User{ID: "u1", Username: "alice", Status: "active"}, "hash"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if _, err := db.Hash().Set("users", "u1", "{not-valid-json"); err != nil {
+		t.Fatalf("corrupt user record: %v", err)
+	}
+
+	if err := repo.Delete("u1"); err == nil {
+		t.Fatal("Delete must propagate GetByID failure instead of swallowing it")
+	}
+}
+
+// 「不存在」语义保持：删除不存在的用户是幂等 no-op（ErrUserNotFound 不上抛）
+func TestUserRepoDelete_NonexistentIsNoError(t *testing.T) {
+	setupTestDB(t)
+	repo := NewUserRepo(db)
+	if err := repo.Delete("ghost-user"); err != nil {
+		t.Fatalf("Delete of nonexistent user must be a no-op, got %v", err)
+	}
+}
+
 func TestUserRepoNotFound(t *testing.T) {
 	setupTestDB(t)
 	repo := NewUserRepo(db)
