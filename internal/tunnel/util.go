@@ -35,10 +35,15 @@ var biCopyBufPool = sync.Pool{
 // 缓冲从 sync.Pool 取还：两个方向各自 Get 一个、defer Put 一次，
 // 函数恰有一个退出路径，不存在 double-Put。
 func biCopy(a, b io.ReadWriter) {
-	bufA := *biCopyBufPool.Get().(*[]byte)
-	bufB := *biCopyBufPool.Get().(*[]byte)
-	defer biCopyBufPool.Put(&bufA)
-	defer biCopyBufPool.Put(&bufB)
+	// 必须保留 Get 返回的原 *[]byte 指针用于 Put（池内存放的就是指针）：
+	// 解引用后再取局部变量地址（&bufX）会把切片头逃逸到堆、每次 Put 新分配
+	// 一个装箱头，池化「免装箱」的收益被抵消（QUA-06 附带 PERF 兑现）
+	pA := biCopyBufPool.Get().(*[]byte)
+	pB := biCopyBufPool.Get().(*[]byte)
+	defer biCopyBufPool.Put(pA)
+	defer biCopyBufPool.Put(pB)
+	bufA := *pA
+	bufB := *pB
 	done := make(chan struct{})
 	var once sync.Once
 	closeDone := func() { once.Do(func() { close(done) }) }
