@@ -170,7 +170,7 @@ func TestAuthenticate_ExactLimitWithNewlineAccepted(t *testing.T) {
 			return
 		}
 		// 65535 字节 msg + JSON 包装 + 换行，整行恰好 64KB
-		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": strings.Repeat("m", 65535 - len(`{"cmd":"err","msg":""}`))})
+		resp, _ := json.Marshal(map[string]string{"cmd": "err", "msg": strings.Repeat("m", 65535-len(`{"cmd":"err","msg":""}`))})
 		line := append(resp, '\n')
 		if len(line) != 64*1024 {
 			t.Errorf("test fixture: line length = %d, want %d", len(line), 64*1024)
