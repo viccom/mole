@@ -1,0 +1,93 @@
+# moleAgent_Serv 配置示例
+#
+# 节点接入 token（必配）：通过 -nodetoken 启动参数或 MA_NODE_TOKEN 环境变量设置；
+# 两者均未设置时服务拒绝启动（不再回落公开默认值，SEC-05）。推荐使用用户级
+# 接入 Token，全局 nodetoken 仅作兼容过渡保留。
+#
+# 管理员口令：MA_ADMIN_PASS 环境变量未设置时，首次种子/默认口令轮换会生成
+# 随机强口令并打印到 stderr 一次（SEC-05）；请用该口令登录后立即改密，
+# 或预先设置 MA_ADMIN_PASS 固定自己的口令。
+
+server:
+  control_port: ":9981"    # Node 连接端口（TCP）
+  gateway_port: ":9980"    # 外部请求网关
+  api_port: ":9983"        # REST API
+  transport: "tcp"         # 主传输协议: tcp, ws, kcp (TLS 由 tls.enabled 控制, 仅 tcp/ws)
+  ws_port: ""              # WebSocket 额外监听端口（空=禁用, 如 ":9988"）
+  kcp_port: ""             # KCP/UDP 额外监听端口（空=禁用, 可与 TCP 共用端口号如 ":9981"）
+  max_nodes: 10000
+  max_concurrent: 50000
+  tls:
+    enabled: false         # 是否启用 TLS 加密控制端口
+    cert_file: "certs/server.crt"  # TLS 证书文件路径
+    key_file: "certs/server.key"    # TLS 私钥文件路径
+  kcp:
+    key: ""                # KCP 加密密钥（空=不加密）
+    data_shards: 0         # FEC 数据分片数（0=禁用 FEC，推荐 10）
+    parity_shards: 0       # FEC 校验分片数（推荐 3）
+    nodelay: 1             # 0:默认, 1:启用低延迟模式
+    interval: 10           # ACK 间隔 ms（默认 40, 推荐 10）
+    resend: 2              # 快速重传阈值（推荐 2）
+    no_congestion: 1       # 0:默认, 1:禁用拥塞控制（隧道场景推荐关闭）
+    send_window: 0         # 发送窗口（0=使用默认值）
+    recv_window: 0         # 接收窗口（0=使用默认值）
+  gateway:
+    hyphen_routing: true    # 泛域名分隔符: true=hyphen(-), false=dot(.)
+    default_domain: ""      # 隧道访问地址默认域名，空则自动推断（如 mole.example.com）
+
+mqtt:
+  enabled: true
+  tcp_port: ":1883"
+  ws_port: ":1882"
+
+auth:
+  jwt_secret: ""           # 必须配置，空则启动失败。也可通过 MA_JWT_SECRET 环境变量设置
+  jwt_expiry: "24h"
+  bcrypt_cost: 12
+
+node_auth:
+  register_owner_check: true   # register 时校验 node_id 归属：认证用户与节点持久化归属者不同则拒绝（SEC-02）。故障时可临时置 false（kill-switch）
+  legacy_format_enabled: true  # 是否接受旧版明文 token 认证格式（SEC-01 兼容期）。全部客户端升级到 proof 格式后置 false 收口，重启生效
+
+database:
+  path: "data/config.db"
+
+logging:
+  level: "info"            # debug, info, warn, error
+  format: "text"           # text, json
+  file:
+    enabled: true
+    path: "logs/moleagent.log"
+    max_size_mb: 100
+    max_backups: 10
+    max_age_days: 30
+    compress: true
+  console:
+    enabled: true
+    color: true
+
+feishu:
+  app_id: ""               # 飞书企业自建应用 App ID，也可通过 MA_FEISHU_APP_ID 环境变量设置
+  app_secret: ""           # 飞书企业自建应用 App Secret，也可通过 MA_FEISHU_APP_SECRET 环境变量设置
+
+dingtalk:
+  app_key: ""              # 钉钉企业自建应用 App Key，也可通过 MA_DINGTALK_APP_KEY 环境变量设置
+  app_secret: ""           # 钉钉企业自建应用 App Secret，也可通过 MA_DINGTALK_APP_SECRET 环境变量设置
+  corp_id: ""              # 钉钉企业 Corp ID（H5 JSAPI 登录需要），也可通过 MA_DINGTALK_CORP_ID 环境变量设置
+
+ratelimit:
+  api:
+    enabled: false         # API 请求限流总开关
+    per_user: 100          # 每用户每秒请求数 (0=不限)
+    per_ip: 30             # 每IP每秒请求数 (0=不限)
+    burst: 20              # 突发桶容量
+  gateway:
+    enabled: false         # Gateway 限流总开关
+    max_conns_per_node: 1000     # 每节点最大并发连接 (0=不限，可被 API 按节点覆盖)
+    max_conns_per_tunnel: 500    # 每隧道最大并发连接 (0=不限)
+    max_bandwidth_per_tunnel: 0        # 默认带宽限制 bytes/sec (0=不限)
+    bw_burst: 65536             # 带宽突发桶容量 bytes
+
+stun:
+  enabled: false           # 内嵌 STUN 服务器（P2P 隧道 NAT 探测兜底），默认关闭
+  bind_addr: ":3478"       # 监听地址；开启后需在防火墙放行该 UDP 端口

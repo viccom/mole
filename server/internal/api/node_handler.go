@@ -1,0 +1,528 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"moleAgent_Serv/internal/auth"
+	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
+	"moleAgent_Serv/internal/node"
+)
+
+type NodeHandler struct {
+	nodeMgr    *node.ShardedNodeManager
+	nodeRepo   core.NodeRepo
+	tunnelSvc  core.TunnelConfigManager
+	controlSrv NodeControlServer
+	// p2pRevoker 节点删除时级联吊销 p2p 信令凭据（main.go 注入 service 实现；
+	// nil = 跳过吊销）。独立小接口避免为窄关注点扩 core.TunnelConfigManager。
+	p2pRevoker P2PTokenRevoker
+	// encryptor webssh 凭证静态加密（与 TunnelHandler 同源注入；nil 跳过加密）
+	encryptor *crypto.SecretEncryptor
+}
+
+// SetEncryptor 注入 webssh 凭证加密器
+func (h *NodeHandler) SetEncryptor(enc *crypto.SecretEncryptor) {
+	h.encryptor = enc
+}
+
+type NodeControlServer interface {
+	RestartNode(ctx context.Context, nodeID string, delay int, reason string) error
+}
+
+// P2PTokenRevoker 节点删除时的 p2p 信令凭据级联吊销（service 包实现）
+type P2PTokenRevoker interface {
+	RevokeNodeP2PTokens(nodeID string, tunnels []core.Tunnel)
+}
+
+// SetP2PTokenRevoker 注入凭据级联吊销器
+func (h *NodeHandler) SetP2PTokenRevoker(v P2PTokenRevoker) {
+	h.p2pRevoker = v
+}
+
+func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager, controlSrv NodeControlServer) *NodeHandler {
+	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo, tunnelSvc: tunnelSvc, controlSrv: controlSrv}
+}
+
+// sanitizeNodeForResponse 返回剥离接入 token 的节点副本（SEC-03）：
+// token 是节点侧凭据，API 回显等于把凭据暴露给所有有权读节点的账号
+func sanitizeNodeForResponse(n *core.Node) *core.Node {
+	cp := *n
+	cp.Token = ""
+	return &cp
+}
+
+func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
+	nodes := h.nodeMgr.GetAll(r.Context())
+
+	// 归属过滤
+	claims := auth.GetClaims(r.Context())
+	if !IsAdmin(claims) {
+		filtered := make([]*core.Node, 0, len(nodes))
+		for _, n := range nodes {
+			if n.OwnerUserID == claims.UserID {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
+
+	type nodeInfo struct {
+		ID             string                    `json:"id"`
+		Name           string                    `json:"name"`
+		Status         core.NodeStatus           `json:"status"`
+		OwnerUserID    string                    `json:"owner_user_id"`
+		ConnectedAt    *string                   `json:"connected_at,omitempty"`
+		LastHeartbeat  *string                   `json:"last_heartbeat,omitempty"`
+		TunnelCount    int                       `json:"tunnel_count"`
+		Tunnels        []core.Tunnel             `json:"tunnels"`
+		RemoteAddr     string                    `json:"remote_addr,omitempty"`
+		SysInfo        *core.SysInfo             `json:"sysinfo,omitempty"`
+		ClientStatuses []core.ClientTunnelStatus `json:"client_statuses,omitempty"`
+		RTT            int64                     `json:"rtt,omitempty"`
+	}
+	items := make([]nodeInfo, 0, len(nodes))
+	for _, n := range nodes {
+		ni := nodeInfo{
+			ID:             n.ID,
+			Name:           n.Name,
+			Status:         n.Status,
+			OwnerUserID:    n.OwnerUserID,
+			TunnelCount:    len(n.Tunnels),
+			Tunnels:        n.Tunnels,
+			RemoteAddr:     n.RemoteAddr,
+			SysInfo:        n.SysInfo,
+			ClientStatuses: n.ClientStatuses,
+			RTT:            n.RTT,
+		}
+		if n.ConnectedAt != nil {
+			s := n.ConnectedAt.Format("2006-01-02T15:04:05Z")
+			ni.ConnectedAt = &s
+		}
+		if n.LastHeartbeat != nil {
+			s := n.LastHeartbeat.Format("2006-01-02T15:04:05Z")
+			ni.LastHeartbeat = &s
+		}
+		items = append(items, ni)
+	}
+	ResponseOK(w, map[string]any{"items": items, "total": len(items)})
+}
+
+// Get handles GET /api/v1/nodes/{id} and GET /api/v1/nodes/{id}/tunnels
+func (h *NodeHandler) Get(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+
+	if strings.HasSuffix(path, "/tunnels") {
+		id := strings.TrimSuffix(path, "/tunnels")
+		id = strings.TrimRight(id, "/")
+		h.listTunnels(w, r, id)
+		return
+	}
+
+	id := strings.TrimRight(path, "/")
+	node, ok := h.nodeMgr.Get(r.Context(), id)
+	if !ok {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+	if !checkNodeOwnership(w, r, node) {
+		return
+	}
+	ResponseOK(w, sanitizeNodeForResponse(node))
+}
+
+func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name      string              `json:"name"`
+		Token     string              `json:"token"`
+		Tunnels   []core.Tunnel       `json:"tunnels"`
+		RateLimit *core.NodeRateLimit `json:"rate_limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+	if req.Name == "" {
+		ResponseError(w, http.StatusBadRequest, 400, "Node name required")
+		return
+	}
+	node := &core.Node{
+		ID:        req.Name,
+		Name:      req.Name,
+		Token:     req.Token,
+		Status:    core.NodeStatusOffline,
+		Tunnels:   req.Tunnels,
+		RateLimit: req.RateLimit,
+	}
+
+	// 内嵌隧道必须与 TunnelHandler.Create 同等校验+加密：这是唯一绕过
+	// TunnelConfigService 的落库入口，不设防则畸形 Para 与明文 SSH 凭证
+	// 直接进持久层（并在 List/Usage 回显）
+	for i := range node.Tunnels {
+		t := &node.Tunnels[i]
+		if t.Type == core.TunnelTypeWebSSH && len(t.Para) > 0 {
+			if err := validateWebSSHPara(t.Para); err != nil {
+				ResponseError(w, http.StatusBadRequest, 400, err.Error())
+				return
+			}
+			if h.encryptor != nil {
+				t.Para = encryptWebSSHPara(t.Para, h.encryptor)
+			}
+		}
+	}
+
+	// 绑定归属：管理员创建的节点归属 system，普通用户归属自己
+	claims := auth.GetClaims(r.Context())
+	if claims != nil {
+		if IsAdmin(claims) {
+			node.OwnerUserID = "system"
+		} else {
+			node.OwnerUserID = claims.UserID
+		}
+	}
+	if err := h.nodeMgr.Add(r.Context(), node); err != nil {
+		ResponseError(w, http.StatusConflict, 409, "Node already exists")
+		return
+	}
+	// Persist pre-configured node to Redka
+	// SEC-03：落库副本剥离 token——明文凭据不得进持久层 blob
+	if err := h.nodeRepo.Create(sanitizeNodeForResponse(node)); err != nil {
+		slog.Warn("Failed to persist node config", "error", err)
+	}
+	ResponseOK(w, sanitizeNodeForResponse(node))
+}
+
+func (h *NodeHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	id = strings.TrimRight(id, "/")
+
+	var req struct {
+		Name      string              `json:"name"`
+		Tunnels   []core.Tunnel       `json:"tunnels"`
+		RateLimit *core.NodeRateLimit `json:"rate_limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+
+	// 归属检查
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if !checkNodeOwnership(w, r, node) {
+			return
+		}
+	}
+
+	nameChanged := req.Name != ""
+
+	// 非隧道字段使用显式 Update 方法，避免共享指针副作用。
+	if err := h.nodeMgr.Update(r.Context(), id, func(n *core.Node) {
+		if nameChanged {
+			n.Name = req.Name
+		}
+		// 部分更新语义与 Name 对齐：请求未携带时不覆盖，
+		// 否则仅改名也会清空运行态限速
+		if req.RateLimit != nil {
+			n.RateLimit = req.RateLimit
+		}
+	}); err != nil {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+
+	if req.Tunnels != nil {
+		if h.tunnelSvc == nil {
+			ResponseError(w, http.StatusInternalServerError, 500, "Tunnel service not configured")
+			return
+		}
+		if _, err := h.tunnelSvc.ReplaceTunnels(r.Context(), id, req.Tunnels); err != nil {
+			// 审查③：service 层校验错误均经 %w 包装哨兵，必须用 errors.Is——
+			// == 比较是死分支，非法配置会落 500 generic 而非 400+原因
+			if errors.Is(err, core.ErrNodeNotFound) {
+				ResponseError(w, http.StatusNotFound, 404, "Node not found")
+				return
+			}
+			if errors.Is(err, core.ErrTunnelInvalid) {
+				ResponseError(w, http.StatusBadRequest, 400, err.Error())
+				return
+			}
+			// QUA-02：内部错误细节（存储路径/驱动信息）进日志，对外 generic
+			slog.Error("Failed to update node tunnels", "nodeId", id, "error", err)
+			ResponseError(w, http.StatusInternalServerError, 500, "Failed to update node tunnels")
+			return
+		}
+	}
+
+	// 隧道更新由 TunnelConfigService 负责持久化；仅在纯节点属性更新时直接持久化。
+	// 持久化以持久层记录为基线只改属性字段：把内存节点整体写回 repo 会把
+	// 隧道列表回滚成内存快照（推送失败历史造成内存缺隧道 → 已落库隧道被抹掉）
+	if req.Tunnels == nil && (nameChanged || req.RateLimit != nil) {
+		if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
+			if nameChanged {
+				persisted.Name = req.Name
+			}
+			if req.RateLimit != nil {
+				persisted.RateLimit = req.RateLimit
+			}
+			persisted.SysInfo = nil
+			persisted.ClientStatuses = nil
+			persisted.RTT = 0
+			persisted.Token = "" // SEC-03：顺带剥离历史遗留的明文 token
+			if err := h.nodeRepo.Update(persisted); err != nil {
+				slog.Warn("Failed to persist node update", "error", err)
+			}
+		} else if existing, ok := h.nodeMgr.Get(r.Context(), id); ok {
+			// 尚无持久记录：以运行态骨架创建（隧道列表置空，等隧道路径落库）
+			cp := *existing
+			cp.Tunnels = nil
+			cp.SysInfo = nil
+			cp.ClientStatuses = nil
+			cp.RTT = 0
+			cp.Token = "" // SEC-03
+			if err := h.nodeRepo.Create(&cp); err != nil {
+				slog.Warn("Failed to persist node create", "error", err)
+			}
+		}
+		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+			ResponseOK(w, sanitizeNodeForResponse(node))
+			return
+		}
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		ResponseOK(w, sanitizeNodeForResponse(node))
+	} else {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+	}
+}
+
+// Delete handles DELETE /api/v1/nodes/{id} and DELETE /api/v1/nodes/{id}/connection
+func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+
+	if strings.HasSuffix(id, "/connection") {
+		id = strings.TrimSuffix(id, "/connection")
+		id = strings.TrimRight(id, "/")
+		// 归属校验：此分支与整节点删除共用入口和权限（nodes:delete），
+		// 缺失归属检查时可跨租户踢断任意在线节点（R 系列补 Delete 主路径时遗漏）
+		if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+			if !checkNodeOwnership(w, r, node) {
+				return
+			}
+		} else if h.nodeRepo != nil {
+			if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
+				if !checkNodeOwnership(w, r, persisted) {
+					return
+				}
+			}
+		}
+		h.nodeMgr.Disconnect(r.Context(), id)
+		ResponseOK(w, "disconnected")
+		return
+	}
+
+	id = strings.TrimRight(id, "/")
+	// 归属检查：先查内存，再查持久化；同时收集隧道列表供凭据级联吊销
+	// 归属检查（内存优先）并收集吊销列表：内存可能因推送失败分叉缺隧道、
+	// 持久层可能含内存没有的记录——求并集，两个真相源都不漏（复审 R1）
+	var memoryTunnels, persistedTunnels []core.Tunnel
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if !checkNodeOwnership(w, r, node) {
+			return
+		}
+		memoryTunnels = node.Tunnels
+	}
+	if h.nodeRepo != nil {
+		if persisted, err := h.nodeRepo.GetByID(id); err == nil && persisted != nil {
+			if !checkNodeOwnership(w, r, persisted) {
+				return
+			}
+			persistedTunnels = persisted.Tunnels
+		}
+	}
+	// 两个来源并列并集、不按名去重：同名不同类型时两者都要交给吊销器
+	//（按名去重会因「内存先到」丢掉持久层的 p2p 记录，复审 #9b）
+	tunnels := make([]core.Tunnel, 0, len(memoryTunnels)+len(persistedTunnels))
+	tunnels = append(tunnels, memoryTunnels...)
+	tunnels = append(tunnels, persistedTunnels...)
+	h.nodeMgr.Disconnect(r.Context(), id)
+	if err := h.nodeRepo.Delete(id); err != nil {
+		// 删除失败仍回 "deleted" 会让节点在重启后复活，管理员毫无察觉
+		slog.Error("Failed to persist node delete", "nodeId", id, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to delete node")
+		return
+	}
+	// 节点删除后 (nodeID, tunnelName) 定位不到凭据，必须在此显式吊销（审查 #5）
+	if h.p2pRevoker != nil {
+		h.p2pRevoker.RevokeNodeP2PTokens(id, tunnels)
+	}
+	ResponseOK(w, "deleted")
+}
+
+// ListTunnels handles GET /api/v1/nodes/{id}/tunnels (alternate entry)
+func (h *NodeHandler) ListTunnels(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	id = strings.TrimSuffix(id, "/tunnels")
+	id = strings.TrimRight(id, "/")
+	h.listTunnels(w, r, id)
+}
+
+func (h *NodeHandler) listTunnels(w http.ResponseWriter, r *http.Request, nodeID string) {
+	node, ok := h.nodeMgr.Get(r.Context(), nodeID)
+	if !ok {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+	if !checkNodeOwnership(w, r, node) {
+		return
+	}
+	ResponseOK(w, node.Tunnels)
+}
+
+// ListPersisted handles GET /api/v1/nodes/persisted — returns all persisted nodes from the database.
+// Used for managing offline node data: cleanup and tunnel migration.
+func (h *NodeHandler) ListPersisted(w http.ResponseWriter, r *http.Request) {
+	if h.nodeRepo == nil {
+		ResponseOK(w, map[string]any{"items": []any{}, "total": 0})
+		return
+	}
+
+	allPersisted, err := h.nodeRepo.GetAll()
+	if err != nil {
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to load persisted nodes")
+		return
+	}
+
+	claims := auth.GetClaims(r.Context())
+	isAdmin := IsAdmin(claims)
+
+	// Build a set of online node IDs to mark status
+	onlineNodes := h.nodeMgr.GetAll(r.Context())
+	onlineSet := make(map[string]bool, len(onlineNodes))
+	for _, n := range onlineNodes {
+		onlineSet[n.ID] = true
+	}
+
+	type persistedInfo struct {
+		ID          string        `json:"id"`
+		Name        string        `json:"name"`
+		Online      bool          `json:"online"`
+		OwnerUserID string        `json:"owner_user_id"`
+		TunnelCount int           `json:"tunnel_count"`
+		Tunnels     []core.Tunnel `json:"tunnels"`
+	}
+
+	items := make([]persistedInfo, 0, len(allPersisted))
+	for _, n := range allPersisted {
+		if !isAdmin && n.OwnerUserID != claims.UserID {
+			continue
+		}
+		items = append(items, persistedInfo{
+			ID:          n.ID,
+			Name:        n.Name,
+			Online:      onlineSet[n.ID],
+			OwnerUserID: n.OwnerUserID,
+			TunnelCount: len(n.Tunnels),
+			Tunnels:     n.Tunnels,
+		})
+	}
+
+	ResponseOK(w, map[string]any{"items": items, "total": len(items)})
+}
+
+// Restart handles POST /api/v1/nodes/{id}/restart — send restart command to a client node.
+func (h *NodeHandler) Restart(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	id = strings.TrimSuffix(id, "/restart")
+	id = strings.TrimRight(id, "/")
+	if id == "" {
+		ResponseError(w, http.StatusBadRequest, 400, "Node ID required")
+		return
+	}
+
+	// 归属检查
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		if !checkNodeOwnership(w, r, node) {
+			return
+		}
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
+	var req struct {
+		Delay  int    `json:"delay_seconds"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+
+	if h.controlSrv == nil {
+		ResponseError(w, http.StatusInternalServerError, 500, "Control server not configured")
+		return
+	}
+
+	if err := h.controlSrv.RestartNode(r.Context(), id, req.Delay, req.Reason); err != nil {
+		slog.Error("RestartNode failed", "node", id, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Restart failed")
+		return
+	}
+	ResponseOK(w, map[string]any{"status": "ok", "node_id": id, "delay_seconds": req.Delay})
+}
+
+// UpdateRateLimit handles PATCH /api/v1/nodes/{id}/rate-limit
+func (h *NodeHandler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	id = strings.TrimSuffix(id, "/rate-limit")
+	id = strings.TrimRight(id, "/")
+
+	node, ok := h.nodeMgr.Get(r.Context(), id)
+	if !ok {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+		return
+	}
+	if !checkNodeOwnership(w, r, node) {
+		return
+	}
+
+	var req struct {
+		MaxConns int `json:"max_conns"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ResponseError(w, http.StatusBadRequest, 400, "Invalid request body")
+		return
+	}
+
+	var rl *core.NodeRateLimit
+	if req.MaxConns > 0 {
+		rl = &core.NodeRateLimit{MaxConns: req.MaxConns}
+	}
+
+	if err := h.tunnelSvc.UpdateNodeRateLimit(r.Context(), id, rl); err != nil {
+		// 审查③：同上，%w 包装链必须 errors.Is 判哨兵
+		if errors.Is(err, core.ErrTunnelInvalid) {
+			ResponseError(w, http.StatusBadRequest, 400, err.Error())
+			return
+		}
+		if errors.Is(err, core.ErrNodeNotFound) {
+			ResponseError(w, http.StatusNotFound, 404, "Node not found")
+			return
+		}
+		slog.Error("Failed to update node rate limit", "nodeId", id, "error", err)
+		ResponseError(w, http.StatusInternalServerError, 500, "Failed to update rate limit")
+		return
+	}
+
+	if node, ok := h.nodeMgr.Get(r.Context(), id); ok {
+		ResponseOK(w, sanitizeNodeForResponse(node))
+	} else {
+		ResponseError(w, http.StatusNotFound, 404, "Node not found")
+	}
+}
