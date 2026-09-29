@@ -180,6 +180,17 @@ func TestReadBoundedCmdLine_ExactLimitWithNewlineAccepted(t *testing.T) {
 	}
 }
 
+// TestReadBoundedCmdLine_LimitPlusOneRejected 恰好超过上限 1 字节（含尾部
+// 换行）也必须拒绝——上限判断是累计 len(line) > limit，+1 边界不得漏。
+// （恰好 == limit 且含换行的接受边界已由 ExactLimitWithNewlineAccepted 覆盖。）
+func TestReadBoundedCmdLine_LimitPlusOneRejected(t *testing.T) {
+	line := strings.Repeat("a", maxCmdLineBytes) + "\n" // 含 \n 共 limit+1 字节
+	_, err := readBoundedCmdLine(bufio.NewReader(strings.NewReader(line)), maxCmdLineBytes)
+	if !errors.Is(err, errCmdLineTooLarge) {
+		t.Fatalf("limit+1 字节必须报 errCmdLineTooLarge，got %v", err)
+	}
+}
+
 // newSmuxStreamPair 经 net.Pipe 建立一对 smux 会话并开好一条流：
 // 服务端侧模拟"假服务端"向客户端推流。返回 teardown 关闭全部会话
 // （幂等，可先于 t.Cleanup 手动调用以解除写侧阻塞）。
