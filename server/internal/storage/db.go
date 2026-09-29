@@ -11,9 +11,9 @@ import (
 	"github.com/nalgeon/redka"
 	_ "modernc.org/sqlite"
 
-	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/config"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
 )
 
 var db *redka.DB
@@ -215,7 +215,7 @@ func seedData() error {
 
 // setPasswordHash 使用 auth 包的 HashPassword 加密密码并存储
 func setPasswordHash(userID, password string) error {
-	hash, err := auth.HashPassword(password, 12)
+	hash, err := crypto.HashPassword(password, 12)
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func rotateDefaultAdminPassword(username, password string, passFromEnv bool) err
 	if err != nil {
 		return nil // 无哈希记录：由种子/修复路径负责
 	}
-	if !auth.VerifyPassword(defaultAdminPassword, hashVal.String()) {
+	if !crypto.VerifyPassword(defaultAdminPassword, hashVal.String()) {
 		return nil // 已改密用户，尊重现状
 	}
 	if err := setPasswordHash(username, password); err != nil {

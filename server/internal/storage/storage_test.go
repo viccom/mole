@@ -10,7 +10,7 @@ import (
 	"github.com/nalgeon/redka"
 	_ "modernc.org/sqlite"
 
-	"moleAgent_Serv/internal/auth"
+	"moleAgent_Serv/internal/crypto"
 	"moleAgent_Serv/internal/config"
 	"moleAgent_Serv/internal/core"
 )
@@ -306,17 +306,17 @@ func TestNodeRepoCRUD(t *testing.T) {
 }
 
 func TestPasswordHashAndVerify(t *testing.T) {
-	hash, err := auth.HashPassword("testpass", 10)
+	hash, err := crypto.HashPassword("testpass", 10)
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
 	}
 	if hash == "" {
 		t.Error("hash should not be empty")
 	}
-	if !auth.VerifyPassword("testpass", hash) {
+	if !crypto.VerifyPassword("testpass", hash) {
 		t.Error("VerifyPassword should return true for correct password")
 	}
-	if auth.VerifyPassword("wrong", hash) {
+	if crypto.VerifyPassword("wrong", hash) {
 		t.Error("VerifyPassword should return false for wrong password")
 	}
 }
@@ -385,7 +385,7 @@ func seedLegacyDefaultAdmin(t *testing.T, password string) {
 	if _, err := db.Hash().Set("users", "admin", string(data)); err != nil {
 		t.Fatalf("seed users: %v", err)
 	}
-	hash, err := auth.HashPassword(password, 4)
+	hash, err := crypto.HashPassword(password, 4)
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
@@ -415,12 +415,12 @@ func TestSeedData_RotatesLegacyDefaultAdminPassword(t *testing.T) {
 	}
 
 	hash := readAdminHash(t)
-	if auth.VerifyPassword("admin", hash) {
+	if crypto.VerifyPassword("admin", hash) {
 		t.Fatal("legacy default password must be rotated away")
 	}
 	// 轮换后的哈希必须与本次启动生成的随机口令匹配（同一 once 值）
 	_, generated := config.AdminUser()
-	if !auth.VerifyPassword(generated, hash) {
+	if !crypto.VerifyPassword(generated, hash) {
 		t.Fatal("rotated hash must match the generated random password")
 	}
 }
@@ -437,10 +437,10 @@ func TestSeedData_RotatesDefaultAdminPasswordFromEnv(t *testing.T) {
 	}
 
 	hash := readAdminHash(t)
-	if auth.VerifyPassword("admin", hash) {
+	if crypto.VerifyPassword("admin", hash) {
 		t.Fatal("default password must be rotated away")
 	}
-	if !auth.VerifyPassword("env-chosen-pass", hash) {
+	if !crypto.VerifyPassword("env-chosen-pass", hash) {
 		t.Fatal("rotated hash must match MA_ADMIN_PASS")
 	}
 }
@@ -457,10 +457,10 @@ func TestSeedData_KeepsCustomizedAdminPassword(t *testing.T) {
 	}
 
 	hash := readAdminHash(t)
-	if !auth.VerifyPassword("custom-pass-by-user", hash) {
+	if !crypto.VerifyPassword("custom-pass-by-user", hash) {
 		t.Fatal("customized password must be left untouched")
 	}
-	if auth.VerifyPassword("env-pass-attempt", hash) {
+	if crypto.VerifyPassword("env-pass-attempt", hash) {
 		t.Fatal("MA_ADMIN_PASS must not override a customized password")
 	}
 }

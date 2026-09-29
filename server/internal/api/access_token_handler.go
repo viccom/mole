@@ -10,8 +10,8 @@ import (
 
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
 	"moleAgent_Serv/internal/service"
-	"moleAgent_Serv/internal/storage"
 )
 
 type AccessTokenHandler struct {
@@ -86,7 +86,7 @@ func (h *AccessTokenHandler) Create(w http.ResponseWriter, r *http.Request) {
 		UserID:      claims.UserID,
 		Name:        req.Name,
 		TokenPrefix: rawToken[:8],
-		TokenHash:   storage.GenerateTokenHash(rawToken),
+		TokenHash:   crypto.GenerateTokenHash(rawToken),
 		Status:      core.AccessTokenActive,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -160,7 +160,7 @@ func (h *AccessTokenHandler) Rotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token.TokenHash = storage.GenerateTokenHash(rawToken)
+	token.TokenHash = crypto.GenerateTokenHash(rawToken)
 	token.TokenPrefix = rawToken[:8]
 	if err := h.repo.Update(token); err != nil {
 		ResponseError(w, http.StatusInternalServerError, 500, "Failed to rotate token")

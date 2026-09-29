@@ -2,8 +2,6 @@ package storage
 
 import (
 	"errors"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,6 +11,7 @@ import (
 	"github.com/nalgeon/redka"
 
 	"moleAgent_Serv/internal/core"
+	"moleAgent_Serv/internal/crypto"
 )
 
 type accessTokenRepo struct {
@@ -209,8 +208,9 @@ func (r *accessTokenRepo) Delete(id string) error {
 	return nil
 }
 
-// GenerateTokenHash 计算 token 明文的 sha256 hex
+// GenerateTokenHash 计算 token 明文的 sha256 hex。
+// 实现已下沉 internal/crypto（架构审查 🔴5：消除 api→storage 跨层直连），
+// 此处保留导出名使包内与既有调用方零改动。
 func GenerateTokenHash(rawToken string) string {
-	h := sha256.Sum256([]byte(rawToken))
-	return hex.EncodeToString(h[:])
+	return crypto.GenerateTokenHash(rawToken)
 }
