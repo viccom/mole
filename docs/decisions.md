@@ -131,3 +131,19 @@
 **E2E 环境教训（防重蹈）**：E2E harness（17 场景）**必须在 WSL 跑**。Windows Git Bash 下：(a) 旧版本对照二进制（cli-old/serv-old）是 Linux ELF 无法执行；(b) sc17 的 python3 blocker + `PATH=/usr/bin:/bin` 为 Linux 语义。本次误在 Windows 首跑得 PASS=13 FAIL=7，逐项排查后全部归因环境（6×ELF 不可执行 + sc17 blocker 未绑定）。WSL 重跑 PASS=20 FAIL=0 与基线一致。旧二进制留存于 `_release/e2e/bin/`（WSL 视角 /mnt/e/...），新二进制需 `GOOS=linux` 交叉编译后 stage 到 WSL `/root/e2e/bin/`。
 
 **全量回归（修复后）**：server/client/shared workspace + GOWORK=off 双形态构建/vet/test 全绿（client nodeid 2 例 Windows 既有失败不变）；desktop/manager GUI 模块绿；client 根包 -race 绿；E2E 17 场景 PASS=20 FAIL=0（WSL）。
+
+## 2026-09-30 传输加密方案 B「PSK 协议内升级」实施（自适应回落版）
+
+**背景**：方案文档（旧仓 moleAgent_Serv/docs/plans/2026-09-29-transport-encryption-two-paths.md）按负责人 2026-09-29 定稿的自适应回落版实施。实施前按新 monorepo 代码复审方案 B，修正 11 项锚点/结构问题（B.9 记录）后移植入库（`docs/plans/` 同名文件，master 7e03b00）。
+
+**实施裁决与理由**（详见方案文档 B.10 实施记录）：
+1. **认证行契约收敛为 `proto.NodeAuthLine` 单源 struct**（偏离文档复审版的"三处落点"）：实施中发现客户端 map 序列化值只能为字符串，与服务端 int 字段类型错配会直接破坏认证行解析；单源同时消除双端形态漂移面。proof-only 输出与旧形态逐字节一致（测试锁定）。
+2. **noiseconn 单源 `shared/noisechan`**（monorepo 收益，替代双仓库时代的双份实现）：shared 引入首个第三方依赖 flynn/noise v1.1.0（go.mod+go.sum 锁版本，无 vendor）。XXpsk2 经库 `PresharedKeyPlacement=2` 原生支持。
+3. **残余风险知情采纳**（既有决策重申）：过渡期（require=false）MITM 剥除认证行 enc 字段可致静默明文（E2E sc22 实证演示）；收口 `require=true` 后消除。收口判据：服务端日志全量 `enc=true` 且无 `Plaintext control connection allowed` WARN。
+4. **握手失败绝不回落**为硬安全边界（代码注释 + E2E sc23 断言注册成功=0、回落 WARN=0 双重锁定）。
+
+**分支与提交**：`feat/channel-encryption-psk`（worktree mole-wt-psk）4 提交：3aa38ce noisechan 地基 → 33dadd9 proto 契约 → 9521dba 双端协商 → bd49314 E2E sc18-24。文档 B.10 记录在 master。
+
+**验证**：双端 vet/build/test -race/GOWORK=off 全绿（client nodeid 2 例 Windows 既有基线失败不变）；GUI 两模块绿；client -tags p2p 绿；E2E WSL 24 场景 PASS=27 FAIL=0（sc1-17 无回归）。未覆盖如实记录：ws/kcp 传输升级链路、tcpdump 级密文验证（以日志/行为断言代替）。
+
+**部署边界**：上线顺序自由、回滚零接触（服务端关 enabled 即全舰队自动回落）；`MA_CHANNEL_ENC_ENABLED/REQUIRE` env 可免改配置文件切换。
