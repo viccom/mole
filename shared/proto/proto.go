@@ -91,6 +91,33 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// Tunnel 载荷 wire 契约（三镜像 struct 的字段名 + json tag 单源锁定）
+// ---------------------------------------------------------------------------
+
+// TunnelWireFields 是 Tunnel 载荷在 wire 上的字段契约（"字段名:json tag"，
+// 顺序敏感）。双端三份镜像 struct 必须与此逐字一致：
+//   - server/internal/core.Tunnel（moleAgent_Serv）
+//   - client 根包 Tunnel（moleAgent_client）
+//   - client/internal/protocol.Tunnel
+// 注意：字段【类型】允许按端分叉（如 RateLimit：server 为 *TunnelRateLimit
+// 结构化，client 为 json.RawMessage 透传）——锁的是字段名与 json tag，
+// 它们才决定 wire 兼容。任一端加字段另一端漏改时，JSON 反序列化会静默
+// 丢字段（编译与普通测试均不报错），三模块各自的 *_tags_test.go 锁测试
+// 用 reflect 与本契约逐项比对兜底。
+// 变更流程：先改此契约，再同步三份 struct 与各自锁测试；漏改端会在其
+// 模块测试里红。
+var TunnelWireFields = []string{
+	"Name:name",
+	"Type:type",
+	"Target:target",
+	"Domain:domain,omitempty",
+	"ListenPort:listen_port,omitempty",
+	"Enabled:enabled,omitempty",
+	"Para:para,omitempty",
+	"RateLimit:rate_limit,omitempty",
+}
+
+// ---------------------------------------------------------------------------
 // 纯传输结构体（json tag 双端逐字一致；字段名/顺序/tag 不可改动，改动即协议破坏）
 // ---------------------------------------------------------------------------
 
