@@ -107,15 +107,15 @@ func TestConnAuthLimiterPerIPAndSuccessClears(t *testing.T) {
 // selectiveAuth 只接受指定 token 的认证桩
 type selectiveAuth struct{ accept string }
 
-func (s selectiveAuth) AuthenticateNodeToken(_ context.Context, raw string) (*core.NodeAccessGrant, error) {
+func (s selectiveAuth) AuthenticateNodeToken(_ context.Context, raw string) (*core.NodeAccessGrant, []byte, error) {
 	if raw == s.accept {
-		return &core.NodeAccessGrant{UserID: "user-x"}, nil
+		return &core.NodeAccessGrant{UserID: "user-x"}, nil, nil
 	}
-	return nil, errors.New("no match")
+	return nil, nil, errors.New("no match")
 }
 
-func (s selectiveAuth) AuthenticateNodeProof(context.Context, string, []byte) (*core.NodeAccessGrant, error) {
-	return nil, errors.New("no match")
+func (s selectiveAuth) AuthenticateNodeProof(context.Context, string, []byte) (*core.NodeAccessGrant, []byte, error) {
+	return nil, nil, errors.New("no match")
 }
 
 // addrConn 覆盖 RemoteAddr 的连接包装（net.Pipe 的地址无 IP 语义）

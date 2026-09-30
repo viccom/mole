@@ -19,10 +19,14 @@ type Config struct {
 	NodeName   string `json:"node_name"`
 	// NodeIDFile 指定 node.id 持久化文件路径（nodeID 的真相源）。
 	// 留空则用默认 ~/.moleAgent-client/node.id；systemd 等 HOME 不稳定的部署建议显式固定。
-	NodeIDFile string   `json:"node_id_file,omitempty"`
-	Transport  string   `json:"transport"` // 传输协议: tcp, ws, kcp
-	UseTLS     bool     `json:"tls"`
-	Tunnels    []Tunnel `json:"tunnels"`
+	NodeIDFile string `json:"node_id_file,omitempty"`
+	Transport  string `json:"transport"` // 传输协议: tcp, ws, kcp
+	UseTLS     bool   `json:"tls"`
+	// EncMode 通道加密协商模式（方案 B）："on"（默认）认证后首选 PSK 加密，
+	// 旧服务端（ok 应答缺 enc 字段）自动回落明文；"off" 仅调试用强制明文。
+	// UseTLS 时恒不发 enc 请求位（单连接单加密，见 transport 包注释）。
+	EncMode string   `json:"enc,omitempty"`
+	Tunnels []Tunnel `json:"tunnels"`
 
 	// 内置 HTTP 服务（仅 CLI 模式使用）
 	BuiltinHTTP string `json:"http_port"`
@@ -76,13 +80,13 @@ func LoadConfigFile(path string) (*Config, error) {
 // 路径不做剔除（剔除会让推送的隧道在后续上报时从服务端持久化中消失）。
 //
 // 列表级规则镜像服务端 core.ValidateTunnels，采用「剔除后到重复者」策略
-//（与「剔除非法保合法」同哲学）：单条校验通过后，名称或 TCP/UDP
+// （与「剔除非法保合法」同哲学）：单条校验通过后，名称或 TCP/UDP
 // listen_port 与已保留项冲突的剔除并记 WARN——否则 register 仍会被服务端
 // 整单拒绝。与已剔除项的冲突不算冲突（被剔除者不占位，其名称/端口可被
 // 后续合法项复用）；HTTP/HTTPS 不参与端口去重（零 listen_port 不占位）。
 //
 // 空 target 豁免：服务端对 ser2mq/ser2tcp/ser2udp/webssh 不校验 target
-//（空 target 合法落库，见 serverAllowsEmptyTarget），漏写 target 的这四类
+// （空 target 合法落库，见 serverAllowsEmptyTarget），漏写 target 的这四类
 // 用副本占位校验只免 target 检查，其余规则照常；AddTunnel/UpdateTunnels
 // 的单条严格度维持现状（另一层语义），不加此豁免。
 func dropInvalidTunnels(cfg *Config) {
@@ -143,6 +147,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Transport == "" {
 		c.Transport = "tcp"
 	}
+	if c.EncMode == "" {
+		c.EncMode = "on"
+	}
 	if c.NodeID == "" {
 		c.NodeID = nodeid.DefaultNodeID()
 	}
@@ -182,6 +189,12 @@ func (c *Config) Validate() error {
 
 	if c.Transport == "kcp" && c.UseTLS {
 		return fmt.Errorf("TLS is not applicable to KCP transport; use kcp.key for encryption instead")
+	}
+
+	// enc 模式仅允许 on/off；非法值启动即报错（不静默猜默认——enc 是安全
+	// 属性，静默取舍会把配置错误变成不可见的明文/加密态漂移）
+	if c.EncMode != "on" && c.EncMode != "off" {
+		return fmt.Errorf("invalid enc %q (must be \"on\" or \"off\")", c.EncMode)
 	}
 
 	// ws 传输的地址 scheme 必须与 tls 标志一致，否则行为与配置相悖：

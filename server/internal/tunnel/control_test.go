@@ -1146,23 +1146,23 @@ type fakeNodeAuthenticator struct {
 	lastChallenge []byte
 }
 
-func (f *fakeNodeAuthenticator) AuthenticateNodeToken(_ context.Context, rawToken string) (*core.NodeAccessGrant, error) {
+func (f *fakeNodeAuthenticator) AuthenticateNodeToken(_ context.Context, rawToken string) (*core.NodeAccessGrant, []byte, error) {
 	f.tokenCalls++
 	f.lastToken = rawToken
 	if f.tokenErr != nil {
-		return nil, f.tokenErr
+		return nil, nil, f.tokenErr
 	}
-	return f.grant, nil
+	return f.grant, nil, nil
 }
 
-func (f *fakeNodeAuthenticator) AuthenticateNodeProof(_ context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, error) {
+func (f *fakeNodeAuthenticator) AuthenticateNodeProof(_ context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, []byte, error) {
 	f.proofCalls++
 	f.lastProof = proofHex
 	f.lastChallenge = append([]byte(nil), challenge...)
 	if f.proofErr != nil {
-		return nil, f.proofErr
+		return nil, nil, f.proofErr
 	}
-	return f.grant, nil
+	return f.grant, nil, nil
 }
 
 // runAuthHandshake 在 net.Pipe 上模拟客户端：读 32 字节 challenge、发送 auth 行，

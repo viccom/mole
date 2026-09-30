@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/node"
+	"mole/shared/noisechan"
 	"mole/shared/proto"
 )
 
@@ -119,6 +121,16 @@ type ControlServer struct {
 	registerOwnerCheck bool
 	// legacyFormatEnabled 是否接受旧版明文 token 认证格式（SEC-01 兼容期，默认 true）
 	legacyFormatEnabled bool
+	// channelEncEnabled/channelRequire 通道加密开关（方案 B：PSK 协议内升级）。
+	// enabled=协商升级 + 明文客户端放行 WARN 限频；require=收口拒绝无 enc 的
+	// 明文客户端（TLS/wss 传输视为已加密合规）。经 SetChannelEncryption 注入，
+	// 默认全 false（协商零变化）
+	channelEncEnabled bool
+	channelRequire    bool
+	// plainWarnMu/plainWarnLast 明文放行 WARN 的同 IP 限频表（每 IP 每 5 分钟
+	// 一条，B.2）；直接构造 ControlServer 时为 nil/空，warnPlaintextAllowed 锁内惰性初始化
+	plainWarnMu   sync.Mutex
+	plainWarnLast map[string]time.Time
 }
 
 // P2PSignalTokenIssuer 签发 P2P 信令凭据（service 包实现；tunnel 包不依赖 service）
@@ -195,6 +207,12 @@ func (cs *ControlServer) SetAuthenticator(auth core.NodeAccessAuthenticator) {
 func (cs *ControlServer) SetNodeAuthOptions(registerOwnerCheck, legacyFormatEnabled bool) {
 	cs.registerOwnerCheck = registerOwnerCheck
 	cs.legacyFormatEnabled = legacyFormatEnabled
+}
+
+// SetChannelEncryption 设置通道加密行为开关（来自 channel_encryption 配置节，方案 B）
+func (cs *ControlServer) SetChannelEncryption(enabled, require bool) {
+	cs.channelEncEnabled = enabled
+	cs.channelRequire = require
 }
 
 // Start 启动控制端口监听（主传输层 + 额外传输层）
@@ -369,10 +387,9 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	}
 	conn.SetReadDeadline(time.Time{})
 
-	var authMsg struct {
-		Token string `json:"token"`
-		Proof string `json:"proof"`
-	}
+	// 认证行解析走 shared 单源 struct（方案 B 增加 enc 请求位；旧客户端无此
+	// 字段为零值 0=未请求，未知字段双向自动忽略保证新旧共存）
+	var authMsg proto.NodeAuthLine
 	if err := json.Unmarshal([]byte(authLine), &authMsg); err != nil {
 		writeControlResp(conn, proto.RespErr, "invalid auth format")
 		slog.Warn("Node auth format invalid", "remote", remoteAddr, "transport", transportName)
@@ -387,10 +404,11 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	// 全部客户端升级到 proof 格式后由 R2 配置收口）
 	if cs.authenticator != nil {
 		var grant *core.NodeAccessGrant
+		var psk []byte
 		switch {
 		case authMsg.Proof != "":
 			var authErr error
-			grant, authErr = cs.authenticator.AuthenticateNodeProof(ctx, authMsg.Proof, challenge)
+			grant, psk, authErr = cs.authenticator.AuthenticateNodeProof(ctx, authMsg.Proof, challenge)
 			if authErr != nil {
 				// 计数必须先于应答：客户端读到响应即可发起下一次连接，
 				// 若后计数，第 N+1 次连接可能赶在失败入账前通过锁检查
@@ -409,7 +427,7 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 				return
 			}
 			var authErr error
-			grant, authErr = cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
+			grant, psk, authErr = cs.authenticator.AuthenticateNodeToken(ctx, authMsg.Token)
 			if authErr != nil {
 				cs.authFail(ip)
 				writeControlResp(conn, proto.RespErr, "invalid token")
@@ -423,22 +441,17 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 			conn.Close()
 			return
 		}
-		cs.authOK(ip) // 同理：清零先于应答，防「成功后紧接的失败连接」误锁
-		writeControlResp(conn, proto.RespOK, "authenticated")
-		slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal)
-
-		// 建立 smux 会话并使用 grant（conn 生命周期转移给 goroutine）
-		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, grant, transportName)
+		// 认证成功 → 通道加密协商 + ok 应答 + smux 建立（方案 B 统一收尾）
+		cs.completeAuthConnection(ctx, conn, reader, ip, remoteAddr, authMsg, psk, grant, transportName)
 		return
 	}
 
 	// 无 authenticator 时回退到旧全局 token 直接比对（兼容未注入场景）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) == 1 {
-		cs.authOK(ip)
-		writeControlResp(conn, proto.RespOK, "authenticated")
-		slog.Info("Node authenticated (legacy fallback)", "remote", remoteAddr, "transport", transportName)
-
-		cs.setupSmuxAndAccept(ctx, &bufferedConn{Conn: conn, reader: reader}, remoteAddr, &core.NodeAccessGrant{
+		// psk 代码闭环：明文全局 token 在手，sha256 即 Noise psk（与
+		// AuthenticateNodeToken 的 legacy 路径同公式）
+		key := sha256.Sum256([]byte(cs.nodeToken))
+		cs.completeAuthConnection(ctx, conn, reader, ip, remoteAddr, authMsg, key[:], &core.NodeAccessGrant{
 			UserID:       "system",
 			LegacyGlobal: true,
 		}, transportName)
@@ -449,6 +462,110 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 	writeControlResp(conn, proto.RespErr, "invalid token")
 	slog.Warn("Node auth failed", "remote", remoteAddr, "transport", transportName, "reason", "invalid token")
 	conn.Close()
+}
+
+// channelEncHandshakeTimeout 通道加密 Noise 握手预算（方案 B）。server 侧无
+// DefaultAuthTimeout 常量，就地取 10s 对齐 client 侧 transport.DefaultAuthTimeout；
+// deadline 覆盖握手全程，UpgradeResponder 成功返回后已清除（进入 smux 前无残留）
+const channelEncHandshakeTimeout = 10 * time.Second
+
+// plaintextAuthWarnInterval 明文放行 WARN 的同 IP 限频窗口（B.2：每 IP 每 5 分钟一条）
+const plaintextAuthWarnInterval = 5 * time.Minute
+
+// completeAuthConnection 认证成功后的统一收尾（方案 B 通道加密协商插入点，
+// authenticator 路径与无 authenticator 兜底路径共用）：
+// require 拒绝 → authOK 计数 → ok 应答（客户端带 enc 且就绪时先宣告能力再
+// Noise 升级）→ 认证日志（enc 字段）→ smux 会话建立。
+// conn 生命周期转移给 setupSmuxAndAccept（升级路径为 noiseConn；各失败路径
+// 内部已关闭连接并 return）。psk 仅在本函数栈内使用，绝不进 grant、绝不进日志
+func (cs *ControlServer) completeAuthConnection(ctx context.Context, conn net.Conn, reader *bufio.Reader, ip, remoteAddr string, authMsg proto.NodeAuthLine, psk []byte, grant *core.NodeAccessGrant, transportName string) {
+	// 决策矩阵（B.2）：wss 是 WS 的 TLS 变体名。传输已加密的连接（tls/wss）不
+	// 参与 Noise 升级（组合规则 1：单连接单加密，防 TCP→TLS→Noise→smux 双重
+	// 加密）；require 的合规语义 =「TLS 传输 或 Noise 升级，二者其一」（组合
+	// 规则 2：纯明文 smux 才拒绝，否则与方案 A 同时收口会误拒全部已迁 TLS 节点）
+	transportEncrypted := transportName == "tls" || transportName == "wss"
+	wantEnc := authMsg.Enc == proto.EncProtocolV1 && !transportEncrypted
+
+	// require 收口拒绝：认证已通过但客户端未请求加密升级（旧版本/enc=off）。
+	// 位于 authOK 之前且不触碰 limiter——被拒者是合法节点（只是版本旧），
+	// 计入 authFail 会在攻击下误锁合法节点（SEC-13 语义是「提交凭据被拒/通过」）
+	if cs.channelRequire && !wantEnc && !transportEncrypted {
+		writeControlResp(conn, proto.RespErr, "channel encryption required")
+		slog.Warn("channel encryption required", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID)
+		conn.Close()
+		return
+	}
+
+	// 计数先于应答：客户端读到响应即可发起下一次连接（SEC-13 既有语义）
+	cs.authOK(ip)
+
+	// 明文路径沿用 bufferedConn（drain reader 缓冲）；升级路径 noiseConn 内部
+	// 持有同一 reader 做连接全生命周期的分帧读，直接透传
+	sessionConn := net.Conn(&bufferedConn{Conn: conn, reader: reader})
+	encUpgraded := false
+	if wantEnc && cs.channelEncEnabled && len(psk) == 32 {
+		// ok-with-enc 应答：writeControlResp 不支持 Enc 字段，需构造完整
+		// ControlResponse 走 writeJSONLine（Enc 为 omitempty 指针，缺席即旧语义）
+		resp := ControlResponse{Cmd: proto.RespOK, Msg: "authenticated", Enc: &proto.EncCapability{V: proto.EncProtocolV1}}
+		if err := writeJSONLine(conn, resp); err != nil {
+			slog.Warn("Failed to write ok-with-enc response", "remote", remoteAddr, "transport", transportName, "error", err)
+			conn.Close()
+			return
+		}
+		// 安全边界（B.2）：服务端已宣告 enc 能力后，握手失败（网络错误/消息
+		// 畸形/MAC 失败/超时）= 攻击或链路损坏——绝不回落明文，WARN + 断开。
+		// 若在此处回落，主动中间人只需破坏 msg2 即可获得明文。不计 authFail
+		//（客户端已通过 proof 认证，计入会在攻击下误锁合法节点）；
+		// UpgradeResponder 失败即关 conn，此处不重复 Close
+		noiseConn, err := noisechan.UpgradeResponder(conn, reader, psk, channelEncHandshakeTimeout)
+		if err != nil {
+			slog.Warn("Channel encryption handshake failed", "remote", remoteAddr, "transport", transportName, "error", err)
+			return
+		}
+		sessionConn = noiseConn
+		encUpgraded = true
+	} else {
+		if wantEnc && cs.channelEncEnabled && len(psk) != 32 {
+			// 客户端请求了加密但认证路径未产出合法 psk（legacy 路径/记录异常）：
+			// 回无 enc 的 ok（客户端按旧服务端信号回落明文），DEBUG 留观测
+			slog.Debug("Channel encryption requested but no valid psk from auth", "remote", remoteAddr, "transport", transportName)
+		}
+		writeControlResp(conn, proto.RespOK, "authenticated")
+		// enabled 且客户端未请求加密：明文放行 WARN 按 IP 限频（收口期对账观测点）
+		if cs.channelEncEnabled && !transportEncrypted && !wantEnc {
+			cs.warnPlaintextAllowed(ip, remoteAddr, transportName)
+		}
+	}
+
+	slog.Info("Node authenticated", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "legacy", grant.LegacyGlobal, "enc", encUpgraded)
+	cs.setupSmuxAndAccept(ctx, sessionConn, remoteAddr, grant, transportName)
+}
+
+// warnPlaintextAllowed 明文放行 WARN（enabled 且客户端未请求加密升级）：
+// 按 IP 限频每 5 分钟一条（B.2，防重连循环刷屏）。直接构造的 ControlServer
+// 未走 NewControlServer 初始化，限频表在锁内惰性初始化；超阈值时清理已过期
+// 条目防无界增长（对齐 connAuthLimiter 的清理策略）
+func (cs *ControlServer) warnPlaintextAllowed(ip, remoteAddr, transportName string) {
+	now := time.Now()
+	cs.plainWarnMu.Lock()
+	if cs.plainWarnLast == nil {
+		cs.plainWarnLast = make(map[string]time.Time)
+	}
+	if last, ok := cs.plainWarnLast[ip]; ok && now.Sub(last) < plaintextAuthWarnInterval {
+		cs.plainWarnMu.Unlock()
+		return
+	}
+	cs.plainWarnLast[ip] = now
+	if len(cs.plainWarnLast) > 1024 {
+		for k, ts := range cs.plainWarnLast {
+			if now.Sub(ts) >= plaintextAuthWarnInterval {
+				delete(cs.plainWarnLast, k)
+			}
+		}
+	}
+	cs.plainWarnMu.Unlock()
+	slog.Warn("Plaintext control connection allowed (channel encryption enabled but client did not request upgrade)",
+		"remote", remoteAddr, "transport", transportName)
 }
 
 // authFail/authOK 认证结果计入 per-IP 限速器（SEC-13）：

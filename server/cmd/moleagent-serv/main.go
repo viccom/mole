@@ -193,6 +193,8 @@ func main() {
 	controlSrv := tunnel.NewControlServer(cfg.Server.ControlPort, transport, nodeMgr, token, nodeRepo)
 	// SEC-01/SEC-02：节点认证行为开关（register 归属校验 / 旧格式兼容期）
 	controlSrv.SetNodeAuthOptions(cfg.NodeAuth.RegisterOwnerCheck, cfg.NodeAuth.LegacyFormatEnabled)
+	// 方案 B：通道加密开关（enabled=协商升级+明文放行 WARN；require=收口拒绝）
+	controlSrv.SetChannelEncryption(cfg.ChannelEncryption.Enabled, cfg.ChannelEncryption.Require)
 
 	// 额外传输层：WS、KCP 可与 TCP 同时监听
 	if cfg.Server.WSPort != "" {

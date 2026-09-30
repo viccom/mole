@@ -146,10 +146,13 @@ type AccessTokenRepo interface {
 // NodeAccessAuthenticator 节点接入认证接口。
 // 双格式（SEC-01）：AuthenticateNodeToken 接受旧版明文 token（兼容期）；
 // AuthenticateNodeProof 接受 challenge-response proof——proof 绑定本次连接的
-// 一次性 challenge，明文 token 不再上线
+// 一次性 challenge，明文 token 不再上线。
+// 第二返回值 psk = sha256(匹配成功的 token 明文) 的 32 字节原始值（方案 B：
+// 通道加密 Noise XXpsk2 握手的预共享密钥）；认证失败时为 nil。
+// psk 绝不进入 NodeAccessGrant（grant 会被整体打日志，混入即泄漏密钥材料）
 type NodeAccessAuthenticator interface {
-	AuthenticateNodeToken(ctx context.Context, rawToken string) (*NodeAccessGrant, error)
-	AuthenticateNodeProof(ctx context.Context, proofHex string, challenge []byte) (*NodeAccessGrant, error)
+	AuthenticateNodeToken(ctx context.Context, rawToken string) (*NodeAccessGrant, []byte, error)
+	AuthenticateNodeProof(ctx context.Context, proofHex string, challenge []byte) (*NodeAccessGrant, []byte, error)
 }
 
 // TunnelStatsReader 隧道运行时统计读取接口（解耦 api 层与 tunnel 层）

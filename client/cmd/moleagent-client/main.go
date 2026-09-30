@@ -42,6 +42,7 @@ func main() {
 	nodeIDFlag := flag.String("id", "", "节点 ID (默认自动生成)")
 	nameFlag := flag.String("name", "", "节点名称")
 	tlsFlag := flag.Bool("tls", false, "启用 TLS")
+	encFlag := flag.String("enc", "on", "通道加密模式 (on, off; off 仅调试用强制明文)")
 	transportFlag := flag.String("transport", "", "传输协议: tcp, ws, kcp")
 	httpFlag := flag.String("http", "", "内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)")
 	verboseFlag := flag.Bool("verbose", false, "启用 DEBUG 级日志（webssh 会话细节等）")
@@ -58,6 +59,7 @@ Options:
   -id <nodeid>         节点 ID (默认自动生成)
   -name <name>         节点名称
   -tls                 启用 TLS
+  -enc <mode>          通道加密 (on, off; off 仅调试用强制明文)
   -transport <proto>   传输协议 (tcp, ws, kcp)
   -http <port>         内置 HTTP 端口 (默认 127.0.0.1:59870, off 关闭)
   -tunnels             隧道管理子命令 (见: moleagent-client -tunnels -h)
@@ -106,6 +108,13 @@ Examples:
 	if *tlsFlag {
 		cfg.UseTLS = true
 	}
+	// -enc 仅在显式传入时覆盖：flag.Visit 只遍历显式设置的旗标，避免默认值
+	// "on" 把配置文件里的 "off" 静默翻回 "on"；非法值交 Validate 启动报错
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "enc" {
+			cfg.EncMode = *encFlag
+		}
+	})
 	if *transportFlag != "" {
 		cfg.Transport = *transportFlag
 	}

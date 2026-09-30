@@ -40,7 +40,8 @@ func wantProof(token string, challenge []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// dialFakeAuth 拨到假服务端并执行 authenticate（走真实 TCP 路径）
+// dialFakeAuth 拨到假服务端并执行 authenticate（走真实 TCP 路径；
+// requestEnc=false 保持 proof-only 输出，即现行基线形态）
 func dialFakeAuth(t *testing.T, addr, token string) error {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
@@ -48,7 +49,7 @@ func dialFakeAuth(t *testing.T, addr, token string) error {
 		t.Fatalf("dial fake server: %v", err)
 	}
 	defer conn.Close()
-	_, err = authenticate(conn, token)
+	_, _, err = authenticate(conn, token, false)
 	return err
 }
 

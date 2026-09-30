@@ -1,6 +1,7 @@
 package moleAgent_client
 
 import (
+	"encoding/json"
 	"moleAgent_client/internal/nodeid"
 	"os"
 	"path/filepath"
@@ -131,6 +132,49 @@ func TestLoadConfigFileDropsDuplicateTunnels(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "duplicate tunnel name") {
 		t.Fatalf("重名剔除必须记含关键词的 WARN 日志:\n%s", buf.String())
+	}
+}
+
+// 方案 B：EncMode 配置三态——json 缺省字段 ApplyDefaults 后为 "on"（旧配置
+// 文件升级即默认加密）；"off" 合法（调试杆）；非法值 Validate 必须报错并给
+// 出合法取值（不静默猜默认）
+func TestEncModeDefaultAndValidation(t *testing.T) {
+	t.Parallel()
+
+	// json 缺省字段 → ApplyDefaults 后 "on"
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"server_addr":"127.0.0.1:9981","token":"tok"}`), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.EncMode != "" {
+		t.Fatalf("缺省 json 不应带出 EncMode, got %q", cfg.EncMode)
+	}
+	cfg.ApplyDefaults()
+	if cfg.EncMode != "on" {
+		t.Fatalf("ApplyDefaults 后 EncMode = %q, want \"on\"", cfg.EncMode)
+	}
+
+	validCfg := func() *Config {
+		c := DefaultConfig()
+		c.NodeID = "Test0001"
+		c.ApplyDefaults()
+		return c
+	}
+
+	c := validCfg()
+	c.EncMode = "off"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("enc=off 必须合法（调试杆）: %v", err)
+	}
+
+	c = validCfg()
+	c.EncMode = "weird"
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("enc=weird 必须被 Validate 拒绝")
+	}
+	if !strings.Contains(err.Error(), "on") || !strings.Contains(err.Error(), "off") {
+		t.Fatalf("非法 enc 的错误必须给出合法取值（on/off）, got %v", err)
 	}
 }
 
