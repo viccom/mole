@@ -24,18 +24,18 @@ var staticFS embed.FS
 const maxEchoBodyBytes = 1 << 20
 
 // StartHTTPServer 启动内置 HTTP 服务（含隧道管理 API）
-func StartHTTPServer(addr string, client *moleAgent_client.Client) error {
+func StartHTTPServer(addr string, client moleAgent_client.BuiltinClient) error {
 	// 仅端口形式（":18080"）绑定所有网卡；显式指定的 host（如默认 127.0.0.1）
 	// 必须尊重——本服务无鉴权且隧道 Para 含凭据，静默改绑 0.0.0.0 会把凭据暴露给局域网
 	if host, port, err := net.SplitHostPort(addr); err == nil && host == "" {
 		addr = "0.0.0.0:" + port
 	}
 	log.Printf("Built-in HTTP server listening on %s", addr)
-	return http.ListenAndServe(addr, NewHandler(func() *moleAgent_client.Client { return client }))
+	return http.ListenAndServe(addr, NewHandler(func() moleAgent_client.BuiltinClient { return client }))
 }
 
 // NewHandler 创建内置 HTTP 服务 handler，允许调用方延迟提供当前 client。
-func NewHandler(clientProvider func() *moleAgent_client.Client) http.Handler {
+func NewHandler(clientProvider func() moleAgent_client.BuiltinClient) http.Handler {
 	mux := http.NewServeMux()
 
 	// 静态文件（模块化前端）
@@ -116,7 +116,7 @@ func NewHandler(clientProvider func() *moleAgent_client.Client) http.Handler {
 	return mux
 }
 
-func registerTunnelAPI(mux *http.ServeMux, clientProvider func() *moleAgent_client.Client) {
+func registerTunnelAPI(mux *http.ServeMux, clientProvider func() moleAgent_client.BuiltinClient) {
 	// GET /api/tunnels — 所有隧道（含运行时状态）
 	// POST /api/tunnels — 添加/更新隧道
 	mux.HandleFunc("/api/tunnels", withCORS(func(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +215,7 @@ func registerTunnelAPI(mux *http.ServeMux, clientProvider func() *moleAgent_clie
 }
 
 // handleTunnelAction 处理隧道类型特定操作
-func handleTunnelAction(w http.ResponseWriter, r *http.Request, clientProvider func() *moleAgent_client.Client, name, action string) {
+func handleTunnelAction(w http.ResponseWriter, r *http.Request, clientProvider func() moleAgent_client.BuiltinClient, name, action string) {
 	client := currentClient(clientProvider)
 	if client == nil {
 		writeClientUnavailable(w)
@@ -294,7 +294,7 @@ func handleTunnelAction(w http.ResponseWriter, r *http.Request, clientProvider f
 }
 
 // handleTunnelStream SSE 实时事件流（ser2mq / ser2net）
-func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_client.Client, name string) {
+func handleTunnelStream(w http.ResponseWriter, r *http.Request, c moleAgent_client.BuiltinClient, name string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
@@ -378,7 +378,7 @@ func handleTunnelStream(w http.ResponseWriter, r *http.Request, c *moleAgent_cli
 	}
 }
 
-func currentClient(provider func() *moleAgent_client.Client) *moleAgent_client.Client {
+func currentClient(provider func() moleAgent_client.BuiltinClient) moleAgent_client.BuiltinClient {
 	if provider == nil {
 		return nil
 	}

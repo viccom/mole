@@ -19,7 +19,7 @@ import (
 	selfupdate "github.com/viccom/go-selfupdater"
 
 	moleAgent_client "moleAgent_client"
-	"moleAgent_client/internal/builtin"
+	"moleAgent_client/builtin"
 	"moleAgent_client/internal/version"
 )
 
@@ -337,8 +337,6 @@ func deleteTunnel(baseURL, name string) int {
 	return 0
 }
 
-const defaultUpdateURL = "https://fs.px.metme.top/app/molec/latest.json"
-
 func handleCheckUpdate() int {
 	ver := version.Version
 	if ver == "dev" || ver == "" {
@@ -346,7 +344,7 @@ func handleCheckUpdate() int {
 		return 1
 	}
 
-	src := selfupdate.NewHTTPSource(defaultUpdateURL)
+	src := selfupdate.NewHTTPSource(builtin.UpdateURL)
 	u := selfupdate.New(src, ver)
 
 	release, err := u.Check()
@@ -380,7 +378,7 @@ func handleSelfUpdate() int {
 		return 1
 	}
 
-	src := selfupdate.NewHTTPSource(defaultUpdateURL)
+	src := selfupdate.NewHTTPSource(builtin.UpdateURL)
 	u := selfupdate.New(src, ver,
 		selfupdate.WithLogger(func(format string, args ...any) {
 			fmt.Printf(format+"\n", args...)

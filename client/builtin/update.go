@@ -12,7 +12,15 @@ import (
 	"moleAgent_client/internal/version"
 )
 
-const updateURL = "https://fs.px.metme.top/app/molec/latest.json"
+// UpdateURL 自更新清单地址（单源：架构审查 🔴4——此前 CLI 与内置服务各写一份）。
+// 任何新的自更新消费者都应复用它，而不是再声明一份同值常量。
+const UpdateURL = "https://fs.px.metme.top/app/molec/latest.json"
+
+// NewUpdater 构造自更新器（单源构造逻辑，供 CLI 与内置 HTTP 服务共用）。
+// 返回 nil 表示当前是 dev 构建（version 为空或 "dev"），不可自更新。
+func NewUpdater() *selfupdate.Updater {
+	return getUpdater()
+}
 
 type updateManager struct {
 	mu      sync.Mutex
@@ -29,7 +37,7 @@ func getUpdater() *selfupdate.Updater {
 		if ver == "" || ver == "dev" {
 			return nil
 		}
-		src := selfupdate.NewHTTPSource(updateURL)
+		src := selfupdate.NewHTTPSource(UpdateURL)
 		updateMgr.updater = selfupdate.New(src, ver,
 			selfupdate.WithLogger(func(format string, args ...any) {
 				fmt.Printf("[update] "+format+"\n", args...)

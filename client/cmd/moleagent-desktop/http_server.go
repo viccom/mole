@@ -8,7 +8,8 @@ import (
 	"net"
 	"net/http"
 
-	"moleAgent_client/internal/builtin"
+	"moleAgent_client"
+	"moleAgent_client/builtin"
 )
 
 type builtinHTTPServer struct {
@@ -137,7 +138,15 @@ func (a *App) openBuiltinHTTPServer(addr string) (builtinHTTPServer, string, err
 	}
 
 	server := &http.Server{
-		Handler: builtin.NewHandler(a.currentClient),
+		// 适配为 builtin 的窄接口（架构审查 🔴4：builtin 迁出 internal 后只依赖接口）。
+		// nil 分支显式返回裸 nil 而非包装后的 *Client——返回类型化 nil 指针会让
+		// 接口值非 nil，builtin 内的 `clientProvider() == nil` 判定将失效
+		Handler: builtin.NewHandler(func() moleAgent_client.BuiltinClient {
+			if c := a.currentClient(); c != nil {
+				return c
+			}
+			return nil
+		}),
 	}
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
