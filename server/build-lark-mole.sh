@@ -23,7 +23,7 @@ echo "=========================================="
 cd "$REPO_DIR"
 
 # --- 版本信息 ---
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION=$(git describe --tags --always --dirty --match 'srv/*' 2>/dev/null | sed 's|^srv/||' || echo dev)
 BUILD=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS="-s -w -X moleAgent_Serv/internal/version.Version=${VERSION} -X moleAgent_Serv/internal/version.GitHash=${BUILD} -X moleAgent_Serv/internal/version.BuildDate=${DATE}"

@@ -21,8 +21,8 @@ $targets = @(
   @{ GOOS = "windows"; GOARCH = "arm64"; Ext = ".exe" }
 )
 
-$version = (git describe --tags --always --dirty 2>$null)
-if (-not $version) { $version = "dev" }
+$version = (git describe --tags --always --dirty --match "cli/*")
+if ($version) { $version = $version -replace '^cli/', '' } else { $version = "dev" }
 
 $build = (git rev-parse --short HEAD 2>$null)
 if (-not $build) { $build = "unknown" }
