@@ -108,3 +108,26 @@
 - 遗留跟踪：client.go 拆分与 Manager 接口化建议作为独立任务排期，需先补 Run 状态机测试（当前零覆盖）再动。
 
 **全量回归基线（修复后）**：server 15 包全绿；client 9 包绿（nodeid 2 例 Windows 既有失败不变）；shared 3 包绿；五模块 × workspace/GOWORK=off 双形态构建全绿。
+
+---
+
+## 2026-09-30 第二轮复核（13 项清单）→ 必修 4 项修复记录
+
+**背景**：架构修复轮之后的遗留问题清单复核（13 项），判定必修 4 项并行修复。复核中有 3 项改判：listen_port.go 死适配层（功能未丢，列清理项）、p2pModeSet 未导出（风险低列 P2）、desktop clientMu 长持锁（实测为短临界区模式，证据不足不判缺陷）。
+
+| # | 问题 | 修复 commit | 复测证据 |
+|---|---|---|---|
+| MUST-1 | Tunnel 三镜像 struct 无 tag 锁（wire 最大未设防面：一端加字段另一端漏改 → JSON 静默丢字段） | `104c239` | shared/proto 新增 TunnelWireFields 契约（8 字段）；三模块 *_tags_test.go reflect 锁定；红验证：契约注入假字段后三模块全红（exit=1），恢复全绿 |
+| MUST-2 | client c.cancel 无同步（Run 写/Close 读跨 goroutine，-race 必报） | `d4fad6a` | pre-fix `go test -race` 第 0 次迭代确定性报两份 DATA RACE；post-fix -race 全绿 exit=0 |
+| MUST-3 | 三处版本推导漏 --match 本端前缀（build.ps1/release.ps1/build-lark-mole.sh） | `1131d1c` | 实测无 match 时 client 侧拿到 srv 基准（v0.7.1-215 vs 正确 v0.8.0-256）；修复后推导无前缀；build.ps1 端到端实跑，产物自报版本注入链闭环 |
+| MUST-4 | REST 建节点不做 8 字符 ID 校验（Create 的 name 直接成为 node.ID，与 register 口径不一） | `0f0c7ba` | RED：4 种非法 ID 全部 200 放行；GREEN：400 + ErrInvalidNodeID 文案；E2E sc8 修正后有意义地 PASS |
+
+**修复中发现的新问题（记录待办）**：
+1. **Close-先于-Run 语义洞**（MUST-2 修复中子代理发现，未修）：Run 主循环只 watch `ctx.Done()` 不 watch `c.closed`，Close 在 Run 赋值行之前执行时 cancel 永久丢失 → Run 陷入无限快速重连（transport 已锁存关闭态，Connect 立即失败但循环不退）。竞争已修、洞仍在。修法方向：Run 主循环加 `<-c.closed` 分支。回归测试以 rescue 计时器兜底该窗口，测试时长 16-19s 即洞存在的佐证，修后应降至毫秒级。
+2. **ps1 `2>$null` 必炸点**（MUST-3 修复中实证）：git 2.50 对「ref 名带前缀但 annotated tag 对象内部名无前缀」的 tag 发 stderr 告警，PS5.1 + `$ErrorActionPreference="Stop"` + `2>$null` 把告警升级为终止性 NativeCommandError——旧行在本机已必炸（与本次改动无关），已随修移除重定向。同款 `git rev-parse ... 2>$null`（build.ps1:18/release.ps1:27）当前无害但未来 git 升级可能踩同坑，待办。
+3. **E2E harness sc8 请求体写错**（MUST-4 影响面排查发现）：`{"id":..,"name":"e2e-pre"}` 的 id 字段一直被 API 静默忽略（Create 请求体无 id 字段），真实落库 ID 是非法的 "e2e-pre"。已修正为 `{"name":"sc8pre01"}`——若不修，新校验下 400 会让 token 断言空转通过（假绿）。
+4. **行为变更**（MUST-4 固有结果）：REST 建节点的 name 必须为 8 字符合法 ID。影响面亲验：admin 前端 createNode 零调用（无 UI 入口）；E2E sc8 已适配；非 8 字符预建节点本就无法被任何客户端注册匹配（register 自始强制该规则），属收紧死路径。
+
+**E2E 环境教训（防重蹈）**：E2E harness（17 场景）**必须在 WSL 跑**。Windows Git Bash 下：(a) 旧版本对照二进制（cli-old/serv-old）是 Linux ELF 无法执行；(b) sc17 的 python3 blocker + `PATH=/usr/bin:/bin` 为 Linux 语义。本次误在 Windows 首跑得 PASS=13 FAIL=7，逐项排查后全部归因环境（6×ELF 不可执行 + sc17 blocker 未绑定）。WSL 重跑 PASS=20 FAIL=0 与基线一致。旧二进制留存于 `_release/e2e/bin/`（WSL 视角 /mnt/e/...），新二进制需 `GOOS=linux` 交叉编译后 stage 到 WSL `/root/e2e/bin/`。
+
+**全量回归（修复后）**：server/client/shared workspace + GOWORK=off 双形态构建/vet/test 全绿（client nodeid 2 例 Windows 既有失败不变）；desktop/manager GUI 模块绿；client 根包 -race 绿；E2E 17 场景 PASS=20 FAIL=0（WSL）。
