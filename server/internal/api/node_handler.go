@@ -150,6 +150,13 @@ func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ResponseError(w, http.StatusBadRequest, 400, "Node name required")
 		return
 	}
+	// node_id 格式校验：Create 的 name 直接成为 node.ID（用户提交的 node_id），
+	// 必须与 register 路径（tunnel 包）同一规则——固定 8 个字母数字字符、
+	// 首字符字母——否则 REST 预建节点绕过 register 侧校验造成两路口径不一
+	if !core.IsValidNodeID(req.Name) {
+		ResponseError(w, http.StatusBadRequest, 400, core.ErrInvalidNodeID.Error())
+		return
+	}
 	node := &core.Node{
 		ID:        req.Name,
 		Name:      req.Name,

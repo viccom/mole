@@ -345,9 +345,10 @@ func TestNodeHandler_Create_BindsOwnerUserID(t *testing.T) {
 	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	// Step 2: Inject non-admin userA claims
+	// name 即 node_id，须为合法 8 字符 ID（原 "test-node-1" 不符新校验规则）
 	claims := &core.Claims{UserID: "userA", Roles: []string{"operator"}}
 	body, _ := json.Marshal(map[string]any{
-		"name": "test-node-1",
+		"name": "owner001",
 	})
 	req := reqWithClaims(http.MethodPost, "/api/v1/nodes", body, claims)
 	w := httptest.NewRecorder()
@@ -360,7 +361,7 @@ func TestNodeHandler_Create_BindsOwnerUserID(t *testing.T) {
 	}
 
 	// Step 4: Verify the created node has OwnerUserID="userA"
-	gotNode, ok := nodeMgr.Get(ctx, "test-node-1")
+	gotNode, ok := nodeMgr.Get(ctx, "owner001")
 	if !ok {
 		t.Fatal("created node not found in nodeMgr")
 	}
@@ -369,7 +370,7 @@ func TestNodeHandler_Create_BindsOwnerUserID(t *testing.T) {
 	}
 
 	// Also verify persisted node has correct owner
-	persisted, err := nodeRepo.GetByID("test-node-1")
+	persisted, err := nodeRepo.GetByID("owner001")
 	if err != nil {
 		t.Fatalf("persisted node not found: %v", err)
 	}
@@ -467,8 +468,9 @@ func TestNodeHandler_Create_StripsTokenFromResponseAndPersist(t *testing.T) {
 	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
 
 	claims := &core.Claims{UserID: "admin", Roles: []string{"admin"}}
+	// name 即 node_id，须为合法 8 字符 ID（原 "test-node-tok" 不符新校验规则）
 	body, _ := json.Marshal(map[string]any{
-		"name":  "test-node-tok",
+		"name":  "tokstrp1",
 		"token": "plain-text-token-from-request",
 	})
 	req := reqWithClaims(http.MethodPost, "/api/v1/nodes", body, claims)
@@ -490,12 +492,80 @@ func TestNodeHandler_Create_StripsTokenFromResponseAndPersist(t *testing.T) {
 		t.Fatal("Create response must not echo token value")
 	}
 
-	persisted, err := nodeRepo.GetByID("test-node-tok")
+	persisted, err := nodeRepo.GetByID("tokstrp1")
 	if err != nil {
 		t.Fatalf("persisted node not found: %v", err)
 	}
 	if persisted.Token != "" {
 		t.Fatalf("persisted node must not store token, got %q", persisted.Token)
+	}
+}
+
+// ===== REST 建节点 node_id 格式校验（与 register 路径同一规则）=====
+// Create 请求无独立 node_id 字段：handler 内 node.ID = req.Name，
+// 即 name 就是本接口用户提交的 node_id，必须满足 register 路径
+// （tunnel 包 isValidNodeID）同款 8 字符规则，两路口径不得漂移。
+
+func TestNodeHandler_Create_RejectsInvalidNodeID(t *testing.T) {
+	cases := []struct {
+		desc string
+		name string // 即 node_id：Create 内 node.ID = req.Name
+	}{
+		{"7 chars", "node001"},
+		{"9 chars", "node00001"},
+		{"leading digit", "1node000"},
+		{"illegal character", "nod@001x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			nodeMgr := node.NewShardedNodeManager(4)
+			nodeRepo := newTestNodeRepo()
+			handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
+
+			body, _ := json.Marshal(map[string]any{"name": tc.name})
+			req := reqWithClaims(http.MethodPost, "/api/v1/nodes", body,
+				&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+			w := httptest.NewRecorder()
+			handler.Create(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for node_id %q, got %d, body=%s", tc.name, w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), core.ErrInvalidNodeID.Error()) {
+				t.Fatalf("response must contain ErrInvalidNodeID message %q, body=%s",
+					core.ErrInvalidNodeID.Error(), w.Body.String())
+			}
+			if _, ok := nodeMgr.Get(context.Background(), tc.name); ok {
+				t.Fatalf("invalid node_id %q must not be registered in node manager", tc.name)
+			}
+		})
+	}
+}
+
+func TestNodeHandler_Create_AcceptsValidNodeID(t *testing.T) {
+	ctx := context.Background()
+	nodeMgr := node.NewShardedNodeManager(4)
+	nodeRepo := newTestNodeRepo()
+	handler := NewNodeHandler(nodeMgr, nodeRepo, &testTunnelConfigManager{nodeMgr: nodeMgr, nodeRepo: nodeRepo}, nil)
+
+	body, _ := json.Marshal(map[string]any{"name": "node0001"})
+	req := reqWithClaims(http.MethodPost, "/api/v1/nodes", body,
+		&core.Claims{UserID: "admin", Roles: []string{"admin"}})
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid node_id, got %d, body=%s", w.Code, w.Body.String())
+	}
+	got, ok := nodeMgr.Get(ctx, "node0001")
+	if !ok {
+		t.Fatal("valid node must be registered in node manager")
+	}
+	if got.OwnerUserID != "system" {
+		t.Fatalf("admin-created node owner must stay system, got %s", got.OwnerUserID)
+	}
+	if _, err := nodeRepo.GetByID("node0001"); err != nil {
+		t.Fatalf("valid node must be persisted, got error: %v", err)
 	}
 }
 

@@ -162,8 +162,10 @@ sc8() {
   wait_online "$jwt" sc8node1 || { rec sc8 1 "节点未上线"; cli_stop "$wd/cli"; srv_stop "$wd"; return; }
   local g=$(node_json "$jwt" sc8node1)
   local has=$(echo "$g" | jq 'has("token")')
+  # Create 的 name 直接成为 node_id（请求体无独立 id 字段），须为 8 字符
+  # 合法 ID，否则 400（data 为空会让下面的 token 断言空转通过、测不到本意）
   local c=$(api -X POST "$API/api/v1/nodes" -H "Authorization: Bearer $jwt" -H 'Content-Type: application/json' \
-    -d '{"id":"sc8pre01","name":"e2e-pre"}' | jq '.data | has("token")')
+    -d '{"name":"sc8pre01"}' | jq '.data | has("token")')
   local ok=0; [ "$has" = false ] && [ "$c" = false ] || ok=1
   rec sc8 $ok "GET 单节点 token 字段=$has, POST 创建响应 token 字段=$c (期望均 false)"
   cli_stop "$wd/cli"; srv_stop "$wd"
