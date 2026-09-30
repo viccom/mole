@@ -123,13 +123,15 @@ func TestControlCmdTags(t *testing.T) {
 	})
 }
 
-// TestControlResponseTags 锁定 ControlResponse 的 4 个 json tag
+// TestControlResponseTags 锁定 ControlResponse 的 5 个 json tag
+// （enc,omitempty 为方案 B 新增能力宣告位，nil 时键缺席，旧端零感知）
 func TestControlResponseTags(t *testing.T) {
 	assertTags[ControlResponse](t, []string{
 		"cmd",
 		"msg,omitempty",
 		"ts,omitempty",
 		"data,omitempty",
+		"enc,omitempty",
 	})
 }
 

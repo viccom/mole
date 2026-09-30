@@ -49,7 +49,13 @@ const (
 const (
 	AuthKeyProof = "proof" // 新格式：HMAC-SHA256 hex
 	AuthKeyToken = "token" // legacy 格式：明文 token（仅服务端接受）
+	AuthKeyEnc   = "enc"   // 通道加密请求位（方案 B）：值 = 请求的升级协议版本
 )
+
+// EncProtocolV1 通道加密升级协议版本 1：Noise XXpsk2 + shared/noisechan 分帧。
+// 认证行 enc 字段与 ok 应答 enc.v 字段共用此值；服务端仅认此值，收到其他
+// 数值视为未请求加密（保守处理，不引入新失败模式）。
+const EncProtocolV1 = 1
 
 // ---------------------------------------------------------------------------
 // 流前缀字节（smux 数据流首字节，客户端 dispatchStream 据此路由）
@@ -152,6 +158,25 @@ type ControlResponse struct {
 	Msg  string          `json:"msg,omitempty"`
 	Ts   int64           `json:"ts,omitempty"`   // 原样回传（ping RTT）
 	Data json.RawMessage `json:"data,omitempty"` // 结构化数据
+	// Enc 通道加密能力宣告（方案 B）：服务端在 ok 应答中携带 = 即将执行
+	// Noise 升级握手。nil（缺席）= 旧服务端 / 未启用 / 传输已加密，键不出现，
+	// 旧端语义零变化。
+	Enc *EncCapability `json:"enc,omitempty"`
+}
+
+// NodeAuthLine 认证行（预认证阶段 challenge 之后客户端发送的单行 JSON）的
+// wire 契约单源。方案 B 之前服务端用本地匿名 struct、客户端用
+// map[string]string 各自构造——加 enc 字段时三处漂移且值类型必然错配
+// （map 只能发字符串 "1"，int 字段收的是数字 1），故收敛为双端共用 struct。
+type NodeAuthLine struct {
+	Token string `json:"token,omitempty"` // legacy 明文 token（仅旧客户端）
+	Proof string `json:"proof,omitempty"` // 新格式 HMAC-SHA256 hex
+	Enc   int    `json:"enc,omitempty"`   // 通道加密请求位：EncProtocolV1；缺省 0 = 未请求
+}
+
+// EncCapability ok 应答携带的通道加密能力宣告。
+type EncCapability struct {
+	V int `json:"v"` // 升级协议版本（EncProtocolV1）
 }
 
 // TunnelStatus 客户端上报的隧道运行时状态
