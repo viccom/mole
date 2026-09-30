@@ -1,6 +1,7 @@
 package moleAgent_client
 
 import (
+	"moleAgent_client/internal/nodeid"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,8 +64,8 @@ func TestLoadConfigFileDropsInvalidTunnels(t *testing.T) {
 	cfg.NodeIDFile = filepath.Join(dir, "node.id")
 	// New 会把 NodeIDFile 写进包级全局（SetNodeIDFile），恢复防污染
 	//（同 newStatusTestClient 的处理）
-	oldFile := nodeIDFile
-	t.Cleanup(func() { nodeIDFile = oldFile })
+	oldFile := nodeid.NodeIDFile()
+	t.Cleanup(func() { nodeid.SetNodeIDFile(oldFile) })
 
 	c, err := New(cfg)
 	if err != nil {

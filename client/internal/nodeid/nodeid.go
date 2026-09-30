@@ -1,4 +1,4 @@
-package moleAgent_client
+package nodeid
 
 import (
 	"crypto/rand"
@@ -189,6 +189,11 @@ func SetNodeIDFile(path string) {
 	if path != "" {
 		nodeIDFile = path
 	}
+}
+
+// NodeIDFile 返回当前生效的 node.id 持久化文件路径（供日志与诊断）。
+func NodeIDFile() string {
+	return nodeIDFile
 }
 
 // persistedID 持久化记录：machine-id 源值 + 首次生成的 nodeID

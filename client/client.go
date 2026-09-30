@@ -22,6 +22,7 @@ import (
 	"github.com/xtaci/smux"
 
 	"mole/shared/proto"
+	"moleAgent_client/internal/nodeid"
 	"moleAgent_client/internal/protocol"
 	"moleAgent_client/internal/proxy"
 	"moleAgent_client/internal/proxy/ser2mq"
@@ -115,7 +116,7 @@ func New(cfg *Config) (*Client, error) {
 	explicitNodeID := cfg.NodeID != ""
 
 	// 自定义 node.id 路径需在 ApplyDefaults（内部会读文件解析 nodeID）之前生效
-	SetNodeIDFile(cfg.NodeIDFile)
+	nodeid.SetNodeIDFile(cfg.NodeIDFile)
 
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -124,8 +125,8 @@ func New(cfg *Config) (*Client, error) {
 
 	// 未显式指定时，以 node.id 文件为真相源解析并落盘（首次生成 / 锁定复用）。
 	if !explicitNodeID {
-		cfg.NodeID = EnsureNodeIDPersisted()
-		log.Printf("node.id file: %s (node ID %s)", nodeIDFile, cfg.NodeID)
+		cfg.NodeID = nodeid.EnsureNodeIDPersisted()
+		log.Printf("node.id file: %s (node ID %s)", nodeid.NodeIDFile(), cfg.NodeID)
 	}
 
 	var dial transport.DialFunc
@@ -479,11 +480,8 @@ func (c *Client) notifyManagers(tunnels []Tunnel) {
 		c.ser2netMgr.OnTunnelUpdate(ser2netConfigs)
 	}
 	if c.vpnMgr != nil {
-		vpnTypes := make([]string, 0, len(vpnConfigs))
-		for name := range vpnConfigs {
-			vpnTypes = append(vpnTypes, name)
-		}
-		c.vpnMgr.OnTunnelUpdate(vpnTypes, vpnConfigs)
+		// 架构审查 🔴3：vpn 的 OnTunnelUpdate 已收敛为单参数（原 []string 是 map 键集的冗余现拼）
+		c.vpnMgr.OnTunnelUpdate(vpnConfigs)
 	}
 	if c.websshMgr != nil {
 		c.websshMgr.OnTunnelUpdate(websshConfigs)

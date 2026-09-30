@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"moleAgent_client/internal/nodeid"
 	"moleAgent_client/internal/protocol"
 	"moleAgent_client/internal/proxy/ser2mq"
 	"moleAgent_client/internal/version"
@@ -42,8 +43,8 @@ func newStatusTestClient(t *testing.T) *Client {
 	// New 会把 cfg.NodeIDFile 写进包级全局（SetNodeIDFile），测试结束后
 	// t.TempDir 被删除——不恢复会让后续未显式指定 NodeIDFile 的测试
 	// 解析到已删除的路径（独立审查复核轮发现）
-	oldFile := nodeIDFile
-	t.Cleanup(func() { nodeIDFile = oldFile })
+	oldFile := nodeid.NodeIDFile()
+	t.Cleanup(func() { nodeid.SetNodeIDFile(oldFile) })
 
 	c, err := New(cfg)
 	if err != nil {

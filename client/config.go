@@ -1,6 +1,8 @@
 package moleAgent_client
 
 import (
+	"moleAgent_client/internal/nodeid"
+
 	"encoding/json"
 	"fmt"
 	"log"
@@ -142,7 +144,7 @@ func (c *Config) ApplyDefaults() {
 		c.Transport = "tcp"
 	}
 	if c.NodeID == "" {
-		c.NodeID = DefaultNodeID()
+		c.NodeID = nodeid.DefaultNodeID()
 	}
 	if c.NodeName == "" {
 		c.NodeName = c.NodeID
@@ -169,7 +171,7 @@ func (c *Config) Validate() error {
 	if c.Token == "" {
 		return fmt.Errorf("token is required")
 	}
-	if !ValidateNodeID(c.NodeID) {
+	if !nodeid.ValidateNodeID(c.NodeID) {
 		return fmt.Errorf("invalid node_id %q: must be exactly 8 alphanumeric characters starting with a letter", c.NodeID)
 	}
 

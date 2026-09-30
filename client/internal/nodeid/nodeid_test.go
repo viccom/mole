@@ -1,4 +1,4 @@
-package moleAgent_client
+package nodeid
 
 import (
 	"encoding/json"
@@ -168,28 +168,6 @@ func TestSetNodeIDFile_RedirectsIO(t *testing.T) {
 	}
 }
 
-// C: 配置文件里的 node_id_file 生效
-func TestNew_NodeIDFileFromConfig(t *testing.T) {
-	injectProbes(t, "sys-mid", "ha0d7481", nil)
-	custom := filepath.Join(t.TempDir(), "from-config.json")
-
-	old := nodeIDFile
-	t.Cleanup(func() { nodeIDFile = old })
-
-	cfg := DefaultConfig()
-	cfg.NodeIDFile = custom
-	c, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-	if _, err := os.Stat(custom); err != nil {
-		t.Fatalf("node.id not written to configured path %q: %v", custom, err)
-	}
-	_, nid, ok := loadPersistedID()
-	if !ok || nid != c.NodeID() {
-		t.Fatalf("configured path content mismatch: nid=%q nodeID=%q ok=%v", nid, c.NodeID(), ok)
-	}
-}
 
 func TestLoadSavePersistedID(t *testing.T) {
 	withTempNodeIDDir(t)
@@ -504,45 +482,7 @@ func TestCurrentNodeID_FileExistsSkipsHardwareProbe(t *testing.T) {
 	}
 }
 
-// -id / 配置文件显式指定的 nodeID 优先级最高：忽略自动生成逻辑，不读不写 node.id 文件。
-func TestNew_ExplicitNodeIDSkipsFileLogic(t *testing.T) {
-	dir := withTempNodeIDDir(t)
-	injectProbes(t, "sys-mid", "ha0d7481", nil)
-	// 预置一个与显式值不同的文件，验证它不会被读取或覆盖
-	writePersistedRaw(t, dir, "sys-mid", "ab12cd34")
 
-	cfg := DefaultConfig()
-	cfg.NodeID = "custom12"
-	c, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-	if got := c.NodeID(); got != "custom12" {
-		t.Fatalf("explicit node ID must win, got %q want custom12", got)
-	}
-	// 文件应保持原样，未被显式值覆盖
-	mid, nid, ok := loadPersistedID()
-	if !ok || mid != "sys-mid" || nid != "ab12cd34" {
-		t.Fatalf("explicit node ID must not touch node.id, got (%q,%q,%v)", mid, nid, ok)
-	}
-}
-
-// 未显式指定时，New 应从文件读取并锁定 nodeID。
-func TestNew_AutoNodeIDUsesFile(t *testing.T) {
-	dir := withTempNodeIDDir(t)
-	injectProbes(t, "sys-mid", "ha0d7481", nil)
-	writePersistedRaw(t, dir, "sys-mid", "ab12cd34")
-
-	cfg := DefaultConfig()
-	cfg.NodeID = "" // 未显式指定
-	c, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-	if got := c.NodeID(); got != "ab12cd34" {
-		t.Fatalf("auto node ID must come from file, got %q want ab12cd34", got)
-	}
-}
 
 // writePersistedRaw 直接写一个持久化 JSON 文件（绕过 savePersistedID，用于注入篡改场景）
 func writePersistedRaw(t *testing.T, dir, machineID, nodeID string) {

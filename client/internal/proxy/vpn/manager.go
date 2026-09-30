@@ -166,15 +166,18 @@ func (m *Manager) VNTChart(name string) (*VNTChartA, error) {
 	return pm.VNTChart()
 }
 
-// OnTunnelUpdate 处理隧道更新（从 tunnel_push 触发）
-func (m *Manager) OnTunnelUpdate(tunnelTypes []string, tunnelConfigs map[string]Config) {
+// OnTunnelUpdate 处理隧道更新（从 tunnel_push 触发）。
+// 架构审查 🔴3：此前签名为 (tunnelTypes []string, tunnelConfigs map[string]Config)，
+// tunnelTypes 恒为 map 的键集（调用方现拼），属冗余参数——收敛为单参数，
+// 与其余四个 Manager 的 OnTunnelUpdate(map[string]X) 形态一致。
+func (m *Manager) OnTunnelUpdate(tunnelConfigs map[string]Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 构建需要管理的隧道名称映射
-	needMgr := make(map[string]bool)
-	for _, t := range tunnelTypes {
-		needMgr[t] = true
+	// 需要管理的隧道 = 本次配置的键集
+	needMgr := make(map[string]bool, len(tunnelConfigs))
+	for name := range tunnelConfigs {
+		needMgr[name] = true
 	}
 
 	// 更新配置映射：移除已删除的，保存现有的

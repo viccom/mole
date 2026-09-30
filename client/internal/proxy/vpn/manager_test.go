@@ -24,7 +24,7 @@ func TestOnTunnelUpdateRefreshesExistingStoppedProcessConfig(t *testing.T) {
 		cfg:  oldCfg,
 	}
 
-	manager.OnTunnelUpdate([]string{"vpn-a"}, map[string]Config{
+	manager.OnTunnelUpdate(map[string]Config{
 		"vpn-a": newCfg,
 	})
 
