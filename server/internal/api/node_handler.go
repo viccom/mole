@@ -11,11 +11,10 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/crypto"
-	"moleAgent_Serv/internal/node"
 )
 
 type NodeHandler struct {
-	nodeMgr    *node.ShardedNodeManager
+	nodeMgr    core.NodeManager
 	nodeRepo   core.NodeRepo
 	tunnelSvc  core.TunnelConfigManager
 	controlSrv NodeControlServer
@@ -45,7 +44,7 @@ func (h *NodeHandler) SetP2PTokenRevoker(v P2PTokenRevoker) {
 	h.p2pRevoker = v
 }
 
-func NewNodeHandler(nodeMgr *node.ShardedNodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager, controlSrv NodeControlServer) *NodeHandler {
+func NewNodeHandler(nodeMgr core.NodeManager, nodeRepo core.NodeRepo, tunnelSvc core.TunnelConfigManager, controlSrv NodeControlServer) *NodeHandler {
 	return &NodeHandler{nodeMgr: nodeMgr, nodeRepo: nodeRepo, tunnelSvc: tunnelSvc, controlSrv: controlSrv}
 }
 

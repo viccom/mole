@@ -15,6 +15,17 @@ type NodeManager interface {
 	Disconnect(ctx context.Context, nodeID string) error
 }
 
+// NodeSessionProvider 节点会话获取接口（架构审查 🔴5c：api 层不应依赖
+// node.ShardedNodeManager 具体类型）。
+//
+// 返回 any 而非 *smux.Session：core 保持不引入传输库依赖，调用方做一次类型
+// 断言。这是「把传输协议对象泄漏限制在单一断言点」的折中；彻底下沉需把
+// WS↔smux 流桥接移入 tunnel 包。
+type NodeSessionProvider interface {
+	NodeManager
+	GetSession(ctx context.Context, nodeID string) (any, error)
+}
+
 // TunnelChangeResult 表示一次隧道配置变更在服务端和客户端两侧的落地结果
 type TunnelChangeResult struct {
 	Status       string

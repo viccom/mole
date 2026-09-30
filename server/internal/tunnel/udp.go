@@ -182,10 +182,16 @@ func (tg *TunnelGateway) StartUDP(ctx context.Context, tunnel core.Tunnel) error
 					continue
 				}
 
-				session, err := tg.nodeMgr.GetSession(tunnelCtx, node.ID)
+				sessionAny, err := tg.nodeMgr.GetSession(tunnelCtx, node.ID)
 				if err != nil {
 					tg.sem.Release()
 					slog.Error("Failed to get session for UDP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
+					continue
+				}
+				session, ok := smuxSessionOf(sessionAny)
+				if !ok {
+					tg.sem.Release()
+					slog.Error("Unexpected session type for UDP", "tunnel", tunnel.Name, "nodeId", node.ID)
 					continue
 				}
 				newStream, err := session.OpenStream()

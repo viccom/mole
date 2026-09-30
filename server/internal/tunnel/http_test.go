@@ -50,7 +50,7 @@ func (m *mockNodeProvider) GetAll(_ context.Context) []*core.Node {
 	return out
 }
 
-func (m *mockNodeProvider) GetSession(_ context.Context, nodeID string) (*smux.Session, error) {
+func (m *mockNodeProvider) GetSession(_ context.Context, nodeID string) (any, error) {
 	s, ok := m.sessions[nodeID]
 	if !ok {
 		return nil, smux.ErrTimeout

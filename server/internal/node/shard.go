@@ -164,8 +164,10 @@ func (m *ShardedNodeManager) RemoveSession(_ context.Context, nodeID string) {
 	shard.mu.Unlock()
 }
 
-// GetSession 在分片锁保护下获取节点的 smux Session
-func (m *ShardedNodeManager) GetSession(_ context.Context, nodeID string) (*smux.Session, error) {
+// GetSession 在分片锁保护下获取节点的 smux Session。
+// 返回 any 以满足 core.NodeSessionProvider（架构审查 🔴5c：让 api 层依赖
+// core 接口而非本包具体类型）；实现仍返回 *smux.Session，调用方断言取用。
+func (m *ShardedNodeManager) GetSession(_ context.Context, nodeID string) (any, error) {
 	shard := m.getShard(nodeID)
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()

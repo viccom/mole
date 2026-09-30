@@ -64,9 +64,16 @@ func cleanupDeadNodes(ctx context.Context, mgr *ShardedNodeManager, onDisconnect
 			//（probeOldSession → Remove → Add → AddSession），当前会话已是新会话。
 			// 不加复查会把刚注册成功的新节点连同新会话一起清掉，客户端自认在线
 			// 而路由全断。会话缺失（临时无表项）维持原语义继续清理
-			if cur, err := mgr.GetSession(ctx, dn.id); err == nil && cur != dn.sess {
-				slog.Debug("Skip dead node cleanup: session replaced", "nodeId", dn.id)
-				continue
+			if cur, err := mgr.GetSession(ctx, dn.id); err == nil {
+				// GetSession 返回 any（core.NodeSessionProvider，架构审查 🔴5c）：
+				// 必须断言后比较，否则 any(*smux.Session) 与 *smux.Session 类型不等，
+				// 会把已置换的新会话误判为「未置换」而错误清理健康节点。
+				// 断言失败（类型异常）保守跳过清理，宁可漏清不可误清
+				s, ok := cur.(*smux.Session)
+				if !ok || s != dn.sess {
+					slog.Debug("Skip dead node cleanup: session replaced", "nodeId", dn.id)
+					continue
+				}
 			}
 			if err := mgr.Disconnect(ctx, dn.id); err != nil {
 				slog.Warn("Failed to disconnect dead node", "nodeId", dn.id, "error", err)

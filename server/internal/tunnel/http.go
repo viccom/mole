@@ -248,9 +248,15 @@ func (tg *TunnelGateway) handleHTTPProxy(w http.ResponseWriter, r *http.Request,
 	tg.stats.ConnOpened(sKey)
 	defer tg.stats.ConnClosed(sKey)
 
-	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
+	sessionAny, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
 	if err != nil {
 		slog.Error("Failed to get session for HTTP", "tunnel", tunnelName, "nodeId", node.ID, "error", err)
+		http.Error(w, "Upstream error", http.StatusBadGateway)
+		return
+	}
+	session, ok := smuxSessionOf(sessionAny)
+	if !ok {
+		slog.Error("Unexpected session type for HTTP", "tunnel", tunnelName, "nodeId", node.ID)
 		http.Error(w, "Upstream error", http.StatusBadGateway)
 		return
 	}
@@ -337,9 +343,15 @@ func (tg *TunnelGateway) handleWebSocketGateway(w http.ResponseWriter, r *http.R
 	tg.stats.ConnOpened(sKey)
 	defer tg.stats.ConnClosed(sKey)
 
-	session, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
+	sessionAny, err := tg.nodeMgr.GetSession(r.Context(), node.ID)
 	if err != nil {
 		slog.Error("Failed to get session for WS", "tunnel", tunnelName, "nodeId", node.ID, "error", err)
+		http.Error(w, "Upstream error", http.StatusBadGateway)
+		return
+	}
+	session, ok := smuxSessionOf(sessionAny)
+	if !ok {
+		slog.Error("Unexpected session type for WS", "tunnel", tunnelName, "nodeId", node.ID)
 		http.Error(w, "Upstream error", http.StatusBadGateway)
 		return
 	}

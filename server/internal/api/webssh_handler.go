@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/xtaci/smux"
 
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
-	"moleAgent_Serv/internal/node"
 	"mole/shared/proto"
 )
 
@@ -56,10 +56,10 @@ var websshUpgrader = websocket.Upgrader{
 
 // WebSSHHandler 处理 WebSSH WebSocket 连接
 type WebSSHHandler struct {
-	nodeMgr *node.ShardedNodeManager
+	nodeMgr core.NodeSessionProvider
 }
 
-func NewWebSSHHandler(nodeMgr *node.ShardedNodeManager) *WebSSHHandler {
+func NewWebSSHHandler(nodeMgr core.NodeSessionProvider) *WebSSHHandler {
 	return &WebSSHHandler{nodeMgr: nodeMgr}
 }
 
@@ -120,8 +120,15 @@ func (h *WebSSHHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-		// 打开 smux 流
-		stream, err := session.OpenStream()
+		// 打开 smux 流（会话经 core.NodeSessionProvider 返回 any，断言取回；
+		// 架构审查 🔴5c——api 层依赖 core 窄接口而非 node 具体类型）
+		sess, ok := session.(*smux.Session)
+		if !ok {
+			slog.Error("WebSSH: unexpected session type", "tunnel", tunnelName, "nodeId", targetNode.ID)
+			ResponseError(w, http.StatusBadGateway, 502, "node session unavailable")
+			return
+		}
+		stream, err := sess.OpenStream()
 		if err != nil {
 			slog.Error("WebSSH: failed to open stream", "tunnel", tunnelName, "nodeId", targetNode.ID, "error", err)
 			ResponseError(w, http.StatusBadGateway, 502, "failed to open stream to client")

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xtaci/smux"
 
 	"moleAgent_Serv/internal/core"
 )
@@ -41,7 +40,7 @@ func (f *flipNodeProvider) GetAll(_ context.Context) []*core.Node {
 	return []*core.Node{f.nB}
 }
 
-func (f *flipNodeProvider) GetSession(_ context.Context, _ string) (*smux.Session, error) {
+func (f *flipNodeProvider) GetSession(_ context.Context, _ string) (any, error) {
 	return nil, errors.New("no session")
 }
 

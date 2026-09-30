@@ -14,12 +14,11 @@ import (
 	"moleAgent_Serv/internal/auth"
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/crypto"
-	"moleAgent_Serv/internal/node"
 	"moleAgent_Serv/internal/ratelimit"
 )
 
 type TunnelHandler struct {
-	nodeMgr    *node.ShardedNodeManager
+	nodeMgr    core.NodeManager
 	tunnelSvc  core.TunnelConfigManager // 隧道配置单一变更入口
 	stats      core.TunnelStatsReader   // 运行时统计读取
 	limiter    ratelimit.GatewayLimiter // 限速配置读取
@@ -31,7 +30,7 @@ type ControlServer interface {
 	TriggerTunnelAction(ctx context.Context, nodeID, name, action string) error
 }
 
-func NewTunnelHandler(nodeMgr *node.ShardedNodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor, controlSrv ControlServer) *TunnelHandler {
+func NewTunnelHandler(nodeMgr core.NodeManager, tunnelSvc core.TunnelConfigManager, stats core.TunnelStatsReader, limiter ratelimit.GatewayLimiter, encryptor *crypto.SecretEncryptor, controlSrv ControlServer) *TunnelHandler {
 	return &TunnelHandler{
 		nodeMgr:    nodeMgr,
 		tunnelSvc:  tunnelSvc,

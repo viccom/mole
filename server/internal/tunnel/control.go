@@ -156,6 +156,14 @@ type listenTarget struct {
 // NewControlServer 创建控制端口服务。
 // 两个安全开关默认开启（与 config.NodeAuthConfig 默认一致），
 // 经 SetNodeAuthOptions 由配置注入覆盖
+// smuxSessionOf 从 core.NodeSessionProvider 返回的 any 中取回 *smux.Session
+// （架构审查 🔴5c：接口返回 any 以保持 core 不引入传输库；本包直接用 smux，
+// 断言失败视为会话不可用）
+func smuxSessionOf(v any) (*smux.Session, bool) {
+	s, ok := v.(*smux.Session)
+	return s, ok
+}
+
 func NewControlServer(addr string, transport Transport, nodeMgr *node.ShardedNodeManager, nodeToken string, nodeRepo core.NodeRepo) *ControlServer {
 	return &ControlServer{
 		addr:                addr,
@@ -964,8 +972,12 @@ const probeOldSessionTimeout = 8 * time.Second
 // probeOldSession 通过旧 smux session 向旧客户端发送 tunnel_push 并等待响应。
 // probeOldSessionTimeout 内有响应说明旧客户端真活；否则判定为假死。
 func (cs *ControlServer) probeOldSession(ctx context.Context, nodeID string, tunnels []core.Tunnel) bool {
-	sess, err := cs.nodeMgr.GetSession(ctx, nodeID)
+	sessAny, err := cs.nodeMgr.GetSession(ctx, nodeID)
 	if err != nil {
+		return false
+	}
+	sess, ok := smuxSessionOf(sessAny)
+	if !ok {
 		return false
 	}
 
@@ -1022,9 +1034,13 @@ func writeControlRespTs(w interface{ Write([]byte) (int, error) }, cmd, msg stri
 
 // sendToNode 向指定节点发送命令并等待响应（通用 S→C 方法）
 func (cs *ControlServer) sendToNode(ctx context.Context, nodeID string, cmd ControlCmd, timeout time.Duration) (*ControlResponse, error) {
-	session, err := cs.nodeMgr.GetSession(ctx, nodeID)
+	sessionAny, err := cs.nodeMgr.GetSession(ctx, nodeID)
 	if err != nil {
 		return nil, err
+	}
+	session, ok := smuxSessionOf(sessionAny)
+	if !ok {
+		return nil, core.ErrNodeOffline
 	}
 
 	stream, err := session.OpenStream()
@@ -1171,9 +1187,13 @@ func (cs *ControlServer) persistNode(n *core.Node) {
 
 // PushTunnelUpdate 通过 smux 会话向指定节点推送隧道配置更新
 func (cs *ControlServer) PushTunnelUpdate(ctx context.Context, nodeID string, tunnels []core.Tunnel) error {
-	session, err := cs.nodeMgr.GetSession(ctx, nodeID)
+	sessionAny, err := cs.nodeMgr.GetSession(ctx, nodeID)
 	if err != nil {
 		return err
+	}
+	session, ok := smuxSessionOf(sessionAny)
+	if !ok {
+		return core.ErrNodeOffline
 	}
 
 	stream, err := session.OpenStream()

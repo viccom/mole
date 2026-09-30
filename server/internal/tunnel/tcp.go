@@ -92,9 +92,14 @@ func (tg *TunnelGateway) handleTCPConn(ctx context.Context, conn net.Conn, tunne
 		return
 	}
 
-	session, err := tg.nodeMgr.GetSession(ctx, node.ID)
+	sessionAny, err := tg.nodeMgr.GetSession(ctx, node.ID)
 	if err != nil {
 		slog.Error("Failed to get session for TCP", "tunnel", tunnel.Name, "nodeId", node.ID, "error", err)
+		return
+	}
+	session, ok := smuxSessionOf(sessionAny)
+	if !ok {
+		slog.Error("Unexpected session type for TCP", "tunnel", tunnel.Name, "nodeId", node.ID)
 		return
 	}
 	stream, err := session.OpenStream()

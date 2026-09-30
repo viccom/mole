@@ -7,7 +7,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/xtaci/smux"
 
 	"moleAgent_Serv/internal/core"
 	"moleAgent_Serv/internal/ratelimit"
@@ -164,11 +163,13 @@ func (s *Semaphore) Release() {
 	<-s.ch
 }
 
-// NodeProvider 节点只读查询接口（由 tunnel 包定义，解耦具体实现）
+// NodeProvider 节点只读查询接口（由 tunnel 包定义，解耦具体实现）。
+// GetSession 返回 any 以与 core.NodeSessionProvider 对齐（架构审查 🔴5c）；
+// 本包内统一经 smuxSessionOf 断言取回 *smux.Session。
 type NodeProvider interface {
 	Get(ctx context.Context, nodeID string) (*core.Node, bool)
 	GetAll(ctx context.Context) []*core.Node
-	GetSession(ctx context.Context, nodeID string) (*smux.Session, error)
+	GetSession(ctx context.Context, nodeID string) (any, error)
 }
 
 // TunnelGateway 隧道网关
