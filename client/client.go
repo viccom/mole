@@ -59,9 +59,10 @@ type Client struct {
 	mu      sync.RWMutex
 	tunnels []Tunnel
 
-	ctrlMu  sync.Mutex     // 控制命令发送锁
-	tunReqs chan tunnelReq // 隧道更新请求队列
-	cancel  context.CancelFunc
+	ctrlMu   sync.Mutex     // 控制命令发送锁
+	tunReqs  chan tunnelReq // 隧道更新请求队列
+	cancel   context.CancelFunc
+	cancelMu sync.Mutex // 保护 cancel：Run 写 / Close 读跨 goroutine，无锁即数据竞争
 
 	// closed 在 Run 退出 / Close 时关闭，用于唤醒阻塞在 requestTunnelMutation
 	// 等待应答的调用方（连接断开后 processTunnelUpdates 不再消费队列）。
@@ -192,8 +193,11 @@ func New(cfg *Config) (*Client, error) {
 
 // Run 连接服务端并运行主循环（阻塞，直到 ctx 取消）
 func (c *Client) Run(ctx context.Context) error {
-	ctx, c.cancel = context.WithCancel(ctx)
-	defer c.cancel()
+	ctx, cancel := context.WithCancel(ctx)
+	c.cancelMu.Lock()
+	c.cancel = cancel
+	c.cancelMu.Unlock()
+	defer cancel()
 	defer c.closedOnce.Do(func() { close(c.closed) })
 
 	// 通知各管理器当前节点 ID（在隧道更新前就绪）
@@ -269,8 +273,11 @@ func (c *Client) Run(ctx context.Context) error {
 
 // Close 优雅关闭
 func (c *Client) Close() {
-	if c.cancel != nil {
-		c.cancel()
+	c.cancelMu.Lock()
+	cancel := c.cancel
+	c.cancelMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 	c.closedOnce.Do(func() { close(c.closed) })
 	// 终态关闭必须锁存（防在途 Connect 发布幽灵会话）；
