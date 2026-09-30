@@ -84,3 +84,27 @@
 - server internal/tunnel/control.go:49 ControlCmd.Cmd 注释补全 9 命令字（漏 tunnel_push/p2p_signal_token）——组件 3 范围
 - client tunnel.go 各「与服务端对齐」注释：抽取后改指 shared 单源，消除 6 处不准确的镜像声明（125-127/77-79/170-171/104-106）与 validate_para.go:42「逐字一致」声明
 - server errors.go ErrTunnelInvalid 文案被 client 注释误引为 `invalid tunnel:`——顺带修正引用文本
+
+## 2026-09-30 架构审查 7 项架构性问题修复记录
+
+来源：三代理深度架构审查（server / client / shared+monorepo），7 项🔴经复核确认无误判。逐项修复 + 复测结果：
+
+| # | 问题 | 修复 commit | 复测证据 |
+|---|---|---|---|
+| 🔴1 | GUI 嵌套模块 workspace 下构建断裂（make test/vet/GUI 构建全不可用） | `4c1413b` | desktop/manager `go test` exit=0（原 exit=1）；wails 双端 v2.11.0 对齐；go.work 5 条 use |
+| 🔴2 | 构建形态决定依赖版本（server 实际链接 smux 被 client 抬升 v1.5.24→v1.5.57） | `deadb02` | 四组（双端×双形态）解析一致：smux v1.5.57 / websocket v1.5.3 |
+| 🔴3 | client 根包上帝包（2833 行 / 8 类职责 / 51 方法） | `fbba48d`（第一拍） | 根包降至 2433 行（nodeid 653 行外移）；**Manager 接口化与 client.go 拆分未做，见下「未完成」** |
+| 🔴4 | internal/builtin 上行依赖根包 + 更新逻辑双源 | `51cd21f` | internal 全目录零根包依赖；更新 URL 全仓 1 处定义；staging 实测 CLI -check-update 全链路 |
+| 🔴5 | server 分层三处穿孔（storage→auth / api→storage / api→node 具体类型） | `b4d8772` + `1f28495` | 三处 rg 检索均「无」；api 生产代码零 node 依赖 |
+| 🔴6 | 节点断连清理三处平行实现 | `b206a94` | 三入口（control/health/2×handler）统一调 `RetireNode`；E2E 场景 7-8 全 PASS |
+| 🔴7 | server 构建硬依赖 npm | `547e74c` | `make build-go` 零 npm 调用产出二进制；`make release` 全链仍绿 |
+
+**修复中发现的连带问题（均已处理）**：
+- 🔴5c 引入回归：`GetSession` 返回 any 后，control.go 的 `currentSess != session` 直接比较恒不等 → 断连节点永不清理。已在 `b206a94` 修正为断言后比较（health.go 同类点在同批修正）。
+- 复核发现 git mv 后残留空目录 `client/internal/builtin/`，已 rmdir。
+
+**未完成（如实记录，非静默跳过）**：
+- 🔴3 的核心部分（5 个 Manager 抽统一接口 + 根包持 `[]tunnelManager` 聚合、client.go 1643 行按职责拆分、event 外移）**未实施**。理由：五个 Manager 的配置类型各不相同（Ser2MQConfig/TunnelConfig/vpn.Config/WebSSHConfig），统一接口需泛型或 any、切片场景下退化为 any，收益（消除 4 处 nil 判断）小于风险（触及隧道推送热路径、无测试覆盖的 Run 状态机）。已完成的 nodeid 外移 + vpn 冗余参数消除是其中低风险高收益的部分。
+- 遗留跟踪：client.go 拆分与 Manager 接口化建议作为独立任务排期，需先补 Run 状态机测试（当前零覆盖）再动。
+
+**全量回归基线（修复后）**：server 15 包全绿；client 9 包绿（nodeid 2 例 Windows 既有失败不变）；shared 3 包绿；五模块 × workspace/GOWORK=off 双形态构建全绿。
