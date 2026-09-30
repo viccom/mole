@@ -529,7 +529,12 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 				displaced := false
 				if _, ok := cs.nodeMgr.Get(ctx, node.ID); !ok {
 					displaced = true
-				} else if currentSess, err := cs.nodeMgr.GetSession(ctx, node.ID); err != nil || currentSess != session {
+				} else if currentSess, err := cs.nodeMgr.GetSession(ctx, node.ID); err != nil {
+					displaced = true
+				} else if cur, ok := smuxSessionOf(currentSess); !ok || cur != session {
+					// GetSession 返回 any（core.NodeSessionProvider，架构审查 🔴5c）：
+					// 必须断言后比较——any(*smux.Session) 与 *smux.Session 类型不等，
+					// 直接比较会恒判 displaced，导致断连节点永不清理（回归）
 					displaced = true
 				}
 
@@ -538,10 +543,8 @@ func (cs *ControlServer) setupSmuxAndAccept(ctx context.Context, conn net.Conn, 
 				} else {
 					tunnels := append([]core.Tunnel(nil), node.Tunnels...)
 
-					cs.nodeMgr.Update(ctx, node.ID, func(n *core.Node) {
-						n.Status = core.NodeStatusOffline
-					})
-					cs.nodeMgr.Remove(ctx, node.ID)
+					// 统一退出编排（架构审查 🔴6：标记离线+移除+关会话唯一入口）
+					cs.nodeMgr.RetireNode(ctx, node.ID)
 
 					if cs.onNodeDisconnect != nil {
 						cs.onNodeDisconnect(node.ID, tunnels)

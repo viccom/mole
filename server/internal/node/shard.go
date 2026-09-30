@@ -79,6 +79,28 @@ func (m *ShardedNodeManager) Remove(_ context.Context, nodeID string) error {
 	return nil
 }
 
+// RetireNode 统一的节点退出编排（架构审查 🔴6）：把「标记离线 → 从管理器移除
+// → 关闭会话」这组领域操作收敛为唯一入口，供三个触发点复用：
+//   - tunnel 控制面：smux 会话结束（经会话置换判定后）
+//   - node 健康检查：心跳超时（经会话代际复查后）
+//   - api 管理面：管理员断开/删除节点
+//
+// 调用方负责各自的触发前判定（置换/代际/归属检查）与触发后副作用
+// （释放监听器索引统计、吊销凭据、持久层删除）——那些是各入口的真实差异，
+// 不应混进本函数。返回 false 表示节点已不存在（幂等，非错误）。
+func (m *ShardedNodeManager) RetireNode(ctx context.Context, nodeID string) bool {
+	if _, ok := m.Get(ctx, nodeID); !ok {
+		return false
+	}
+	// 先置离线再移除：Remove 后节点已不可见，离线态无处落
+	if err := m.Update(ctx, nodeID, func(n *core.Node) {
+		n.Status = core.NodeStatusOffline
+	}); err != nil {
+		return false
+	}
+	return m.Remove(ctx, nodeID) == nil
+}
+
 // snapshotNode 返回节点快照副本：Tunnels/ClientStatuses 等切片字段由写方在
 // 分片锁内整体替换，锁释放后调用方持活指针裸读字段构成数据竞争
 //（API 序列化、RebuildIndex 遍历、断连清理拷贝均发生在锁外）

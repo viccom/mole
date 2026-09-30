@@ -322,7 +322,8 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		h.nodeMgr.Disconnect(r.Context(), id)
+		// 统一退出编排（架构审查 🔴6）；此处为「断开连接」语义，不动持久层
+		h.nodeMgr.RetireNode(r.Context(), id)
 		ResponseOK(w, "disconnected")
 		return
 	}
@@ -351,7 +352,8 @@ func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	tunnels := make([]core.Tunnel, 0, len(memoryTunnels)+len(persistedTunnels))
 	tunnels = append(tunnels, memoryTunnels...)
 	tunnels = append(tunnels, persistedTunnels...)
-	h.nodeMgr.Disconnect(r.Context(), id)
+	// 统一退出编排（架构审查 🔴6）；随后删持久层并吊销凭据（本入口特有副作用）
+	h.nodeMgr.RetireNode(r.Context(), id)
 	if err := h.nodeRepo.Delete(id); err != nil {
 		// 删除失败仍回 "deleted" 会让节点在重启后复活，管理员毫无察觉
 		slog.Error("Failed to persist node delete", "nodeId", id, "error", err)

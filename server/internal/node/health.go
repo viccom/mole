@@ -75,11 +75,10 @@ func cleanupDeadNodes(ctx context.Context, mgr *ShardedNodeManager, onDisconnect
 					continue
 				}
 			}
-			if err := mgr.Disconnect(ctx, dn.id); err != nil {
-				slog.Warn("Failed to disconnect dead node", "nodeId", dn.id, "error", err)
-			} else {
-				slog.Warn("Cleaned up dead node", "nodeId", dn.id, "reason", "heartbeat timeout")
-			}
+			// 统一退出编排（架构审查 🔴6：标记离线+移除+关会话唯一入口）；
+			// 触发前已做会话代际复查，触发后仍需释放监听器/索引/统计
+			mgr.RetireNode(ctx, dn.id)
+			slog.Warn("Cleaned up dead node", "nodeId", dn.id, "reason", "heartbeat timeout")
 			if onDisconnect != nil && len(dn.tunnels) > 0 {
 				onDisconnect(dn.id, dn.tunnels)
 			}

@@ -13,6 +13,9 @@ type NodeManager interface {
 	GetAll(ctx context.Context) []*Node
 	Update(ctx context.Context, nodeID string, fn func(*Node)) error
 	Disconnect(ctx context.Context, nodeID string) error
+	// RetireNode 统一退出编排（标记离线→移除→关会话）；架构审查 🔴6：
+	// 三个节点清理入口（会话结束/心跳超时/管理面断开）复用此唯一入口
+	RetireNode(ctx context.Context, nodeID string) bool
 }
 
 // NodeSessionProvider 节点会话获取接口（架构审查 🔴5c：api 层不应依赖
