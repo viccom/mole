@@ -496,3 +496,37 @@ func TestErrorIdentifiability(t *testing.T) {
 		t.Errorf("wrapped ErrHandshake not identifiable")
 	}
 }
+
+// ---- 9. timeout<=0 必须立即拒绝（公共 API 防御，审查修复 M3）----
+// 非正超时若被静默接受，握手将在 stalled peer 下无限期阻塞（占死调用方
+// goroutine / 服务端 worker）。护栏：2s 内不返回即判失败而非挂死测试。
+
+func TestHandshakeTimeoutMustBePositive(t *testing.T) {
+	cliRaw, _ := pipePair(t) // 对端无人读：msg1 写入即阻塞
+	done := make(chan error, 1)
+	go func() {
+		_, err := UpgradeInitiator(cliRaw, bytes.NewReader(nil), testPSK("t"), 0)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		assertHsErr(t, "zero timeout", err)
+		if !strings.Contains(err.Error(), "positive") {
+			t.Errorf("error should name the constraint, got %q", err.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout=0 blocked without deadline (guard fired) — 必须立即拒绝而非无限期挂住")
+	}
+	// 负数同理
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := UpgradeResponder(cliRaw, bytes.NewReader(nil), testPSK("t"), -1)
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		assertHsErr(t, "negative timeout", err)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout=-1 blocked without deadline (guard fired)")
+	}
+}

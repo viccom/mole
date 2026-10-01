@@ -114,11 +114,15 @@ func upgrade(conn net.Conn, reader io.Reader, psk []byte, timeout time.Duration,
 	if len(psk) != 32 {
 		return nil, fail(fmt.Errorf("psk must be 32 bytes (sha256(token)), got %d", len(psk)))
 	}
+	// 非正超时直接拒绝：本包是双端共用的公共 API，静默接受会让 stalled peer
+	// 下的握手无限期阻塞（占死调用方 goroutine / 服务端同步 worker）。
+	// 两个现有调用方均传 10s，此处为防御边界。
+	if timeout <= 0 {
+		return nil, fail(fmt.Errorf("handshake timeout must be positive, got %v", timeout))
+	}
 	// 超时预算覆盖握手全程（读写双向），成功后清除（进入 smux 前必须无残留 deadline）
-	if timeout > 0 {
-		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-			return nil, fail(fmt.Errorf("set handshake deadline: %v", err))
-		}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, fail(fmt.Errorf("set handshake deadline: %v", err))
 	}
 	hs, err := newHandshakeState(psk, initiator)
 	if err != nil {
