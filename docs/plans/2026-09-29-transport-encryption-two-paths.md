@@ -248,6 +248,8 @@ B. ok 缺 enc 字段（旧服务端 / enabled=false）:
 3. `-enc` 旗标用 `flag.Visit` 仅显式传入时覆盖——无条件赋值会把配置文件 `"enc":"off"` 静默翻回 on。
 4. require 拒绝日志无 node_id（此刻客户端尚匿名，register 在 smux 之后）；带 remote/transport/userId，关键词 `channel encryption required` 不变。
 
-**E2E 覆盖对照（B.6 → 实跑）**：① sc18/sc24（enabled/require）② sc20 ③ sc21 ④ sc19 ⑤ sc23（corrupt msg2：握手失败=6、注册成功=0、回落 WARN=0）⑥ sc22（剥认证行 enc：明文仍可用、WARN 恰 1——残余风险演示）⑧ sc19（enabled=false 零接触回滚）。**未覆盖**：⑦ ws/kcp 传输升级链路（后续补）；抓包级密文验证以日志/行为断言代替；「剥 enc × require」未单列（sc21 等价覆盖 require 拒绝语义）。单测侧：双端协商/回落/硬断/psk 错配/穿针/限频全覆盖（server `channel_enc_test.go` 8 场景 + client `dialer_enc_test.go` 6 场景 + noisechan 8 类），`-race` 全绿。
+**E2E 覆盖对照（B.6 → 实跑）**：① sc18/sc24（enabled/require）② sc20 ③ sc21 ④ sc19 ⑤ sc23（corrupt msg2：握手失败=6、注册成功=0、回落 WARN=0）⑥ sc22（剥认证行 enc：明文仍可用、WARN 恰 1——残余风险演示）⑧ sc19（enabled=false 零接触回滚）。**未覆盖**：⑦ ws/kcp 传输升级链路（后续补）；抓包级密文验证以日志/行为断言代替；「剥 enc × require」未单列（sc21 等价覆盖 require 拒绝语义）。单测侧：双端协商/回落/硬断/psk 错配/穿针/限频全覆盖（server `channel_enc_test.go` 9 场景 + client `dialer_enc_test.go` 5 场景 + config 2 项 + noisechan 9 类），`-race` 全绿。
+
+**审查复审修复轮（2026-10-01，深度审查 + 逐条复验后 5 项修复）**：M1 require 拒绝谓词改按「服务端供给能力」判定（`canEncrypt = wantEnc && enabled && len(psk)==32` 先行；原谓词被客户端 enc:1 短路，require+enabled=false 或 psk≠32 时放出静默明文会话——后者经非 32 字节 TokenHash 记录可达，修正了首轮审查"不可达"的误判）；M2 客户端 useTLS 判定与 WS dialer 同口径（`Config.effectiveTransportTLS()`：wss:// 前缀并入，消除已加密连接上的误导性明文回落 WARN）；M3 noisechan 非正握手超时直接拒绝（原 timeout<=0 静默无 deadline，护栏测试实证阻塞）；H1 双 GUI 模块 go.sum 补 flynn/noise 条目（desktop GOWORK=off 构建断裂复现 exit=1，验证矩阵补 GUI GOWORK=off 腿）；Low：握手最小帧注释 48 字节纠错（官方向量实证）、fail() 双 %w（内层哨兵可 errors.Is）、EncMode 取值引 transport 常量、本节测试计数纠错。
 
 **部署提醒（B.5 路线的既有约束）**：上线顺序自由（谁先谁后都不断链）；收口 `require=true` 前须确认全量 `enc=true` 且无明文 WARN；回滚 = 服务端 `MA_CHANNEL_ENC_ENABLED=false` 或 yaml 关闭，新客户端下次重连自动回落，零接触。

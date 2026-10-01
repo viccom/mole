@@ -147,3 +147,19 @@
 **验证**：双端 vet/build/test -race/GOWORK=off 全绿（client nodeid 2 例 Windows 既有基线失败不变）；GUI 两模块绿；client -tags p2p 绿；E2E WSL 24 场景 PASS=27 FAIL=0（sc1-17 无回归）。未覆盖如实记录：ws/kcp 传输升级链路、tcpdump 级密文验证（以日志/行为断言代替）。
 
 **部署边界**：上线顺序自由、回滚零接触（服务端关 enabled 即全舰队自动回落）；`MA_CHANNEL_ENC_ENABLED/REQUIRE` env 可免改配置文件切换。
+
+## 2026-10-01 通道加密实施审查复审 + 5 项修复
+
+**背景**：方案 B 实施后深度审查（3 路子代理）+ 主会话逐条复验（临时红测试实证后即删），确认 4 项实缺陷 + Low 若干；修复清单经负责人批准逐项执行（b7100c9/e44bce4/6e83b51/79dae84/144c3b7）。
+
+| # | 缺陷（复验方式） | 修复 |
+|---|---|---|
+| M1 | require 拒绝谓词按客户端意愿（enc:1 短路）判定，require+enabled=false（SetChannelEncryption 直调可绕配置校验）或 psk≠32（**经非 32 字节 TokenHash 记录可达——修正首轮审查"不可达"误判**，node_access_auth 对畸形 hash 返回 psk=nil 不阻断认证）时 enc:1 客户端获静默明文 ok（红测试实证 cmd=ok） | 谓词改按供给能力：`canEncrypt := wantEnc && enabled && len(psk)==32` 先行；wantEnc=true 的拒绝文案带供给不闭环提示，关键词保持稳定；+2 负向测试（nilPSK 认证桩变体） |
+| M2 | useTLS 判定与 WS dialer 不同口径：wss:// 前缀 + tls=false（Validate 只拦反向组合，可达）→ 已加密连接发 enc 位 + 误导性 plaintext fallback WARN（污染收口对账判据） | `Config.effectiveTransportTLS()`（UseTLS ∥ ws+wss:// 前缀，与 dialer 同口径），装配点改用；6 组合单测 |
+| M3 | noisechan `timeout<=0` 静默无 deadline（护栏测试实证阻塞挂住） | 非正超时直接 fail()；防挂死护栏测试入库 |
+| H1 | desktop go.sum 缺 flynn/noise：GOWORK=off 构建实测 exit=1（workspace 模式掩盖；manager go.sum 同缺但导入链不触达侥幸能编）——五模块 GOWORK=off 门（4c1413b）回归 | 双 GUI 模块 tidy；验证矩阵自此含 GUI GOWORK=off 腿（本次五模块全绿） |
+| Low | 握手最小帧注释 32B 失实（官方向量 48B）、fail() 内层 %v 丢哨兵（现无消费方，加固）、on/off 字面量双处、B.10 测试计数（8/6 实为 7→9/5） | 随手修（79dae84 + B.10 修正段） |
+
+**复验对首轮审查的两处修正**：psk≠32 组合判「可达」而非「不可达」（数据异常路径真实存在）；%v 丢哨兵判「latent 加固」而非缺陷（全仓无 errors.Is 消费方，注释明说靠文案前缀）。
+
+**验证**：双端 vet/build/test 全绿（client 仅 nodeid 2 例 Windows 既有基线）、-race 绿、-tags p2p 绿、**五模块 GOWORK=off 全绿（含修复的 GUI 两模块）**、WSL E2E 1-24 重跑 **PASS=27 FAIL=0**（修复后二进制，sc21/sc24 双方向实证 M1 无回归）。
