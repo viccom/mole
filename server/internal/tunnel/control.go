@@ -486,12 +486,19 @@ func (cs *ControlServer) completeAuthConnection(ctx context.Context, conn net.Co
 	transportEncrypted := transportName == "tls" || transportName == "wss"
 	wantEnc := authMsg.Enc == proto.EncProtocolV1 && !transportEncrypted
 
-	// require 收口拒绝：认证已通过但客户端未请求加密升级（旧版本/enc=off）。
-	// 位于 authOK 之前且不触碰 limiter——被拒者是合法节点（只是版本旧），
-	// 计入 authFail 会在攻击下误锁合法节点（SEC-13 语义是「提交凭据被拒/通过」）
-	if cs.channelRequire && !wantEnc && !transportEncrypted {
-		writeControlResp(conn, proto.RespErr, "channel encryption required")
-		slog.Warn("channel encryption required", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID)
+	// require 收口拒绝：按「服务端供给能力」而非「客户端意愿」判定——客户端
+	// 请求了 enc 但供给不闭环（enabled=false 绕过配置校验直调 / 认证路径 psk
+	// 异常）时同样必须拒绝，否则 enc:1 客户端会在 require 态拿到静默明文会话。
+	// 位于 authOK 之前且不触碰 limiter——被拒者是合法节点（版本旧或服务端配置
+	// 异常），计入 authFail 会在攻击下误锁合法节点（SEC-13 语义是「提交凭据被拒/通过」）
+	canEncrypt := wantEnc && cs.channelEncEnabled && len(psk) == 32
+	if cs.channelRequire && !transportEncrypted && !canEncrypt {
+		reason := "channel encryption required"
+		if wantEnc {
+			reason = "channel encryption required but server cannot provide it (check enabled/psk)"
+		}
+		writeControlResp(conn, proto.RespErr, reason)
+		slog.Warn("channel encryption required", "remote", remoteAddr, "transport", transportName, "userId", grant.UserID, "client_requested_enc", wantEnc)
 		conn.Close()
 		return
 	}
@@ -503,7 +510,7 @@ func (cs *ControlServer) completeAuthConnection(ctx context.Context, conn net.Co
 	// 持有同一 reader 做连接全生命周期的分帧读，直接透传
 	sessionConn := net.Conn(&bufferedConn{Conn: conn, reader: reader})
 	encUpgraded := false
-	if wantEnc && cs.channelEncEnabled && len(psk) == 32 {
+	if canEncrypt {
 		// ok-with-enc 应答：writeControlResp 不支持 Enc 字段，需构造完整
 		// ControlResponse 走 writeJSONLine（Enc 为 omitempty 指针，缺席即旧语义）
 		resp := ControlResponse{Cmd: proto.RespOK, Msg: "authenticated", Enc: &proto.EncCapability{V: proto.EncProtocolV1}}
@@ -525,10 +532,10 @@ func (cs *ControlServer) completeAuthConnection(ctx context.Context, conn net.Co
 		sessionConn = noiseConn
 		encUpgraded = true
 	} else {
-		if wantEnc && cs.channelEncEnabled && len(psk) != 32 {
-			// 客户端请求了加密但认证路径未产出合法 psk（legacy 路径/记录异常）：
-			// 回无 enc 的 ok（客户端按旧服务端信号回落明文），DEBUG 留观测
-			slog.Debug("Channel encryption requested but no valid psk from auth", "remote", remoteAddr, "transport", transportName)
+		if wantEnc && !canEncrypt {
+			// 客户端请求了加密但供给不闭环（enabled=false / 认证路径未产出合法
+			// psk）：回无 enc 的 ok（客户端按旧服务端信号回落明文），DEBUG 留观测
+			slog.Debug("Channel encryption requested but not provided (check enabled/psk)", "remote", remoteAddr, "transport", transportName)
 		}
 		writeControlResp(conn, proto.RespOK, "authenticated")
 		// enabled 且客户端未请求加密：明文放行 WARN 按 IP 限频（收口期对账观测点）

@@ -49,16 +49,23 @@ func clientProof(token string, challenge []byte) string {
 }
 
 // pskAuthenticator 固定 token 的认证桩：proof 路径按客户端公式验算，命中
-// 返回 grant + psk=sha256(token)；明文 token 路径直接比对（复刻 service 层语义）
+// 返回 grant + psk=sha256(token)；明文 token 路径直接比对（复刻 service 层语义）。
+// nilPSK=true 时认证成功但 psk 返回 nil——复刻 service 层对非 32 字节 TokenHash
+// 记录的行为（node_access_auth.go「哈希记录异常时按无 psk 处理，不阻断认证」）
 type pskAuthenticator struct {
-	token string
+	token  string
+	nilPSK bool
 }
 
 func (a *pskAuthenticator) AuthenticateNodeToken(_ context.Context, rawToken string) (*core.NodeAccessGrant, []byte, error) {
 	if rawToken != a.token {
 		return nil, nil, errors.New("invalid token")
 	}
-	return &core.NodeAccessGrant{UserID: "user-enc"}, tokenPSK(rawToken), nil
+	var psk []byte
+	if !a.nilPSK {
+		psk = tokenPSK(rawToken)
+	}
+	return &core.NodeAccessGrant{UserID: "user-enc"}, psk, nil
 }
 
 func (a *pskAuthenticator) AuthenticateNodeProof(_ context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, []byte, error) {
@@ -72,7 +79,11 @@ func (a *pskAuthenticator) AuthenticateNodeProof(_ context.Context, proofHex str
 	if !hmac.Equal(mac.Sum(nil), want) {
 		return nil, nil, errors.New("invalid token")
 	}
-	return &core.NodeAccessGrant{UserID: "user-enc"}, tokenPSK(a.token), nil
+	var psk []byte
+	if !a.nilPSK {
+		psk = tokenPSK(a.token)
+	}
+	return &core.NodeAccessGrant{UserID: "user-enc"}, psk, nil
 }
 
 // syncLogBuf 并发安全的日志缓冲：服务端 goroutine 异步写、测试侧轮询读
@@ -131,13 +142,18 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// startEncTestServer 在 127.0.0.1 起 TCP 控制服务，注入认证桩与通道加密开关
-func startEncTestServer(t *testing.T, enabled, require bool) (*ControlServer, string) {
+// startEncTestServer 在 127.0.0.1 起 TCP 控制服务，注入认证桩与通道加密开关；
+// 可选第三参注入自定义认证器（缺省固定 token 桩）
+func startEncTestServer(t *testing.T, enabled, require bool, auth ...core.NodeAccessAuthenticator) (*ControlServer, string) {
 	t.Helper()
 	addr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	nodeMgr := node.NewShardedNodeManager(4)
 	cs := NewControlServer(addr, NewTCPTransport(nil), nodeMgr, "unused-global-token", nil)
-	cs.SetAuthenticator(&pskAuthenticator{token: encTestToken})
+	if len(auth) > 0 {
+		cs.SetAuthenticator(auth[0])
+	} else {
+		cs.SetAuthenticator(&pskAuthenticator{token: encTestToken})
+	}
 	cs.SetChannelEncryption(enabled, require)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -504,7 +520,6 @@ func TestChannelEncryption_HandshakeCorruptionHardFails(t *testing.T) {
 func TestChannelEncryption_PSKMismatchBothEndsFail(t *testing.T) {
 	logs := captureLogs(t)
 	cs, addr := startEncTestServer(t, true, false)
-	_ = cs
 
 	conn, reader, line := dialEncClient(t, addr, encTestToken, proto.EncProtocolV1)
 	defer conn.Close()
@@ -529,4 +544,61 @@ func TestChannelEncryption_PSKMismatchBothEndsFail(t *testing.T) {
 	if n := authLimiterEntries(t, cs); n != 0 {
 		t.Fatalf("psk mismatch must not count as auth failure, entries=%d", n)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 审查复审修复 M1：require 拒绝必须按「服务端供给能力」而非「客户端意愿」判定
+// ---------------------------------------------------------------------------
+
+// M1-组合A：require=true + enabled=false + enc:1 客户端。
+// enabled=false 时配置校验会拦 require（生产不可达），但 SetChannelEncryption
+// 是导出 API（测试直构/未来热切换可绕）；此时客户端请求了加密而服务端给不出，
+// require 语义 = 本连接必须加密 → 不得放行明文会话。
+func TestChannelEncryption_RequireWithEnabledFalseRejectsEncClient(t *testing.T) {
+	logs := captureLogs(t)
+	_, addr := startEncTestServer(t, false, true)
+
+	conn, _, line := dialEncClient(t, addr, encTestToken, proto.EncProtocolV1)
+	defer conn.Close()
+	resp := parseAuthResp(t, line)
+
+	if resp.Cmd != proto.RespErr {
+		t.Fatalf("require=true+enabled=false: enc:1 client got cmd=%q msg=%q Enc=%v, want err（不得放行明文会话）",
+			resp.Cmd, resp.Msg, resp.Enc)
+	}
+	if !strings.Contains(resp.Msg, "channel encryption required") {
+		t.Errorf("err msg = %q, want keyword %q", resp.Msg, "channel encryption required")
+	}
+	pollLogContains(t, logs, "channel encryption required", 2*time.Second)
+}
+
+// M1-组合B：认证器返回 grant 但 psk=nil（service 层对非 32 字节 TokenHash 记录
+// 的既有行为，数据异常可达，不阻断认证）。
+// require=true：必须拒绝（收口态不允许无 WARN 的明文会话）；
+// require=false：保持明文回落（ok 无 enc，客户端按旧服务端信号 WARN 回落）。
+func TestChannelEncryption_RequireRejectsWhenPSKUnavailable(t *testing.T) {
+	t.Run("require=true 拒绝", func(t *testing.T) {
+		logs := captureLogs(t)
+		_, addr := startEncTestServer(t, true, true, &pskAuthenticator{token: encTestToken, nilPSK: true})
+
+		conn, _, line := dialEncClient(t, addr, encTestToken, proto.EncProtocolV1)
+		defer conn.Close()
+		resp := parseAuthResp(t, line)
+
+		if resp.Cmd != proto.RespErr {
+			t.Fatalf("require=true + psk unavailable: enc:1 client got cmd=%q msg=%q, want err", resp.Cmd, resp.Msg)
+		}
+		pollLogContains(t, logs, "channel encryption required", 2*time.Second)
+	})
+	t.Run("require=false 明文回落", func(t *testing.T) {
+		_, addr := startEncTestServer(t, true, false, &pskAuthenticator{token: encTestToken, nilPSK: true})
+
+		conn, _, line := dialEncClient(t, addr, encTestToken, proto.EncProtocolV1)
+		defer conn.Close()
+		resp := parseAuthResp(t, line)
+
+		if resp.Cmd != proto.RespOK || resp.Enc != nil {
+			t.Fatalf("require=false + psk unavailable: want plain ok without enc, got cmd=%q Enc=%v", resp.Cmd, resp.Enc)
+		}
+	})
 }
