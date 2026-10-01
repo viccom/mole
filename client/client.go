@@ -163,9 +163,10 @@ func New(cfg *Config) (*Client, error) {
 	websshMgr := webssh.NewManager()
 
 	sm := transport.NewSessionManager(dial)
-	// enc 模式是 dialer 协商输入（ApplyDefaults 已补缺省 "on"）；UseTLS 时
-	// dialer 恒不发 enc 位（单连接单加密，安全边界注释见 transport.Connect）
-	sm.SetChannelEncryption(cfg.EncMode, cfg.UseTLS)
+	// enc 模式是 dialer 协商输入（ApplyDefaults 已补缺省 "on"）；传输实际走
+	// TLS（含 ws 的 wss:// 前缀变体，与 WS dialer 判定同口径）时恒不发 enc 位
+	// （单连接单加密，安全边界注释见 transport.Connect）
+	sm.SetChannelEncryption(cfg.EncMode, cfg.effectiveTransportTLS())
 	if cfg.Transport == "kcp" {
 		sm.SetSmuxOverride(&smux.Config{
 			Version:           2,

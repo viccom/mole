@@ -170,6 +170,14 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
+// effectiveTransportTLS 返回传输层是否实际走 TLS——与 WS dialer 的判定同口径
+// （UseTLS 旗标，或 ws 传输的 wss:// 地址前缀；后者在 dialer 内自带 TLS）。
+// enc 协商用它决定是否发 enc 位：单连接单加密（组合规则 1），且避免已加密
+// 连接因服务端不答 enc 而打出误导性的「明文回落」WARN（审查修复 M2）。
+func (c *Config) effectiveTransportTLS() bool {
+	return c.UseTLS || (c.Transport == "ws" && strings.HasPrefix(c.ServerAddr, "wss://"))
+}
+
 // Validate 校验配置合法性
 func (c *Config) Validate() error {
 	if c.ServerAddr == "" {

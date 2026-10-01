@@ -217,3 +217,35 @@ func TestLoadConfigFileKeepsEmptyTargetLocalTunnels(t *testing.T) {
 		t.Fatalf("豁免不外溢：tcp 空 target 仍须剔除告警:\n%s", buf.String())
 	}
 }
+
+// TestEffectiveTransportTLS 锁 useTLS 的同口径判定（审查修复 M2）：
+// WS dialer 判定传输是否走 TLS 的条件是 UseTLS 旗标或 wss:// 地址前缀，
+// enc 协商的 useTLS 输入必须与之一致——否则 wss://+tls=false 的连接（实际
+// 已加密）会误发 enc 位并打出误导性的「明文回落」WARN，污染收口对账观测面。
+func TestEffectiveTransportTLS(t *testing.T) {
+	cases := []struct {
+		name      string
+		useTLS    bool
+		transport string
+		addr      string
+		want      bool
+	}{
+		{"tcp 明文", false, "tcp", "px.example:9981", false},
+		{"tcp tls 旗标", true, "tcp", "px.example:9981", true},
+		{"ws 明文地址", false, "ws", "px.example:9981", false},
+		{"ws wss 前缀无旗标", false, "ws", "wss://px.example:9981", true},
+		{"ws wss 前缀 + 旗标", true, "ws", "wss://px.example:9981", true},
+		{"kcp 不受 wss 前缀影响", false, "kcp", "wss://px.example:9981", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.UseTLS = tc.useTLS
+			cfg.Transport = tc.transport
+			cfg.ServerAddr = tc.addr
+			if got := cfg.effectiveTransportTLS(); got != tc.want {
+				t.Errorf("effectiveTransportTLS(%v,%q,%q) = %v, want %v", tc.useTLS, tc.transport, tc.addr, got, tc.want)
+			}
+		})
+	}
+}
