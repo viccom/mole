@@ -2,6 +2,7 @@ package moleAgent_client
 
 import (
 	"moleAgent_client/internal/nodeid"
+	"moleAgent_client/internal/transport"
 
 	"encoding/json"
 	"fmt"
@@ -148,7 +149,7 @@ func (c *Config) ApplyDefaults() {
 		c.Transport = "tcp"
 	}
 	if c.EncMode == "" {
-		c.EncMode = "on"
+		c.EncMode = transport.EncModeOn
 	}
 	if c.NodeID == "" {
 		c.NodeID = nodeid.DefaultNodeID()
@@ -201,8 +202,8 @@ func (c *Config) Validate() error {
 
 	// enc 模式仅允许 on/off；非法值启动即报错（不静默猜默认——enc 是安全
 	// 属性，静默取舍会把配置错误变成不可见的明文/加密态漂移）
-	if c.EncMode != "on" && c.EncMode != "off" {
-		return fmt.Errorf("invalid enc %q (must be \"on\" or \"off\")", c.EncMode)
+	if c.EncMode != transport.EncModeOn && c.EncMode != transport.EncModeOff {
+		return fmt.Errorf("invalid enc %q (must be %q or %q)", c.EncMode, transport.EncModeOn, transport.EncModeOff)
 	}
 
 	// ws 传输的地址 scheme 必须与 tls 标志一致，否则行为与配置相悖：

@@ -33,8 +33,10 @@ const tagLen = 16
 // 2 字节前缀可表达范围（65535 明文 + 16 tag = 65551 > 65535）。
 const maxPlaintextLen = MaxMessageLen - tagLen
 
-// minFrameLen 合法帧体下界：密文帧至少含 16 字节认证标签（握手消息最小为 32
-// 字节裸公钥，同样不低于此界）。低于此界说明帧流已错位或对端损坏。
+// minFrameLen 合法帧体下界：密文帧至少含 16 字节认证标签（握手最小帧 msg1 =
+// 32 字节临时公钥 + 16 字节 tag 共 48 字节，同样不低于此界；XXpsk2 的 e token
+// 在 PSK 模式下也带 AEAD tag，官方向量 msg_0_ciphertext 即 48 字节）。低于此界
+// 说明帧流已错位或对端损坏。
 const minFrameLen = tagLen
 
 // ErrHandshake 握手失败哨兵。错误文案以 "channel encryption handshake failed"
@@ -106,10 +108,12 @@ func newHandshakeState(psk []byte, initiator bool) (*noise.HandshakeState, error
 }
 
 func upgrade(conn net.Conn, reader io.Reader, psk []byte, timeout time.Duration, initiator bool) (*Conn, error) {
-	// 失败即断开：不留半升级连接，调用方凭 ErrHandshake 识别并自行重连
+	// 失败即断开：不留半升级连接，调用方凭 ErrHandshake 识别并自行重连。
+	// 双 %w：外层哨兵 ErrHandshake 与内层具体因（如 os.ErrDeadlineExceeded）
+	// 均可被 errors.Is 识别（Go 1.20+ 多 %w）
 	fail := func(err error) error {
 		conn.Close()
-		return fmt.Errorf("%w: %v", ErrHandshake, err)
+		return fmt.Errorf("%w: %w", ErrHandshake, err)
 	}
 	if len(psk) != 32 {
 		return nil, fail(fmt.Errorf("psk must be 32 bytes (sha256(token)), got %d", len(psk)))
