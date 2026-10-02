@@ -168,14 +168,6 @@ type MQTTStats struct {
 	MessagesReceived  int64 `json:"messages_received"`
 }
 
-// TunnelInfo 隧道运行时信息
-type TunnelInfo struct {
-	Tunnel
-	NodeID      string `json:"node_id"`
-	Listeners   int    `json:"listeners"`
-	Connections int    `json:"connections"`
-}
-
 // ApiResponse 统一 API 响应格式
 type ApiResponse struct {
 	Code int    `json:"code"`
