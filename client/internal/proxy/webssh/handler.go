@@ -314,8 +314,10 @@ func (h *Handler) buildHostKeyCallback() ssh.HostKeyCallback {
 // select 永不退出 → defer session.Close() 永不执行（goroutine+session+stream 泄漏）。
 // 超时返回让 readLoop 退出，触发 close(done) → select 退出 → defer session.Close() 解互锁，
 // 同时唤醒仍在 stdin.Write 阻塞的内部 goroutine（stdin pipe 关闭后 Write 返回错误）。
+// writeStdinTimeout 单次 stdin 写入的硬上限；var 而非 const 仅为测试注入缩短
+var writeStdinTimeout = 30 * time.Second
+
 func writeStdinWithTimeout(stdin io.Writer, payload []byte) error {
-	const timeout = 30 * time.Second
 	done := make(chan error, 1)
 	go func() {
 		_, err := stdin.Write(payload)
@@ -324,8 +326,8 @@ func writeStdinWithTimeout(stdin io.Writer, payload []byte) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(timeout):
-		return fmt.Errorf("write stdin timeout after %s", timeout)
+	case <-time.After(writeStdinTimeout):
+		return fmt.Errorf("write stdin timeout after %s", writeStdinTimeout)
 	}
 }
 

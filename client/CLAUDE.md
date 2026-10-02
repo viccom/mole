@@ -20,7 +20,7 @@ client_p2p_stub.go           //go:build !p2p    空实现（默认构建零 P2P 
 internal/
   protocol/types.go          协议层类型（ControlCmd, Tunnel 等）
   transport/dialer.go        连接/认证/smux 会话管理
-  p2p/                       fork 自 p2punch 的上游代码（easyp2p/engine/session/tunnel）——禁止修改
+  p2p/                       fork 自 gonc/p2punch 的外部代码岛（easyp2p/engine/session/tunnel，约 5.3k 行；另有 p2p/netx 约 2.3k 行）——禁止修改，亦**不按第一方规范审查/重构**（大函数、非 Go 命名、无测试均为上游血统；除非同步上游，否则不重写——每次改写都在制造与上游的永久分歧）。crypto/rand.go 等标注 "gonc parity" 的文件为签名+行为对等的单文件替身，属第一方可控范围
   proxy/http.go              HTTP + WebSocket 代理
   proxy/tcp.go               TCP/UDP 原始转发
   proxy/relay.go             双向数据转发 + 流量统计
