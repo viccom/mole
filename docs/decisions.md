@@ -159,3 +159,5 @@
 **仓库可见性（负责人裁决）**：初建为 private，负责人指示改为 **public**（注：私有仓也能跑 Actions——首次 dispatch 已实际执行，失败点是 npm 而非权限；早先 workflow 404 系新仓索引延迟，touch 重推即注册）。公开前已扫描 tracked 文件无凭据/密钥/.env（仅 Makefile 含自建升级服务器主机名，属端点非凭据）。
 
 **admin package-lock.json 修复（CI 首跑失败的根因，两层）**：① package.json 升级 vitest4/jsdom29 后 lock 从未重生成（esbuild@0.28.2 整棵子树缺失，npm ci 必报 Missing）；② npm 11 重新生成时，vitest→esbuild@0.28.2 提升到顶层的 26 个 `@esbuild/*` 平台条目丢失 `optional:true` 标记，任意平台 `npm ci` 均 EBADPLATFORM。修法：官方源全量重生成 + 脚本补齐 optional 标记；已验证 npm10/npm11 双版本 `npm ci` 通过、tsc+vite 构建通过。教训：lock 的"可选平台依赖缺 optional 标记"是 npm11 已知类缺陷，lock 重生成后必须跑**真实** `npm ci`（`--dry-run` 在 npm11 下不校验完整性，会假绿）。
+
+**首发实录（2026-10-02）**：`srv/v0.7.2` + `cli/v0.8.1` 打在 e78f65a，双端 workflow run 全绿，GitHub Release 各自发布（moles 6 平台 / molec 7 平台含 armv7，均含 latest.json，与 manifest 单源）。过程中修掉两处 workflow 缺陷：① artifact 名含 tag 前缀斜杠必败（upload-artifact 不允许 `/`，转连字符）；② 幂等补传分支（release 已存在 → upload --clobber）已在真实重跑中验证。注意：tag 曾从 980846b 强移至 e78f65a（workflow 修复 commit），两位置间无 Go 代码差异，二进制内容等价、版本串相同。存量 Gitea origin 未推（待负责人决定）。
