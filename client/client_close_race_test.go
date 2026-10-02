@@ -2,6 +2,7 @@ package moleAgent_client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"path/filepath"
@@ -9,6 +10,41 @@ import (
 	"testing"
 	"time"
 )
+
+// TestRunReturnsAfterCloseBeforeRun A-1 语义洞的确定性重现（不依赖竞态抖动）：
+// Close 先于 Run 执行时 c.cancel 尚未赋值、cancel() 永久丢失，c.closed 虽被
+// 关闭但主循环只 watch ctx.Done —— 修复前 Run 永不退出（无限重连），修复后
+// 主循环与 c.sleep 均监听 c.closed，立即返回 context.Canceled。
+func TestRunReturnsAfterCloseBeforeRun(t *testing.T) {
+	oldWriter := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(oldWriter)
+
+	cfg := DefaultConfig()
+	cfg.NodeID = "closed01" // 显式 NodeID：短路 node.id 文件读写
+	cfg.NodeIDFile = filepath.Join(t.TempDir(), "node.id")
+	cfg.ServerAddr = "127.0.0.1:1" // 不可达地址，避免真实连接
+	cfg.ReconnectInterval = 10 * time.Millisecond
+
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	c.Close() // 先于 Run：c.cancel 必为 nil，cancel 丢失路径确定性触发
+
+	done := make(chan error, 1)
+	go func() { done <- c.Run(context.Background()) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run 应以 context.Canceled 退出，got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close-先于-Run 后 Run 未退出（cancel 丢失，主循环未 watch c.closed）")
+	}
+}
 
 // TestCloseConcurrentWithRun 回归 client.Client 的 c.cancel 数据竞争：
 // Run（独立 goroutine）在 :195 写 c.cancel，Close（调用方 goroutine）在 :272

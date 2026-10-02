@@ -209,6 +209,10 @@ func (c *Client) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-c.closed:
+			// Close 可能早于 c.cancel 赋值执行（cancel 永久丢失），此时
+			// c.closed 是唯一的终止信号——不 watch 则 Run 无限重连不退
+			return context.Canceled
 		default:
 		}
 
@@ -1273,9 +1277,12 @@ func (c *Client) close() {
 }
 
 // sleep 可取消的休眠
+// 同步监听 c.closed：cancel 丢失窗口（Close 早于 Run 的 c.cancel 赋值）里
+// ctx 永不触发，休眠必须能被关闭信号打断，否则每次重连间隔都被完整耗尽
 func (c *Client) sleep(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
+	case <-c.closed:
 	case <-time.After(d):
 	}
 }
