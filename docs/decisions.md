@@ -131,3 +131,27 @@
 **E2E 环境教训（防重蹈）**：E2E harness（17 场景）**必须在 WSL 跑**。Windows Git Bash 下：(a) 旧版本对照二进制（cli-old/serv-old）是 Linux ELF 无法执行；(b) sc17 的 python3 blocker + `PATH=/usr/bin:/bin` 为 Linux 语义。本次误在 Windows 首跑得 PASS=13 FAIL=7，逐项排查后全部归因环境（6×ELF 不可执行 + sc17 blocker 未绑定）。WSL 重跑 PASS=20 FAIL=0 与基线一致。旧二进制留存于 `_release/e2e/bin/`（WSL 视角 /mnt/e/...），新二进制需 `GOOS=linux` 交叉编译后 stage 到 WSL `/root/e2e/bin/`。
 
 **全量回归（修复后）**：server/client/shared workspace + GOWORK=off 双形态构建/vet/test 全绿（client nodeid 2 例 Windows 既有失败不变）；desktop/manager GUI 模块绿；client 根包 -race 绿；E2E 17 场景 PASS=20 FAIL=0（WSL）。
+
+## 2026-10-02 深度审查报告（docs/2026-10-02-monorepo深度审查报告.md）低风险项修复记录
+
+复核结论先行：报告 7 项发现经独立复核**全部属实**，但验收标准有一处实质错误——`TestRegisterResponseStillTimesOutBeyond12S` 的 12s 是设计值（13s 延迟应答 + 断言 12s 上限超时），修 A-1 不会也不应将其降至毫秒；正确验收只有 `TestCloseConcurrentWithRun`（见下）。B-1 的"12 个 mock 测试文件"实为 9 个 _test 文件中 5 个。用户裁决：修复全部低风险项。
+
+| 项 | 修复 | 验证证据 |
+|---|---|---|
+| A-1 Close-先于-Run 语义洞 | `client.go` 主循环 select 与 `sleep` 增 `<-c.closed` 分支（cancel 丢失时 c.closed 是唯一终止信号） | 新增确定性红测试 `TestRunReturnsAfterCloseBeforeRun`（修前 5s 超时 FAIL → 修后 0.00s PASS）；`TestCloseConcurrentWithRun` 10.04s→**0.03s**（rescue 计时器不再触发即洞闭合）；-race 绿。现实可达路径已证：桌面端 `app.go:148` 用不可取消 Background 跑 Run，CLI 被 main 先 cancel() 掩盖 |
+| B-4 nodeid 测试 Unix 假设 | 测试同时设 `HOME`+`USERPROFILE`（UsesHome 设双值、FallsBack 双清空）；AGENTS.md"既有基线"表述改判为已修缺陷 | 修前 2 例红（逐字复现报告）→ 修后 29 例全绿；**decisions.md:33 旧验收行"既有基线"为当时事实记录不改写**，其结论由本条替代 |
+| B-1 死端口 | 删 `core/ports.go` 的 TunnelManager/MQTTBroker/RBACChecker/**core.AuthService**（全仓零引用零实现）+ 孤儿类型 `core.TunnelInfo`；保留仍存活的 MQTTClientInfo/MQTTStats/InlineCallback/Claims | server 全量 build/vet 绿、17 包测试仅 storage 已知 flaky（3/3 重跑过，旧仓库既有，见遗留跟踪） |
+| B-1 AuthService 裁决 | **采"删空接口"分支**：api/mqtt/main 直接依赖 `auth.AuthService` 具体类型是既成事实（feishu_handler/mqtt/broker 引用点比报告列的更多），若反向让 api 依赖 core.AuthService 属较大重构且收益仅是名义边界；删除消除同名遮蔽误导。需要真边界时重加接口成本极低 | — |
+| B-5 node_modules 污染构建图 | 新增 `server/mobile/go.mod`（空模块，mobile 为纯前端目录、无第一方 Go 代码、无人 import）切出 server 模块图 | `go list ./...` 不再含 node_modules（17 包）；全量 build/vet 绿 |
+| B-3 fork 代码岛标注 | `client/CLAUDE.md` p2p 节补强：fork 自 gonc/p2punch、不按第一方规范审查、除非同步上游不重写、netx 纳入 | — |
+| A-2 webssh 不变量测试 | 新增 `handler_test.go` 4 例：readPayload 6 边界子测试（含逐字节分片 reader）；writeStdinWithTimeout 超时+pipe 关闭唤醒（var 注入缩短超时，const→var 为唯一生产改动）；dial 失败不泄漏；**stuck-stdin 端到端**（进程内 stub SSH 服务端从不读通道 → 2MB window 耗尽 → 写超时 → 解互锁链 → HandleStream 返回 → 生产清理路径后 goroutine 回落） | 4 例全绿 0.38s、-race 绿。此前该链唯一防线是 writeStdinWithTimeout 的注释 |
+
+**明确未修**（非低风险或非编码项）：B-2 wss CA/指纹 pinning——方案 B 动工前决策项（若只做 Noise 不给 TLS 路径留 pinning，自签部署继续走 InsecureSkipVerify 旁路）；P2 webssh TOFU 首信回写 known_hosts 落盘（报告已定性延后）。
+
+**全量回归**：client 12 包全绿（含 p2p tag 构建/vet）；server 16 包绿 + storage flaky 3/3 重跑过；shared 3 包绿；desktop/manager GOWORK=off 构建绿；webssh/close 相关 -race 绿。
+
+## 2026-10-02 GitHub 发布链路（建仓 viccom/mole + Actions workflow）
+
+**manifest 单源拆分**：server/client Makefile 的 `publish` 拆出 `manifest` 子目标（latest.json 生成逐字原样，含 client 的 armv7→`linux/arm` 键约定），`publish: check-tag release manifest` + scp 不变。目的：GitHub Actions 复用同一生成逻辑——对应「严禁并行复刻权威工具链」红线（gen_manifest.py 键漂移事故）。本地以假二进制验证：双端 manifest exit=0，client 产出 `"linux/arm"` 键 + `moleagent-client-linux-armv7` 文件名，与历史约定逐字一致。
+
+**`.github/workflows/release.yml`**：tag 驱动（`srv/*`/`cli/*`）→ 对应端 `make release`（RELEASE_DIR 经命令行覆写到 workspace 内，避开仓外 `../../_release`）→ `make check-tag manifest` → `gh release create/upload`（仅二进制+latest.json，与 make publish 的 scp 面一致，幂等可重跑）。守卫：meta 作业检测布局，21 个存量 tag 全部指向 monorepo 合并前单仓库布局（已逐一验树），初推只绿跳不发；workflow_dispatch 做 build-check（双端编译+manifest，不发布不 check-tag）。**升级服务器的正式发布仍走 make publish，GitHub Release 是镜像面。**
