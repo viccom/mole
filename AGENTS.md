@@ -18,7 +18,8 @@
 # 构建/测试（各模块内；新会话改代码前先跑通这两组）
 (cd server && go build ./... && go vet ./... && go test ./... -count=1)
 (cd client && go build ./... && go vet ./... && go test ./... -count=1)
-# client 已知基线：根包 nodeid 2 例 Windows 既有失败，非回归
+# 2026-10-02 起 client 全绿（nodeid 2 例曾因测试只设 HOME 未设 USERPROFILE 在
+# Windows 常红、被误记为"既有基线"，已改判缺陷并修复——勿再引入无红灯基线）
 
 # 发布（先打 tag，再 publish；见下方发布纪律）
 (cd server && make release)     # 产物落 _release/moles/

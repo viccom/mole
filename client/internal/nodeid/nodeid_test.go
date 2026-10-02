@@ -123,7 +123,10 @@ func withTempNodeIDDir(t *testing.T) string {
 // C: 默认路径为 ~/.moleAgent-client/node.id
 func TestDefaultNodeIDFile_UsesHome(t *testing.T) {
 	home := t.TempDir()
+	// HOME 与 USERPROFILE 同时设：os.UserHomeDir 在 Unix 读 $HOME、
+	// 在 Windows 读 %USERPROFILE%，只设 HOME 在 Windows 主力平台上是空操作
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	got := defaultNodeIDFile()
 	want := filepath.Join(home, ".moleAgent-client", "node.id")
@@ -134,7 +137,9 @@ func TestDefaultNodeIDFile_UsesHome(t *testing.T) {
 
 // C: HOME 不可用时回退到可执行文件同目录（并输出 WARNING，可见而非静默）
 func TestDefaultNodeIDFile_FallsBackWhenNoHome(t *testing.T) {
-	t.Setenv("HOME", "") // os.UserHomeDir 在 Unix 上依赖 $HOME
+	// 同上：Windows 上 os.UserHomeDir 读 %USERPROFILE%，两个变量须同时清空
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
 
 	got := defaultNodeIDFile()
 	exe, err := os.Executable()
