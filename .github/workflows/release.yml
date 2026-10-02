@@ -93,6 +93,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
+          # artifact 名不允许 '/'：tag 前缀（srv/ cli/）转连字符
+          echo "DIST_ARTIFACT=$(echo "$TAG" | tr '/' '-')" >> "$GITHUB_ENV"
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "release 已存在，幂等补传资产"
             gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/moles/moleagent-serv-* dist/moles/latest.json --clobber
@@ -103,7 +105,7 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: moles-dist-${{ github.ref_name }}
+          name: moles-dist-${{ env.DIST_ARTIFACT }}
           path: dist/
           retention-days: 14
 
@@ -130,6 +132,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
+          # artifact 名不允许 '/'：tag 前缀（srv/ cli/）转连字符
+          echo "DIST_ARTIFACT=$(echo "$TAG" | tr '/' '-')" >> "$GITHUB_ENV"
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "release 已存在，幂等补传资产"
             gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/molec/moleagent-client-* dist/molec/latest.json --clobber
@@ -140,7 +144,7 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: molec-dist-${{ github.ref_name }}
+          name: molec-dist-${{ env.DIST_ARTIFACT }}
           path: dist/
           retention-days: 14
 
