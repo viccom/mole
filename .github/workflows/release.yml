@@ -181,3 +181,5 @@ jobs:
           name: dist-build-check
           path: dist/
           retention-days: 7
+
+# 索引触发注释（version: 1）
