@@ -1,0 +1,183 @@
+# 发布构建：tag 驱动双端二进制编译 + latest.json 生成 + GitHub Release 上传。
+#
+# 设计约束（docs/decisions.md 红线）：
+#   - 编译与 latest.json 一律复用 server/client Makefile 的 release/manifest
+#     目标（manifest 与 publish 单源，禁止在 CI 里复刻生成逻辑——曾因
+#     gen_manifest.py 平台键漂移造成 armv7 机型全量升级失败）
+#   - 版本推导依赖双前缀 tag（srv/* cli/*）：checkout 必须 fetch-depth: 0
+#   - 全部 21 个存量 tag 指向 monorepo 合并前的单仓库布局（无 server/
+#     client 子目录），由 meta 作业布局守卫跳过；只有合并后新打的 tag
+#     会真正构建发布
+#   - GitHub Release 仅上二进制与 latest.json（与 make publish 的 scp 面
+#     一致，不含前端 dist）；升级服务器的正式发布仍走 make publish
+#
+# 手动触发（workflow_dispatch）只做构建验证（双端 release + manifest），
+# 不创建 Release、不做 check-tag（分支 HEAD 不在 tag 上属预期）。
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'srv/*'
+      - 'cli/*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      monorepo: ${{ steps.layout.outputs.monorepo }}
+      end: ${{ steps.layout.outputs.end }}
+      event: ${{ steps.layout.outputs.event }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 布局与端别判定
+        id: layout
+        run: |
+          if [ -f server/Makefile ] && [ -f client/Makefile ]; then M=yes; else M=no; fi
+          case "${GITHUB_REF_NAME:-}" in
+            srv/*) END=srv ;;
+            cli/*) END=cli ;;
+            *)     END=none ;;
+          esac
+          {
+            echo "monorepo=$M"
+            echo "end=$END"
+            echo "event=${GITHUB_EVENT_NAME}"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$M" = "no" ]; then
+            echo "::notice::${GITHUB_REF_NAME} 是 monorepo 合并前的布局（无 server/client 子目录），跳过发布构建"
+          fi
+
+  build-server:
+    needs: meta
+    if: needs.meta.outputs.event == 'push' && needs.meta.outputs.monorepo == 'yes' && needs.meta.outputs.end == 'srv'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: true
+          cache-dependency-path: server/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/admin/package-lock.json
+            server/mobile/package-lock.json
+      - name: 安装前端依赖
+        run: |
+          npm --prefix server/admin ci
+          npm --prefix server/mobile ci
+      - name: 编译全平台二进制（含前端，复用 make release）
+        run: make -C server release RELEASE_DIR="$GITHUB_WORKSPACE/dist/moles"
+      - name: 校验 tag 并生成 latest.json（复用 make manifest，与 publish 单源）
+        run: make -C server check-tag manifest RELEASE_DIR="$GITHUB_WORKSPACE/dist/moles"
+      - name: 上传 GitHub Release（仅二进制 + latest.json，与 make publish 的 scp 面一致）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release 已存在，幂等补传资产"
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/moles/moleagent-serv-* dist/moles/latest.json --clobber
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+              dist/moles/moleagent-serv-* dist/moles/latest.json \
+              --title "$TAG" --generate-notes
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moles-dist-${{ github.ref_name }}
+          path: dist/
+          retention-days: 14
+
+  build-client:
+    needs: meta
+    if: needs.meta.outputs.event == 'push' && needs.meta.outputs.monorepo == 'yes' && needs.meta.outputs.end == 'cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache: true
+          cache-dependency-path: client/go.sum
+      - name: 编译全平台二进制（-tags p2p，复用 make release）
+        run: make -C client release RELEASE_DIR="$GITHUB_WORKSPACE/dist/molec"
+      - name: 校验 tag 并生成 latest.json（复用 make manifest，与 publish 单源）
+        run: make -C client check-tag manifest RELEASE_DIR="$GITHUB_WORKSPACE/dist/molec"
+      - name: 上传 GitHub Release（仅二进制 + latest.json，与 make publish 的 scp 面一致）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release 已存在，幂等补传资产"
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/molec/moleagent-client-* dist/molec/latest.json --clobber
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+              dist/molec/moleagent-client-* dist/molec/latest.json \
+              --title "$TAG" --generate-notes
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: molec-dist-${{ github.ref_name }}
+          path: dist/
+          retention-days: 14
+
+  # 手动触发的构建验证：双端编译 + manifest 生成，不发布
+  build-check:
+    needs: meta
+    if: needs.meta.outputs.event == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: true
+          cache-dependency-path: |
+            server/go.sum
+            client/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/admin/package-lock.json
+            server/mobile/package-lock.json
+      - name: 安装前端依赖
+        run: |
+          npm --prefix server/admin ci
+          npm --prefix server/mobile ci
+      - name: 双端全平台编译 + manifest（不做 check-tag：分支 HEAD 不在 tag 上属预期）
+        run: |
+          make -C server release manifest RELEASE_DIR="$GITHUB_WORKSPACE/dist/moles"
+          make -C client release manifest RELEASE_DIR="$GITHUB_WORKSPACE/dist/molec"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-build-check
+          path: dist/
+          retention-days: 7

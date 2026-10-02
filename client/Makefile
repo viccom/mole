@@ -1,4 +1,4 @@
-.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish check-tag test test-race vet fmt-check
+.PHONY: help build release clean ensure-wails build-desktop build-manager build-gui build-all publish manifest check-tag test test-race vet fmt-check
 
 .DEFAULT_GOAL := help
 
@@ -176,7 +176,7 @@ check-tag:
 		*-*-g*) echo "!! publish 中止：HEAD 不在 tag 上（VERSION=$(VERSION)），请先 git tag"; exit 1;; \
 	esac
 
-publish: check-tag release ## 编译所有平台并发布到升级服务器
+manifest: ## 生成 latest.json（复用 publish 的生成逻辑，不含上传；CI/本地发布变体共用）
 	@echo ">> Generating latest.json ..."
 	@echo '{"version":"$(VERSION)","date":"$(DATE)","assets":{' > $(RELEASE_DIR)/latest.json
 	@first=true; \
@@ -200,6 +200,8 @@ publish: check-tag release ## 编译所有平台并发布到升级服务器
 	echo '}}' >> $(RELEASE_DIR)/latest.json
 	@echo ">> latest.json:"
 	@cat $(RELEASE_DIR)/latest.json | python3 -m json.tool
+
+publish: check-tag release manifest ## 编译所有平台、生成 latest.json 并发布到升级服务器
 	@echo ">> Uploading to $(UPLOAD_DIR) ..."
 	@scp -r $(RELEASE_DIR)/$(BINARY_NAME)-* $(RELEASE_DIR)/latest.json $(UPLOAD_DIR)/
 	@echo ">> Published $(VERSION) to $(UPLOAD_DIR)/"
