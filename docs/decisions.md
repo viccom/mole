@@ -155,3 +155,7 @@
 **manifest 单源拆分**：server/client Makefile 的 `publish` 拆出 `manifest` 子目标（latest.json 生成逐字原样，含 client 的 armv7→`linux/arm` 键约定），`publish: check-tag release manifest` + scp 不变。目的：GitHub Actions 复用同一生成逻辑——对应「严禁并行复刻权威工具链」红线（gen_manifest.py 键漂移事故）。本地以假二进制验证：双端 manifest exit=0，client 产出 `"linux/arm"` 键 + `moleagent-client-linux-armv7` 文件名，与历史约定逐字一致。
 
 **`.github/workflows/release.yml`**：tag 驱动（`srv/*`/`cli/*`）→ 对应端 `make release`（RELEASE_DIR 经命令行覆写到 workspace 内，避开仓外 `../../_release`）→ `make check-tag manifest` → `gh release create/upload`（仅二进制+latest.json，与 make publish 的 scp 面一致，幂等可重跑）。守卫：meta 作业检测布局，21 个存量 tag 全部指向 monorepo 合并前单仓库布局（已逐一验树），初推只绿跳不发；workflow_dispatch 做 build-check（双端编译+manifest，不发布不 check-tag）。**升级服务器的正式发布仍走 make publish，GitHub Release 是镜像面。**
+
+**仓库可见性（负责人裁决）**：初建为 private，负责人指示改为 **public**（注：私有仓也能跑 Actions——首次 dispatch 已实际执行，失败点是 npm 而非权限；早先 workflow 404 系新仓索引延迟，touch 重推即注册）。公开前已扫描 tracked 文件无凭据/密钥/.env（仅 Makefile 含自建升级服务器主机名，属端点非凭据）。
+
+**admin package-lock.json 修复（CI 首跑失败的根因，两层）**：① package.json 升级 vitest4/jsdom29 后 lock 从未重生成（esbuild@0.28.2 整棵子树缺失，npm ci 必报 Missing）；② npm 11 重新生成时，vitest→esbuild@0.28.2 提升到顶层的 26 个 `@esbuild/*` 平台条目丢失 `optional:true` 标记，任意平台 `npm ci` 均 EBADPLATFORM。修法：官方源全量重生成 + 脚本补齐 optional 标记；已验证 npm10/npm11 双版本 `npm ci` 通过、tsc+vite 构建通过。教训：lock 的"可选平台依赖缺 optional 标记"是 npm11 已知类缺陷，lock 重生成后必须跑**真实** `npm ci`（`--dry-run` 在 npm11 下不校验完整性，会假绿）。
