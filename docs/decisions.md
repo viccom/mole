@@ -163,3 +163,15 @@
 **复验对首轮审查的两处修正**：psk≠32 组合判「可达」而非「不可达」（数据异常路径真实存在）；%v 丢哨兵判「latent 加固」而非缺陷（全仓无 errors.Is 消费方，注释明说靠文案前缀）。
 
 **验证**：双端 vet/build/test 全绿（client 仅 nodeid 2 例 Windows 既有基线）、-race 绿、-tags p2p 绿、**五模块 GOWORK=off 全绿（含修复的 GUI 两模块）**、WSL E2E 1-24 重跑 **PASS=27 FAIL=0**（修复后二进制，sc21/sc24 双方向实证 M1 无回归）。
+
+## 2026-10-02 合并前三件事完成记录（通道加密分支 feat/channel-encryption-psk）
+
+**① 对抗性密码学审查（B.5 阶段 0 硬前置）——通过**：双镜头独立子代理审查（协议态机/nonce/转录/分帧/供应链 + require 穷举/降级边界/泄漏面/连接语义），7+7 镜头无 Critical/High/Medium，双总评放行。三重验证：源码审查、flynn/noise 官方向量实跑（XXpsk2 PASS）、行为探测（跨连接拼接必败/msg2 篡改必败）。发现处置见方案文档 B.11：**修 3**（F1 legacy-psk 偏离 B.2、F3 未知 enc 版本硬失败、F6 握手失败 WARN 限频；22424a2，全红→绿 TDD；F1 同修无 authenticator 兜底路径）、**延后 2**（Prologue 可选加固、半开握手限频）、**记档 2**（TLS 卸载 require 陷阱、wss 存量死路）。
+
+**② ws/kcp E2E（B.6 ⑦）**：sc25（ws）/sc26（kcp）入 harness（run_enc_transport 助手 + cli_start 参数透传 + config.yaml 起 ws_port/kcp_port），**WSL 1-26 全量 PASS=29 FAIL=0**（原 27 保绿）。
+
+**③ tcpdump 级密文验证（B.6 ①）**：`scripts/e2e/capture_verify.sh`（明文/加密对照会话 + lo 抓包 + 字节标记断言）PASS——密文捕获中 `"cmd":"register"`/`"cmd":"ping"`/节点 ID 全不可见，明文对照全部可检出；`"enc":{"v":1}`/`"proof":` 为握手前协议明文锚点非泄漏。
+
+**回归**：server 18 包 / client 10 包 / shared 4 包（含 noisechan）全绿；`-tags p2p` 构建/vet 绿；desktop/manager GOWORK=off 绿；transport/tunnel/service 定向 -race 绿。**已知红**：client `internal/nodeid` 2 例 = master B-4 修复（830f526）不在本分支分叉点（7e03b00）之后，合并即消解，非本分支缺陷。
+
+**合并就绪**：三件前置全绿，分支 HEAD 87bb713（12+2+1+1=16 commits ahead of 7e03b00 fork 点），与 master 今日 11 commits 双向分叉——合并需真实 merge（预期冲突面：client/client.go、server/internal/tunnel/control.go、docs/decisions.md、AGENTS.md）。合并后动作：nodeid 2 例自然转绿、GUI 模块 go.sum 或需再 tidy（分支新增 flynn/noise 依赖 × master 依赖变动）。
