@@ -205,3 +205,7 @@
 **回归**：server 18 包 / client 10 包 / shared 4 包（含 noisechan）全绿；`-tags p2p` 构建/vet 绿；desktop/manager GOWORK=off 绿；transport/tunnel/service 定向 -race 绿。**已知红**：client `internal/nodeid` 2 例 = master B-4 修复（830f526）不在本分支分叉点（7e03b00）之后，合并即消解，非本分支缺陷。
 
 **合并就绪**：三件前置全绿，分支 HEAD 87bb713（12+2+1+1=16 commits ahead of 7e03b00 fork 点），与 master 今日 11 commits 双向分叉——合并需真实 merge（预期冲突面：client/client.go、server/internal/tunnel/control.go、docs/decisions.md、AGENTS.md）。合并后动作：nodeid 2 例自然转绿、GUI 模块 go.sum 或需再 tidy（分支新增 flynn/noise 依赖 × master 依赖变动）。
+
+## 2026-10-02 通道加密分支合并 master（c45c68e）
+
+`feat/channel-encryption-psk`（87bb713，16 commits）合入 master，merge commit c45c68e。冲突仅 docs/decisions.md（双方文末追加节，两侧保留），client.go（master 的 A-1 修复 × 分支的 enc 接线）与 control.go 等自动合并一次通过。合并后验收：server/client/shared 三模块 build/vet/test 全绿（**nodeid 2 例 Windows 红随 master B-4 修复并入转绿**）、`-tags p2p` 构建/vet 绿、desktop/manager GOWORK=off 绿；合并后代码重编 linux 二进制，WSL E2E 1-26 **PASS=29 FAIL=0**（sc25 ws/sc26 kcp 全链路加密复测含修复版语义）。master 已推 GitHub；GUI 两嵌套模块 go.sum 未再 tidy（GOWORK=off 构建已证无需）。分支与 worktree mole-wt-psk 保留（已并入，后续可 `git worktree remove` + 删分支）。生产上线按方案 B.5 节奏：enabled → 服务端 enc 覆盖率对账（明文 WARN 应为 0）→ ≤30 天翻 require=true。
