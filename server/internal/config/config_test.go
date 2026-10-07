@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -220,6 +221,109 @@ func TestConfigValidation_InvalidTransport(t *testing.T) {
 	cfg.Server.Transport = "quic"
 	if err := cfg.validate(); err == nil {
 		t.Error("should reject unknown transport")
+	}
+}
+
+// ===== 方案 B：channel_encryption 配置节 =====
+
+// 通道加密默认必须全 false（未启用）：协商零变化，兼容矩阵的「旧服务端」列
+func TestChannelEncryptionConfig_Defaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.ChannelEncryption.Enabled {
+		t.Error("channel_encryption.enabled should default to false")
+	}
+	if cfg.ChannelEncryption.Require {
+		t.Error("channel_encryption.require should default to false")
+	}
+}
+
+// require 蕴含 enabled：require=true 且 enabled=false 是配置错误，必须 fail-fast
+func TestChannelEncryptionConfig_RequireImpliesEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.JWTSecret = "valid-secret-key-for-testing-12345"
+
+	cfg.ChannelEncryption.Enabled = true
+	cfg.ChannelEncryption.Require = true
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("enabled+require should pass, got %v", err)
+	}
+
+	cfg.ChannelEncryption.Enabled = false
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("require=true with enabled=false must fail validation")
+	}
+	if !strings.Contains(err.Error(), "channel_encryption") {
+		t.Errorf("error must name the offending section, got %q", err.Error())
+	}
+
+	// 单开 enabled（过渡态）合法
+	cfg.ChannelEncryption.Require = false
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("enabled-only should pass, got %v", err)
+	}
+}
+
+// yaml 合并：未提节保持默认 false，显式 true 可开启
+func TestChannelEncryptionConfig_YAMLMerge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	if err := os.WriteFile(path, []byte("auth:\n  jwt_secret: valid-secret-key-for-testing-12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ChannelEncryption.Enabled || cfg.ChannelEncryption.Require {
+		t.Errorf("absent section must stay false/false, got %+v", cfg.ChannelEncryption)
+	}
+
+	if err := os.WriteFile(path, []byte("auth:\n  jwt_secret: valid-secret-key-for-testing-12345\nchannel_encryption:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.ChannelEncryption.Enabled || cfg.ChannelEncryption.Require {
+		t.Errorf("enabled=true alone must merge as true/false, got %+v", cfg.ChannelEncryption)
+	}
+}
+
+// env 覆盖生效（仿 MA_TLS_ENABLED 的 bool 解析：true/1 为真，其余假）
+func TestChannelEncryptionConfig_EnvOverrides(t *testing.T) {
+	t.Setenv("MA_CHANNEL_ENC_ENABLED", "true")
+	t.Setenv("MA_CHANNEL_ENC_REQUIRE", "1")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.ChannelEncryption.Enabled {
+		t.Error("MA_CHANNEL_ENC_ENABLED=true must set enabled")
+	}
+	if !cfg.ChannelEncryption.Require {
+		t.Error("MA_CHANNEL_ENC_REQUIRE=1 must set require")
+	}
+
+	// env 优先于 yaml：yaml enabled=true + env false → false（require 清空）
+	t.Setenv("MA_CHANNEL_ENC_ENABLED", "false")
+	t.Setenv("MA_CHANNEL_ENC_REQUIRE", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("auth:\n  jwt_secret: valid-secret-key-for-testing-12345\nchannel_encryption:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ChannelEncryption.Enabled {
+		t.Error("MA_CHANNEL_ENC_ENABLED=false must override yaml enabled=true")
+	}
+	if cfg.ChannelEncryption.Require {
+		t.Error("require must be cleared when MA_CHANNEL_ENC_REQUIRE empty")
 	}
 }
 

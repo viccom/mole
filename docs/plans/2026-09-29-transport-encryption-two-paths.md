@@ -1,6 +1,6 @@
 # 传输通道加密实施文档：方案 A「双端口 + 证书」/ 方案 B「PSK 协议内升级」
 
-> **状态**：技术实施方案（方案 B 已按新仓库代码复审修正，实施于分支 `feat/channel-encryption-psk`）
+> **状态**：技术实施方案（方案 B 已实施完成：分支 `feat/channel-encryption-psk`，见 B.10 实施记录；方案 A 未实施）
 > **前置**：SEC-01 已收口（全量 v0.8.0，`legacy_format_enabled: false` 生产生效）
 > **关系**：两方案各自独立完整、互不需要对方；与 `2026-09-29-transport-tls-upgrade.md`（机会式 TLS 方案）为并列路线。本文不含方案间对比，采用哪个由部署场景决定。
 > **2026-09-30 复审移植**：本文自旧仓库 `moleAgent_Serv/docs/plans/` 移植入 mole monorepo，并按新仓库代码逐锚点复核修正（路径前缀、行号、结构体归属、单源化适配）。全部修正项汇总于文末「B.9 复审修正记录」；正文已直接改写为复核后口径，锚点行号以 2026-09-30 新仓库 master（b392ac5）为准。
@@ -232,3 +232,40 @@ B. ok 缺 enc 字段（旧服务端 / enabled=false）:
 9. **SEC-13 计数语义锚定**：`authOK`（:426）先于 ok 应答（:427）、`authFail`（:397）先于 err 应答（:398）；握手失败与 require 拒绝均不触碰二者（B.2 已明示）。
 10. **listenport 已单源**（影响 A.2）：ReservedPorts 唯一落点 shared/listenport，旧"G-4 客户端手工副本"警示作废。
 11. **杂项**：服务端 config 结构体名为 `ServerConfig`、新增顶层段仿 `NodeAuthConfig` 三件套、env 覆盖须手工加 `applyEnvOverrides`；module 名 `moleAgent_Serv` / `moleAgent_client` / `mole/shared`（replace 引入）；`handleConnection` 现含 SEC-13 预检（320-325）与 KCP probe 丢弃（328-338），均在插入点之前、无交互；flynn/noise goproxy 可达（v1.1.0）。
+
+## B.10 实施记录（2026-09-30，分支 feat/channel-encryption-psk）
+
+| 提交 | 内容 |
+|---|---|
+| 3aa38ce | `shared/noisechan`：XXpsk2 经 flynn/noise v1.1.0 `PresharedKeyPlacement=2` 原生支持（库自带 XXpsk2 官方向量佐证）；2 字节大端分帧（明文单帧上限 65519 为 tag 预留）；bufio 穿针全生命周期；Read 短读 pending 续供；失败关 conn + `ErrHandshake` 哨兵。测试 8 类含 -race 并发写 |
+| 33dadd9 | `shared/proto`：`NodeAuthLine`（认证行契约单源）+ `EncCapability` + `ControlResponse.Enc`（omitempty）+ `AuthKeyEnc`/`EncProtocolV1`；ControlResponse 锁测试 4→5 字段 |
+| 9521dba | 双端协商：服务端 `completeAuthConnection`（require 拒绝前置不触 limiter → ok-with-enc → `UpgradeResponder` 失败绝不回落 → 明文放行 WARN 按 IP/5min 限频；`Node authenticated` 日志加 enc 字段）+ config 三件套 + `NodeAccessAuthenticator` 返回 psk（不进 grant/日志）；客户端 dialer 分派（升级/回落 WARN 每地址每进程一次/硬失败上抛）+ `EncMode`（默认 on）+ `-enc` 旗标 |
+| bd49314 | E2E sc18-24 + `enc_proxy.py`（strip/corrupt 双模式 MITM）：WSL 全量 `PASS=27 FAIL=0`，sc1-17 无回归 |
+
+**与本文的实现偏差（均为实施期改进，正文相应小节以本记录为准）**：
+1. **认证行三处落点 → 单源 struct**：B.3/B.4 复审版仍按「服务端匿名 struct + 客户端 map + 客户端应答匿名 struct」三处描述；实施中发现 map 值只能为字符串（`"enc":"1"`）而 int 字段收数字——类型错配会直接炸认证行解析，遂收敛为 `proto.NodeAuthLine` 双端共用（proof-only 输出与旧形态逐字节一致，由测试锁定）。这同时消除了复审发现 #1 的三处形态漂移。
+2. **noiseconn 双份 → `shared/noisechan` 单源**（B.9 #2 的既定方向）；shared 引入首个第三方依赖 flynn/noise（go.mod+go.sum 锁版本，无 vendor）。
+3. `-enc` 旗标用 `flag.Visit` 仅显式传入时覆盖——无条件赋值会把配置文件 `"enc":"off"` 静默翻回 on。
+4. require 拒绝日志无 node_id（此刻客户端尚匿名，register 在 smux 之后）；带 remote/transport/userId，关键词 `channel encryption required` 不变。
+
+**E2E 覆盖对照（B.6 → 实跑）**：① sc18/sc24（enabled/require）② sc20 ③ sc21 ④ sc19 ⑤ sc23（corrupt msg2：握手失败=6、注册成功=0、回落 WARN=0）⑥ sc22（剥认证行 enc：明文仍可用、WARN 恰 1——残余风险演示）⑧ sc19（enabled=false 零接触回滚）。**未覆盖**：⑦ ws/kcp 传输升级链路（后续补）；抓包级密文验证以日志/行为断言代替；「剥 enc × require」未单列（sc21 等价覆盖 require 拒绝语义）。单测侧：双端协商/回落/硬断/psk 错配/穿针/限频全覆盖（server `channel_enc_test.go` 9 场景 + client `dialer_enc_test.go` 5 场景 + config 2 项 + noisechan 9 类），`-race` 全绿。
+
+**审查复审修复轮（2026-10-01，深度审查 + 逐条复验后 5 项修复）**：M1 require 拒绝谓词改按「服务端供给能力」判定（`canEncrypt = wantEnc && enabled && len(psk)==32` 先行；原谓词被客户端 enc:1 短路，require+enabled=false 或 psk≠32 时放出静默明文会话——后者经非 32 字节 TokenHash 记录可达，修正了首轮审查"不可达"的误判）；M2 客户端 useTLS 判定与 WS dialer 同口径（`Config.effectiveTransportTLS()`：wss:// 前缀并入，消除已加密连接上的误导性明文回落 WARN）；M3 noisechan 非正握手超时直接拒绝（原 timeout<=0 静默无 deadline，护栏测试实证阻塞）；H1 双 GUI 模块 go.sum 补 flynn/noise 条目（desktop GOWORK=off 构建断裂复现 exit=1，验证矩阵补 GUI GOWORK=off 腿）；Low：握手最小帧注释 48 字节纠错（官方向量实证）、fail() 双 %w（内层哨兵可 errors.Is）、EncMode 取值引 transport 常量、本节测试计数纠错。
+
+**部署提醒（B.5 路线的既有约束）**：上线顺序自由（谁先谁后都不断链）；收口 `require=true` 前须确认全量 `enc=true` 且无明文 WARN；回滚 = 服务端 `MA_CHANNEL_ENC_ENABLED=false` 或 yaml 关闭，新客户端下次重连自动回落，零接触。
+
+## B.11 对抗性密码学审查（2026-10-02，阶段 0 硬前置）——通过放行
+
+双镜头独立审查（协议态机/供应链 + 集成/降级边界），结论均放行：**7+7 镜头无 Critical/High/Medium**。核心面经源码审查 + flynn/noise 官方向量实跑 + 行为探测三重验证：XXpsk2 选型成立（服务端认证=PSK 持有证明，客户端认证由前置 proof 承担，ee/es/se 前向保密）；PSK 双端逐字节同源（客户端 `sha256(token)`＝服务端 `hex.DecodeString(TokenHash)`）；nonce 全程尊重库实现（无 SetNonce/Rekey 绕过，MaxNonce 硬失败）；跨连接拼接握手实测必败；剥除/篡改 msg2 必失败且双端绝不回落（B.7 #6）；分帧无长度驱动内存放大；失败 oracle 弱（时序可区分性不含 PSK 信息）；flynn/noise v1.1.0 无已知 CVE，govulncheck 0 affecting。
+
+**发现处置**（全部 Low/Info）：
+- **F1 已修**（22424a2）：legacy 明文 token 认证路径返回真实 psk，偏离 B.2「legacy→psk=nil」——明文上线的 token 使 sha256(token) 对窃听者可推导，加密形同虚设且 enc=true 产生审计假信号。修：`AuthenticateNodeToken` 两路径与 control.go 无 authenticator 兜底路径（同类同修）均返回 psk=nil，enc 协商仅 proof 路径发生。红→绿 TDD。
+- **F3-version 已修**（22424a2）：客户端把未知 enc 版本（v≠1）当旧服务端回落明文 → 改为硬失败（B.7 #4「已宣告即硬断」）；encCap 缺失回落、requestEnc=false 忽略宣告两语义不变。
+- **F6 已修**（22424a2）：服务端握手失败 WARN 无限频 → per-IP/5min 限频（与明文 WARN 同构，提取共用 warnRateAllow）。
+- **Prologue 未绑定**：不修（方案"可选加固"定性成立）。现状不可利用（psk 与 proof 同栈同连接，跨会话拼接实测必败）；风险是未来性的——引入 psk 缓存或第二条认证路径时，prologue=sha256(challenge‖authLine‖okLine) 是唯一护栏，届时必做。
+- **F3-insider 延后**：持有效 token 者可慢速握手占用 worker（msg1 合法性无需 PSK，每连接 ≈20s，worker=2×NumCPU、队列 1000 有界）；与认证期既有暴露同构非新增量级。后续可加同 IP 并发半开握手计数。
+- **TLS 卸载陷阱（记档）**：require 合规判定按服务端本地传输名 `{"tls","wss"}`——若生产存在 stunnel/nginx 终结 TLS 后明文转发到 ws/tcp 的部署，require=true 会整体误拒（fail-closed）。收口前须对账生产部署形态。
+- **wss 服务端死路（存量）**：ws_transport.go ServeTLS 未配证书 → 监听协程退出（fail-dead）。非本分支引入，非绕过面（"wss" 合规判定实际不可达）；修复属传输层独立事项。
+- **[info] 无 rekey**：MaxNonce 2^64-2 硬失败语义正确；长连接理论 nonce 耗尽 → 断开重连（smux keepalive 兜底），运维无需动作。
+
+**B.6 覆盖收口（本节同时刷新 B.10 尾"未覆盖"清单）**：⑦ ws/kcp 升级链路已补（sc25/sc26，config.yaml 起 ws_port/kcp_port + `-transport` 透传，**1-26 PASS=29 FAIL=0**）；抓包级密文验证已补（`scripts/e2e/capture_verify.sh`：密文捕获中 register/ping/tunnel_push/节点 ID 全不可见，明文对照可检出，握手前明文锚点 `enc:{v:1}`/`proof` 属协议设计）。至此 B.6 ①-⑧ 全覆盖（「剥 enc × require」由 sc21 等价覆盖）。

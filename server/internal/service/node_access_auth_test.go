@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -138,7 +139,7 @@ func TestAuthenticateNodeToken_ActiveUserToken(t *testing.T) {
 	repo.Create(tok)
 
 	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
-	grant, err := svc.AuthenticateNodeToken(context.Background(), "test-raw-token")
+	grant, _, err := svc.AuthenticateNodeToken(context.Background(), "test-raw-token")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -168,7 +169,7 @@ func TestAuthenticateNodeToken_DisabledToken(t *testing.T) {
 	repo.Create(tok)
 
 	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
-	grant, err := svc.AuthenticateNodeToken(context.Background(), "disabled-raw")
+	grant, _, err := svc.AuthenticateNodeToken(context.Background(), "disabled-raw")
 	if err == nil {
 		t.Fatal("expected error for disabled token")
 	}
@@ -185,7 +186,7 @@ func TestAuthenticateNodeToken_LegacyGlobalToken(t *testing.T) {
 	repo := newMockRepo()
 	svc := NewAccessTokenAuthService(repo, "legacy-secret").(*accessTokenAuthService)
 
-	grant, err := svc.AuthenticateNodeToken(context.Background(), "legacy-secret")
+	grant, _, err := svc.AuthenticateNodeToken(context.Background(), "legacy-secret")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -207,7 +208,7 @@ func TestAuthenticateNodeToken_LegacyFallback_WhenUserTokenNotFound(t *testing.T
 	repo.Create(makeActiveToken("tok-other", "user-other", "some-other-raw"))
 
 	svc := NewAccessTokenAuthService(repo, "legacy-secret").(*accessTokenAuthService)
-	grant, err := svc.AuthenticateNodeToken(context.Background(), "legacy-secret")
+	grant, _, err := svc.AuthenticateNodeToken(context.Background(), "legacy-secret")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -221,7 +222,7 @@ func TestAuthenticateNodeToken_InvalidToken(t *testing.T) {
 	repo := newMockRepo()
 	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
 
-	grant, err := svc.AuthenticateNodeToken(context.Background(), "garbage")
+	grant, _, err := svc.AuthenticateNodeToken(context.Background(), "garbage")
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}
@@ -240,7 +241,7 @@ func TestAuthenticateNodeToken_UserTokenPriority(t *testing.T) {
 	repo.Create(makeActiveToken("tok-pri", "user-pri", "shared-secret"))
 
 	svc := NewAccessTokenAuthService(repo, "shared-secret").(*accessTokenAuthService)
-	grant, err := svc.AuthenticateNodeToken(context.Background(), "shared-secret")
+	grant, _, err := svc.AuthenticateNodeToken(context.Background(), "shared-secret")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -263,7 +264,7 @@ func TestAuthenticateNodeToken_UpdateErrorDoesNotBlock(t *testing.T) {
 	repo := &mockRepoWithUpdateError{base}
 	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
 
-	grant, err := svc.AuthenticateNodeToken(context.Background(), "raw-update-err")
+	grant, _, err := svc.AuthenticateNodeToken(context.Background(), "raw-update-err")
 	if err != nil {
 		t.Fatalf("expected no error despite update failure, got %v", err)
 	}
@@ -358,7 +359,7 @@ func TestAuthenticateNodeProof_RoundTrip(t *testing.T) {
 		challenge[i] = byte(i)
 	}
 
-	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw, challenge), challenge)
+	grant, _, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw, challenge), challenge)
 	if err != nil {
 		t.Fatalf("expected proof to authenticate, got %v", err)
 	}
@@ -383,7 +384,7 @@ func TestAuthenticateNodeProof_MultipleCandidates(t *testing.T) {
 	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
 	challenge := []byte("0123456789abcdef0123456789abcdef")
 
-	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw2, challenge), challenge)
+	grant, _, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw2, challenge), challenge)
 	if err != nil {
 		t.Fatalf("expected authentication via second candidate, got %v", err)
 	}
@@ -405,7 +406,7 @@ func TestAuthenticateNodeProof_WrongChallenge(t *testing.T) {
 	tampered[7] ^= 0x01
 
 	proof := clientProofHex(t, raw, challenge)
-	grant, err := svc.AuthenticateNodeProof(context.Background(), proof, tampered)
+	grant, _, err := svc.AuthenticateNodeProof(context.Background(), proof, tampered)
 	if err == nil {
 		t.Fatal("proof bound to a different challenge must fail")
 	}
@@ -436,7 +437,7 @@ func TestAuthenticateNodeProof_BadProofValues(t *testing.T) {
 		{"空字符串", ""},
 	}
 	for _, tc := range cases {
-		grant, err := svc.AuthenticateNodeProof(context.Background(), tc.proofHex, challenge)
+		grant, _, err := svc.AuthenticateNodeProof(context.Background(), tc.proofHex, challenge)
 		if err == nil || grant != nil {
 			t.Errorf("%s: must fail, got grant=%+v err=%v", tc.name, grant, err)
 		}
@@ -454,7 +455,7 @@ func TestAuthenticateNodeProof_DisabledTokenSkipped(t *testing.T) {
 	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
 	challenge := []byte("aabbccddeeff00112233445566778899")
 
-	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw, challenge), challenge)
+	grant, _, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw, challenge), challenge)
 	if err == nil {
 		t.Fatalf("disabled token proof must fail, got grant %+v", grant)
 	}
@@ -473,7 +474,7 @@ func TestAuthenticateNodeProof_LegacyGlobal(t *testing.T) {
 	challenge := make([]byte, 32)
 	rand.Read(challenge) //nolint:errcheck
 
-	grant, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, legacyRaw, challenge), challenge)
+	grant, _, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, legacyRaw, challenge), challenge)
 	if err != nil {
 		t.Fatalf("legacy proof must authenticate, got %v", err)
 	}
@@ -490,11 +491,106 @@ func TestAuthenticateNodeProof_NoCandidates(t *testing.T) {
 	repo := newMockRepo()
 	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
 
-	grant, err := svc.AuthenticateNodeProof(context.Background(), hex.EncodeToString(make([]byte, 32)), []byte("challenge-bytes-32..............."))
+	grant, _, err := svc.AuthenticateNodeProof(context.Background(), hex.EncodeToString(make([]byte, 32)), []byte("challenge-bytes-32..............."))
 	if err == nil || grant != nil {
 		t.Fatalf("must fail with no candidates, got grant=%+v err=%v", grant, err)
 	}
 	if !strings.Contains(err.Error(), "invalid token") {
 		t.Errorf("error must follow the legacy wording, got %q", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// psk 返回（方案 B：AuthenticateNodeProof/Token 匹配成功时携带 sha256(token)）
+// ---------------------------------------------------------------------------
+
+// proof 命中用户级 token：psk 必须等于 sha256(明文) 的 32 字节原始值（Noise XXpsk2 用）
+func TestAuthenticateNodeProof_ReturnsPSK(t *testing.T) {
+	repo := newMockRepo()
+	raw := "mat_pskreturn000000000000000000"
+	repo.Create(makeActiveToken("tok-psk", "user-psk", raw))
+
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+	challenge := []byte("psk-return-challenge-32-bytes-ok!!")
+
+	grant, psk, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, raw, challenge), challenge)
+	if err != nil {
+		t.Fatalf("proof must authenticate, got %v", err)
+	}
+	if grant == nil {
+		t.Fatal("grant must not be nil")
+	}
+	want := sha256.Sum256([]byte(raw))
+	if len(psk) != 32 || !bytes.Equal(psk, want[:]) {
+		t.Fatalf("psk mismatch: got %x (%d bytes), want %x", psk, len(psk), want)
+	}
+}
+
+// proof 命中 legacy 候选：psk = sha256(legacy 明文) 原始字节
+func TestAuthenticateNodeProof_LegacyReturnsPSK(t *testing.T) {
+	repo := newMockRepo()
+	legacyRaw := "legacy-psk-raw-token"
+	svc := NewAccessTokenAuthService(repo, legacyRaw).(*accessTokenAuthService)
+	challenge := []byte("legacy-psk-challenge-32-bytes-ok!!")
+
+	_, psk, err := svc.AuthenticateNodeProof(context.Background(), clientProofHex(t, legacyRaw, challenge), challenge)
+	if err != nil {
+		t.Fatalf("legacy proof must authenticate, got %v", err)
+	}
+	want := sha256.Sum256([]byte(legacyRaw))
+	if !bytes.Equal(psk, want[:]) {
+		t.Fatalf("legacy psk mismatch: got %x, want %x", psk, want)
+	}
+}
+
+// 认证失败：psk 必须为 nil（绝不部分返回）
+func TestAuthenticateNodeProof_FailureReturnsNilPSK(t *testing.T) {
+	repo := newMockRepo()
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+
+	grant, psk, err := svc.AuthenticateNodeProof(context.Background(), hex.EncodeToString(make([]byte, 32)), []byte("challenge-bytes-32..............."))
+	if err == nil || grant != nil {
+		t.Fatalf("must fail, got grant=%+v err=%v", grant, err)
+	}
+	if psk != nil {
+		t.Fatalf("psk must be nil on failure, got %x", psk)
+	}
+}
+
+// 明文 token 认证路径（用户级 token 命中与 legacy 全局 token 兜底）psk 一律为
+// nil（B.2/F1：本路径 token 明文上线，窃听者可自行推导 sha256(token)，服务端
+// 供给 psk 只会产出假加密与 enc=true 审计假信号；psk 仅 proof 路径产出）
+func TestAuthenticateNodeToken_PlaintextPathsReturnNilPSK(t *testing.T) {
+	repo := newMockRepo()
+	raw := "mat_tokenpsk00000000000000000000"
+	repo.Create(makeActiveToken("tok-tpsk", "user-tpsk", raw))
+
+	svc := NewAccessTokenAuthService(repo, "").(*accessTokenAuthService)
+	grant, psk, err := svc.AuthenticateNodeToken(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("token must authenticate, got %v", err)
+	}
+	if grant == nil {
+		t.Fatal("grant must not be nil")
+	}
+	if psk != nil {
+		t.Fatalf("plaintext token path must return nil psk (B.2 F1: token goes on the wire), got %x", psk)
+	}
+
+	// legacy 明文命中：同样 psk=nil
+	legacyRaw := "legacy-token-psk"
+	svc2 := NewAccessTokenAuthService(repo, legacyRaw).(*accessTokenAuthService)
+	_, psk2, err := svc2.AuthenticateNodeToken(context.Background(), legacyRaw)
+	if err != nil {
+		t.Fatalf("legacy token must authenticate, got %v", err)
+	}
+	if psk2 != nil {
+		t.Fatalf("legacy plaintext token path must return nil psk, got %x", psk2)
+	}
+
+	// 失败路径 psk 为 nil
+	_, psk3, err := svc.AuthenticateNodeToken(context.Background(), "no-such-token")
+	if err == nil || psk3 != nil {
+		t.Fatalf("failure must return nil psk, got psk=%x err=%v", psk3, err)
 	}
 }

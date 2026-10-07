@@ -1,6 +1,7 @@
 package moleAgent_client
 
 import (
+	"encoding/json"
 	"moleAgent_client/internal/nodeid"
 	"os"
 	"path/filepath"
@@ -134,6 +135,49 @@ func TestLoadConfigFileDropsDuplicateTunnels(t *testing.T) {
 	}
 }
 
+// 方案 B：EncMode 配置三态——json 缺省字段 ApplyDefaults 后为 "on"（旧配置
+// 文件升级即默认加密）；"off" 合法（调试杆）；非法值 Validate 必须报错并给
+// 出合法取值（不静默猜默认）
+func TestEncModeDefaultAndValidation(t *testing.T) {
+	t.Parallel()
+
+	// json 缺省字段 → ApplyDefaults 后 "on"
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"server_addr":"127.0.0.1:9981","token":"tok"}`), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.EncMode != "" {
+		t.Fatalf("缺省 json 不应带出 EncMode, got %q", cfg.EncMode)
+	}
+	cfg.ApplyDefaults()
+	if cfg.EncMode != "on" {
+		t.Fatalf("ApplyDefaults 后 EncMode = %q, want \"on\"", cfg.EncMode)
+	}
+
+	validCfg := func() *Config {
+		c := DefaultConfig()
+		c.NodeID = "Test0001"
+		c.ApplyDefaults()
+		return c
+	}
+
+	c := validCfg()
+	c.EncMode = "off"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("enc=off 必须合法（调试杆）: %v", err)
+	}
+
+	c = validCfg()
+	c.EncMode = "weird"
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("enc=weird 必须被 Validate 拒绝")
+	}
+	if !strings.Contains(err.Error(), "on") || !strings.Contains(err.Error(), "off") {
+		t.Fatalf("非法 enc 的错误必须给出合法取值（on/off）, got %v", err)
+	}
+}
+
 // F2 空 target 豁免：服务端对 ser2mq/ser2tcp/ser2udp/webssh 四类完全不校验
 // target（空 target 合法落库，见 serverAllowsEmptyTarget）。配置文件漏写
 // target 的这四类隧道必须保留且 Target 仍为空；豁免只免 target 检查——
@@ -171,5 +215,37 @@ func TestLoadConfigFileKeepsEmptyTargetLocalTunnels(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "tcp-no-target") {
 		t.Fatalf("豁免不外溢：tcp 空 target 仍须剔除告警:\n%s", buf.String())
+	}
+}
+
+// TestEffectiveTransportTLS 锁 useTLS 的同口径判定（审查修复 M2）：
+// WS dialer 判定传输是否走 TLS 的条件是 UseTLS 旗标或 wss:// 地址前缀，
+// enc 协商的 useTLS 输入必须与之一致——否则 wss://+tls=false 的连接（实际
+// 已加密）会误发 enc 位并打出误导性的「明文回落」WARN，污染收口对账观测面。
+func TestEffectiveTransportTLS(t *testing.T) {
+	cases := []struct {
+		name      string
+		useTLS    bool
+		transport string
+		addr      string
+		want      bool
+	}{
+		{"tcp 明文", false, "tcp", "px.example:9981", false},
+		{"tcp tls 旗标", true, "tcp", "px.example:9981", true},
+		{"ws 明文地址", false, "ws", "px.example:9981", false},
+		{"ws wss 前缀无旗标", false, "ws", "wss://px.example:9981", true},
+		{"ws wss 前缀 + 旗标", true, "ws", "wss://px.example:9981", true},
+		{"kcp 不受 wss 前缀影响", false, "kcp", "wss://px.example:9981", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.UseTLS = tc.useTLS
+			cfg.Transport = tc.transport
+			cfg.ServerAddr = tc.addr
+			if got := cfg.effectiveTransportTLS(); got != tc.want {
+				t.Errorf("effectiveTransportTLS(%v,%q,%q) = %v, want %v", tc.useTLS, tc.transport, tc.addr, got, tc.want)
+			}
+		})
 	}
 }

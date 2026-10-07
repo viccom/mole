@@ -19,6 +19,7 @@ import (
 
 	"github.com/xtaci/smux"
 
+	"mole/shared/noisechan"
 	"mole/shared/proto"
 )
 
@@ -73,6 +74,14 @@ type TLSConfig struct {
 	InsecureSkipVerify bool
 }
 
+// 通道加密协商模式（client Config.EncMode 的合法取值）。SessionManager 零值
+// 视为 EncModeOn：未经装配处显式配置的直连构造默认尝试加密协商，旧服务端
+// 自动回落明文（安全缺省）。
+const (
+	EncModeOn  = "on"
+	EncModeOff = "off"
+)
+
 // DialFunc 连接函数类型（支持测试 mock）
 type DialFunc func(ctx context.Context, addr string) (net.Conn, error)
 
@@ -110,6 +119,11 @@ type SessionManager struct {
 	conn         net.Conn
 	closed       bool
 	smuxOverride *smux.Config
+	encMode      string // 通道加密协商模式（零值视为 on）；SetChannelEncryption 写入
+	useTLS       bool   // 传输层是否已走 TLS（TLS 连接不发 enc 位，见 Connect 内安全边界注释）
+	// warnedPlaintext 按服务端地址记录明文回落 WARN 是否已发（每地址每进程
+	// 一次，防旧服务端场景下 5s 重连循环刷屏）；mu 保护
+	warnedPlaintext map[string]bool
 }
 
 // NewSessionManager 创建会话管理器
@@ -123,6 +137,33 @@ func (sm *SessionManager) SetSmuxOverride(cfg *smux.Config) {
 	sm.smuxOverride = cfg
 }
 
+// SetChannelEncryption 配置通道加密协商输入：mode 取 EncModeOn/EncModeOff
+// （零值视为 on）；useTLS 记录本连接传输层是否已加密。装配处（client.New
+// 构造 dial 后）调用一次。
+func (sm *SessionManager) SetChannelEncryption(mode string, useTLS bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.encMode = mode
+	sm.useTLS = useTLS
+}
+
+// warnPlaintextFallbackOnce 明文回落告警：每服务端地址每进程一次（方案 B
+// 异常矩阵 #1，防旧服务端场景下 5s 重连循环刷屏），之后静默。文案是 E2E
+// 断言的观测锚点，不可改动。
+func (sm *SessionManager) warnPlaintextFallbackOnce(addr string) {
+	sm.mu.Lock()
+	if sm.warnedPlaintext[addr] {
+		sm.mu.Unlock()
+		return
+	}
+	if sm.warnedPlaintext == nil {
+		sm.warnedPlaintext = make(map[string]bool)
+	}
+	sm.warnedPlaintext[addr] = true
+	sm.mu.Unlock()
+	log.Printf("WARNING: plaintext fallback: server %s did not offer channel encryption (connection continues in plaintext)", addr)
+}
+
 // Connect 连接服务器、执行认证、建立 smux 会话
 func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error {
 	sm.mu.Lock()
@@ -131,6 +172,11 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 		return fmt.Errorf("session manager closed")
 	}
 	smuxOverride := sm.smuxOverride
+	// 是否在认证行携带通道加密请求位（enc:1）：encMode=on 且传输未走 TLS。
+	// 安全边界：UseTLS 不发 enc = 单连接单加密（防 TCP→TLS→Noise→smux 双重
+	// 加密、全部隧道载荷白付两份加解密开销；TLS 连接的机密性由 TLS 层承担，
+	// 且此时 ok 应答按服务端组合规则也不会带 enc 字段）
+	requestEnc := sm.encMode != EncModeOff && !sm.useTLS
 	sm.mu.Unlock()
 
 	conn, err := sm.dial(ctx, addr)
@@ -138,15 +184,51 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}
 
-	// Challenge-Response 认证
-	br, err := authenticate(conn, token)
+	// Challenge-Response 认证（requestEnc 时认证行携带 enc 请求位）
+	br, encCap, err := authenticate(conn, token, requestEnc)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("auth: %w", err)
 	}
 
-	// Wrap conn so smux sees both bufio buffered data and raw conn reads
-	sessionConn := &bufferedConn{Conn: conn, reader: br}
+	// 通道加密分派（方案 B 决策矩阵，F3 修订为三分支）：本端请求加密且应答带
+	// enc（V==EncProtocolV1）→ Noise 升级，sessionConn 换 noiseConn；应答无
+	// enc 字段 → 旧服务端回落明文（+WARN once）；应答带本端不支持的版本 →
+	// 硬失败绝不回落（已宣告能力的对端版本不识别 = 协议层不可信状态，降格为
+	// 明文等于给注入/剥除攻击留静默通道，B.7 #4「已宣告即硬断」）
+	var sessionConn net.Conn
+	switch {
+	case encCap == nil:
+		// ok 缺 enc 字段 = 旧服务端 / 未启用：回落明文 + WARN 每服务端地址
+		// 每进程一次。requestEnc=false 时静默（enc=off 是显式调试选择、UseTLS
+		// 传输已加密，均不告警）
+		if requestEnc {
+			sm.warnPlaintextFallbackOnce(addr)
+		}
+		// Wrap conn so smux sees both bufio buffered data and raw conn reads
+		sessionConn = &bufferedConn{Conn: conn, reader: br}
+	case requestEnc && encCap.V == proto.EncProtocolV1:
+		// 安全边界：握手失败绝不回落——服务端已宣告能力后失败即攻击/损坏，
+		// 此处回落等于把明文交给破坏 msg2 的中间人。错误直接上抛走重连循环
+		//（专属错误串由 noisechan.ErrHandshake 的文案前缀承担）。
+		psk := sha256.Sum256([]byte(token))
+		noiseConn, err := noisechan.UpgradeInitiator(conn, br, psk[:], DefaultAuthTimeout)
+		if err != nil {
+			conn.Close() // UpgradeInitiator 失败路径已关 conn；此处兜底幂等
+			return fmt.Errorf("channel encryption upgrade: %w", err)
+		}
+		sessionConn = noiseConn
+	case requestEnc:
+		// F3（B.7 #4）：服务端宣告了本端不支持的加密协议版本（如 v=2 比客户端
+		// v1 新）→ 硬失败断开，绝不降格为「旧服务端」回落明文、不发 fallback
+		// WARN。专属错误串 "unsupported channel encryption version" 是测试断言锚点
+		conn.Close()
+		return fmt.Errorf("server announced unsupported channel encryption version %d (client supports v%d); refusing plaintext fallback", encCap.V, proto.EncProtocolV1)
+	default:
+		// requestEnc=false（enc=off / UseTLS）：本端未请求加密，任何 enc 宣告
+		// 一律忽略（含不识别版本），静默明文——与既有 enc=off 语义一致
+		sessionConn = &bufferedConn{Conn: conn, reader: br}
+	}
 
 	// 建立 smux 会话
 	smuxCfg := &smux.Config{
@@ -229,13 +311,17 @@ func (sm *SessionManager) Disconnect() {
 }
 
 // authenticate 执行 Challenge-Response 认证，返回 bufio.Reader 保留缓冲数据
-func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
+// 与 ok 应答携带的通道加密能力宣告（nil = 服务端未宣告）。requestEnc 为
+// true 时认证行携带 enc 请求位（proto.EncProtocolV1）；返回的 reader 是本
+// 函数创建、读认证应答所用的同一个 bufio.Reader——Noise 升级必须穿针复用
+// 它（缓冲可能已吞下后续握手字节，绕开即帧流错位）。
+func authenticate(conn net.Conn, token string, requestEnc bool) (*bufio.Reader, *proto.EncCapability, error) {
 	log.Println("  auth: waiting for challenge...")
 	// 读取 32 字节 challenge
 	conn.SetReadDeadline(time.Now().Add(DefaultAuthTimeout))
 	challenge := make([]byte, 32)
 	if _, err := io.ReadFull(conn, challenge); err != nil {
-		return nil, fmt.Errorf("read challenge: %w", err)
+		return nil, nil, fmt.Errorf("read challenge: %w", err)
 	}
 	log.Println("  auth: challenge received, sending credentials")
 
@@ -247,13 +333,19 @@ func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 	mac.Write(challenge)
 	proof := hex.EncodeToString(mac.Sum(nil))
 
-	// 发送认证消息（key 单源至 mole/shared/proto）
-	authMsg, err := json.Marshal(map[string]string{proto.AuthKeyProof: proof})
+	// 发送认证消息（wire 契约单源至 mole/shared/proto 的 NodeAuthLine；
+	// requestEnc=false 时 Enc 为 0，omitempty 使输出与旧 proof-only 形态
+	// 逐字节一致）
+	encBit := 0
+	if requestEnc {
+		encBit = proto.EncProtocolV1
+	}
+	authMsg, err := json.Marshal(proto.NodeAuthLine{Proof: proof, Enc: encBit})
 	if err != nil {
-		return nil, fmt.Errorf("marshal auth: %w", err)
+		return nil, nil, fmt.Errorf("marshal auth: %w", err)
 	}
 	if _, err := conn.Write(append(authMsg, '\n')); err != nil {
-		return nil, fmt.Errorf("send auth: %w", err)
+		return nil, nil, fmt.Errorf("send auth: %w", err)
 	}
 	log.Println("  auth: credentials sent, waiting for response")
 
@@ -262,23 +354,24 @@ func authenticate(conn net.Conn, token string) (*bufio.Reader, error) {
 	reader := bufio.NewReader(conn)
 	authResp, err := readBoundedAuthLine(reader, maxAuthRespBytes)
 	if err != nil {
-		return nil, fmt.Errorf("read auth response: %w", err)
+		return nil, nil, fmt.Errorf("read auth response: %w", err)
 	}
 	conn.SetReadDeadline(time.Time{})
 	log.Println("  auth: response received")
 
 	var result struct {
-		Cmd string `json:"cmd"`
-		Msg string `json:"msg"`
+		Cmd string               `json:"cmd"`
+		Msg string               `json:"msg"`
+		Enc *proto.EncCapability `json:"enc,omitempty"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(authResp), &result); err != nil {
-		return nil, fmt.Errorf("parse auth response: %w", err)
+		return nil, nil, fmt.Errorf("parse auth response: %w", err)
 	}
 	if result.Cmd != proto.RespOK {
-		return nil, fmt.Errorf("auth failed: %s", result.Msg)
+		return nil, nil, fmt.Errorf("auth failed: %s", result.Msg)
 	}
 
-	return reader, nil
+	return reader, result.Enc, nil
 }
 
 // bufferedConn wraps net.Conn to first drain bufio.Reader buffered data,

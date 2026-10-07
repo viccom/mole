@@ -1,8 +1,8 @@
 #!/bin/bash
-# 安全修复 R1 端到端矩阵（12 项）
+# 安全修复 R1 端到端矩阵（12 项）+ 方案 B 通道加密矩阵（sc18-24）+ ws/kcp E2E（sc25-26）
 # 用法: ./e2e_run.sh <起始场景号> <结束场景号>
 set -u
-FROM=${1:-1}; TO=${2:-12}
+FROM=${1:-1}; TO=${2:-26}
 BASE=~/e2e
 BIN=$BASE/bin
 CLI_OLD=${CLI_OLD:-$BIN/cli-old}
@@ -36,7 +36,7 @@ wait_online() { # jwt nodeid tries
   done; return 1; }
 
 proc_alive() { [ -d "/proc/$1" ]; }
-ports_busy() { ss -tln 2>/dev/null | grep -qE ':(9980|9981|9982|9983|1882|1883) '; }
+ports_busy() { ss -tln 2>/dev/null | grep -qE ':(9980|9981|9982|9983|9988|1882|1883) '; }
 wait_ports() { local i; for i in $(seq 1 30); do ports_busy || return 0; sleep 0.5; done; return 1; }
 kill_wait() { # pid —— TERM 后最长等 10s，仍活则 KILL
   local pid=$1 i
@@ -67,11 +67,16 @@ srv_run() { # bin wd timeout_s [ENV=V ...] —— 前台跑（用于拒启断言
   local bin=$1 wd=$2 tmo=$3; shift 3; mkdir -p "$wd"
   ( cd "$wd" && env "$@" timeout "$tmo" "$bin" >server.log 2>&1; echo $? >server.exit )
 }
-cli_start() { # bin id token port wd
-  local bin=$1 id=$2 token=$3 port=$4 wd=$5; mkdir -p "$wd"
+cli_start() { # bin id token port wd [server_addr] [透传参数...] —— server_addr 缺省直连 9981
+  # （sc22/23 经 MITM 代理时传代理地址；第 7 起参数原样拼进客户端命令行，
+  #   如 -transport ws / -transport kcp，既有 ≤6 参调用不受影响）
+  local bin=$1 id=$2 token=$3 port=$4 wd=$5
+  local srv; if [ $# -ge 6 ]; then srv=$6; else srv=127.0.0.1:9981; fi
+  if [ $# -ge 6 ]; then shift 6; else shift 5; fi
+  mkdir -p "$wd"
   ( cd "$wd" || exit 1
-    HOME="$wd" nohup "$bin" -server 127.0.0.1:9981 -token "$token" -id "$id" \
-      -name "e2e-$id" -http "127.0.0.1:$port" >client.log 2>&1 &
+    HOME="$wd" nohup "$bin" -server "$srv" -token "$token" -id "$id" \
+      -name "e2e-$id" -http "127.0.0.1:$port" "$@" >client.log 2>&1 &
     echo $! >client.pid )
 }
 cli_stop() { [ -f "$1/client.pid" ] && kill_wait "$(cat "$1/client.pid")"; return 0; }
@@ -261,6 +266,7 @@ cleanup() {
   local d; for d in "$BASE"/run/*/; do
     [ -f "$d/client.pid" ] && kill "$(cat "$d/client.pid")" 2>/dev/null
     [ -f "$d/server.pid" ] && kill "$(cat "$d/server.pid")" 2>/dev/null
+    [ -f "$d/proxy.pid" ] && kill "$(cat "$d/proxy.pid")" 2>/dev/null
   done
   [ -f "$BASE/run/sc17/blocker.pid" ] && kill "$(cat "$BASE/run/sc17/blocker.pid")" 2>/dev/null
 }
@@ -401,6 +407,169 @@ sc14() {
   cli_stop "$wd/cli"; srv_stop "$wd"
 }
 
+# ---- 方案 B 通道加密矩阵（sc18-24，见 docs/plans/2026-09-29-transport-encryption-two-paths.md B.6）----
+
+PROXY_PORT=19881 # sc22/sc23 的 MITM 代理监听口（enc_proxy.py）
+
+count_of() { # pattern file —— grep -c 但恒输出数字（文件缺失/无匹配均为 0，规避 "0\n0" 陷阱）
+  local c; c=$(grep -c -- "$1" "$2" 2>/dev/null); [ -n "$c" ] || c=0; printf '%s' "$c"
+}
+enc_flag_count() { # server.log encvalue —— "Node authenticated" 行中 enc=<value> 的条数
+  # 服务端 console 日志带 ANSI 颜色码（attr 形如 enc\x1b[0m=false），先剥码再匹配
+  local c; c=$(sed 's/\x1b\[[0-9;]*m//g' "$1" 2>/dev/null | grep "Node authenticated" | grep -c "enc=$2")
+  [ -n "$c" ] || c=0; printf '%s' "$c"
+}
+proxy_start() { # wd listen_port upstream_port mode —— MITM 代理（enc_proxy.py）
+  local wd=$1 lp=$2 up=$3 mode=$4
+  ( cd "$wd" || exit 1
+    nohup python3 "$BASE/enc_proxy.py" --listen "127.0.0.1:$lp" --upstream "127.0.0.1:$up" --mode "$mode" >proxy.log 2>&1 &
+    echo $! >proxy.pid )
+  sleep 0.5
+  kill -0 "$(cat "$wd/proxy.pid")" 2>/dev/null
+}
+proxy_stop() { [ -f "$1/proxy.pid" ] && kill_wait "$(cat "$1/proxy.pid")"; return 0; }
+
+# run_enc_full 通道加密全链路通用场景：服务端态经尾参 ENV=V 传入（srv_start 原样转发），
+# 期望值：want_enc(true/false/空=跳过)、want_fallback(客户端回落 WARN 恰好条数/空=跳过)、
+# want_pwarn(ge1=服务端明文放行 WARN 至少一条/空=跳过)
+run_enc_full() { # n desc cbin want_enc want_fallback want_pwarn [ENV=V ...]
+  local n=$1 desc=$2 cbin=$3 want_enc=$4 want_fb=$5 want_pw=$6; shift 6
+  local wd=$BASE/run/sc$n; rm -rf "$wd"; mkdir -p "$wd"
+  echo "  场景$n: $desc"
+  if ! srv_start "$BIN/serv-r1" "$wd" "${STD_ENV[@]}" "$@"; then rec "sc$n" 1 "服务端未就绪"; return; fi
+  local jwt raw
+  jwt=$(login "$ADMIN_USER" "$ADMIN_PASS"); [ -z "$jwt" ] && { rec "sc$n" 1 "admin登录失败"; return; }
+  raw=$(mk_token "$jwt"); [ -z "$raw" ] && { rec "sc$n" 1 "创建access token失败"; return; }
+  cli_start "$cbin" "sc${n}nod1" "$raw" "159$((2+n))" "$wd/cli"
+  if ! wait_online "$jwt" "sc${n}nod1"; then rec "sc$n" 1 "节点未上线"; cli_stop "$wd/cli"; srv_stop "$wd"; return; fi
+  setup_tunnel "$jwt" "sc${n}nod1" >/dev/null; sleep 2
+  local echo; echo=$(tunnel_echo)
+  local bad=""
+  [ "$echo" = OK ] || bad="回声=$echo; "
+  local detail="回声OK"
+  if [ "$echo" != OK ]; then detail="回声=$echo"; fi
+  if [ -n "$want_enc" ]; then
+    local c; c=$(enc_flag_count "$wd/server.log" "$want_enc")
+    [ "$c" -ge 1 ] || bad="${bad}enc=$want_enc日志=$c; "
+    detail="$detail enc=$want_enc($c)"
+  fi
+  if [ -n "$want_fb" ]; then
+    local c; c=$(count_of "plaintext fallback" "$wd/cli/client.log")
+    [ "$c" = "$want_fb" ] || bad="${bad}回落WARN=$c(期望$want_fb); "
+    detail="$detail 回落WARN=$c"
+  fi
+  if [ "$want_pw" = ge1 ]; then
+    local c; c=$(count_of "Plaintext control connection allowed" "$wd/server.log")
+    [ "$c" -ge 1 ] || bad="${bad}明文放行WARN=$c; "
+    detail="$detail 放行WARN=$c"
+  fi
+  if [ -z "$bad" ]; then rec "sc$n" 0 "$desc: 全链路OK ($detail)"; else rec "sc$n" 1 "$desc: $bad"; fi
+  cli_stop "$wd/cli"; srv_stop "$wd"
+}
+
+sc21() {
+  local wd=$BASE/run/sc21; rm -rf "$wd"; mkdir -p "$wd"
+  echo "  场景21: require=true 拒绝旧客户端（收口态探测）"
+  srv_start "$BIN/serv-r1" "$wd" "${STD_ENV[@]}" MA_CHANNEL_ENC_ENABLED=true MA_CHANNEL_ENC_REQUIRE=true \
+    || { rec sc21 1 "服务端未就绪"; return; }
+  local jwt raw
+  jwt=$(login "$ADMIN_USER" "$ADMIN_PASS"); raw=$(mk_token "$jwt")
+  [ -z "$raw" ] && { rec sc21 1 "创建access token失败"; srv_stop "$wd"; return; }
+  cli_start "$CLI_OLD" sc21nod1 "$raw" 15923 "$wd/cli"
+  sleep 12 # 旧客户端 5s 重连 × 2 轮以上
+  local online=$(node_json "$jwt" sc21nod1 | jq -r '.status // empty')
+  local srej crej
+  srej=$(count_of "channel encryption required" "$wd/server.log")
+  crej=$(count_of "channel encryption required" "$wd/cli/client.log")
+  local ok=0
+  [ -z "$online" ] && [ "$srej" -ge 1 ] && [ "$crej" -ge 1 ] || ok=1
+  rec sc21 $ok "旧客户端被拒: online='$online' 服务端拒绝日志=$srej 客户端认证失败=$crej (期望空/≥1/≥1)"
+  cli_stop "$wd/cli"; srv_stop "$wd"
+}
+
+sc22() {
+  local wd=$BASE/run/sc22; rm -rf "$wd"; mkdir -p "$wd"
+  echo "  场景22: MITM 剥除 enc 字段（过渡期残余风险演示：客户端回落明文仍可用）"
+  srv_start "$BIN/serv-r1" "$wd" "${STD_ENV[@]}" MA_CHANNEL_ENC_ENABLED=true \
+    || { rec sc22 1 "服务端未就绪"; return; }
+  local jwt raw
+  jwt=$(login "$ADMIN_USER" "$ADMIN_PASS"); raw=$(mk_token "$jwt")
+  [ -z "$raw" ] && { rec sc22 1 "创建access token失败"; srv_stop "$wd"; return; }
+  if ! proxy_start "$wd" "$PROXY_PORT" 9981 strip; then rec sc22 1 "MITM代理未就绪"; srv_stop "$wd"; return; fi
+  cli_start "$BIN/cli-new" sc22nod1 "$raw" 15924 "$wd/cli" "127.0.0.1:$PROXY_PORT"
+  if ! wait_online "$jwt" sc22nod1; then
+    rec sc22 1 "节点未上线（剥enc后应回落明文可用）"
+    cli_stop "$wd/cli"; proxy_stop "$wd"; srv_stop "$wd"; return
+  fi
+  setup_tunnel "$jwt" "sc22nod1" >/dev/null; sleep 2
+  local echo; echo=$(tunnel_echo)
+  local fb strip encf
+  fb=$(count_of "plaintext fallback" "$wd/cli/client.log")
+  strip=$(count_of "stripped enc" "$wd/proxy.log")
+  encf=$(enc_flag_count "$wd/server.log" false)
+  local ok=0
+  [ "$echo" = OK ] && [ "$fb" = 1 ] && [ "$strip" -ge 1 ] && [ "$encf" -ge 1 ] || ok=1
+  rec sc22 $ok "剥enc后明文仍可用: 回声=$echo 客户端回落WARN=$fb(期望恰1) 代理实际改写=$strip 服务端enc=false=$encf"
+  cli_stop "$wd/cli"; proxy_stop "$wd"; srv_stop "$wd"
+}
+
+sc23() {
+  local wd=$BASE/run/sc23; rm -rf "$wd"; mkdir -p "$wd"
+  echo "  场景23: MITM 破坏 Noise msg2 —— 握手失败绝不回落明文"
+  srv_start "$BIN/serv-r1" "$wd" "${STD_ENV[@]}" MA_CHANNEL_ENC_ENABLED=true \
+    || { rec sc23 1 "服务端未就绪"; return; }
+  local jwt raw
+  jwt=$(login "$ADMIN_USER" "$ADMIN_PASS"); raw=$(mk_token "$jwt")
+  [ -z "$raw" ] && { rec sc23 1 "创建access token失败"; srv_stop "$wd"; return; }
+  if ! proxy_start "$wd" "$PROXY_PORT" 9981 corrupt; then rec sc23 1 "MITM代理未就绪"; srv_stop "$wd"; return; fi
+  cli_start "$BIN/cli-new" sc23nod1 "$raw" 15925 "$wd/cli" "127.0.0.1:$PROXY_PORT"
+  sleep 15 # 3 轮 5s 重连，每轮均应握手失败
+  local online=$(node_json "$jwt" sc23nod1 | jq -r '.status // empty')
+  local hs_c reg_c hs_s fb corrupt_c
+  hs_c=$(count_of "channel encryption handshake failed" "$wd/cli/client.log")
+  reg_c=$(count_of "Registered as node" "$wd/cli/client.log")
+  hs_s=$(count_of "Channel encryption handshake failed" "$wd/server.log")
+  fb=$(count_of "plaintext fallback" "$wd/cli/client.log")
+  corrupt_c=$(count_of "corrupted first noise frame" "$wd/proxy.log")
+  local ok=0
+  [ -z "$online" ] && [ "$hs_c" -ge 1 ] && [ "$reg_c" = 0 ] && [ "$hs_s" -ge 1 ] && [ "$fb" = 0 ] && [ "$corrupt_c" -ge 1 ] || ok=1
+  rec sc23 $ok "破坏msg2绝不回落: online='$online' 客户端握手失败=$hs_c 注册成功=$reg_c(期望0) 服务端握手失败WARN=$hs_s 回落WARN=$fb(期望0) 代理实际破坏=$corrupt_c"
+  cli_stop "$wd/cli"; proxy_stop "$wd"; srv_stop "$wd"
+}
+
+# run_enc_transport ws/kcp 传输层通道加密场景（sc25/26 共用骨架，仿 run_enc_full）：
+# 服务端 config.yaml 开额外监听口 + channel_encryption.enabled，客户端 -transport 指向该口
+run_enc_transport() { # n desc transport enc_port client_port wait_tries
+  local n=$1 desc=$2 trans=$3 enc_port=$4 cport=$5 tries=$6
+  local wd=$BASE/run/sc$n; rm -rf "$wd"; mkdir -p "$wd"
+  echo "  场景$n: $desc"
+  printf 'server:\n  %s_port: ":%s"\nchannel_encryption:\n  enabled: true\n' \
+    "$trans" "$enc_port" > "$wd/config.yaml"
+  if ! srv_start "$BIN/serv-r1" "$wd" "${STD_ENV[@]}"; then rec "sc$n" 1 "服务端未就绪"; return; fi
+  local jwt raw
+  jwt=$(login "$ADMIN_USER" "$ADMIN_PASS"); [ -z "$jwt" ] && { rec "sc$n" 1 "admin登录失败"; return; }
+  raw=$(mk_token "$jwt"); [ -z "$raw" ] && { rec "sc$n" 1 "创建access token失败"; return; }
+  cli_start "$BIN/cli-new" "sc${n}nod1" "$raw" "$cport" "$wd/cli" "127.0.0.1:$enc_port" -transport "$trans"
+  if ! wait_online "$jwt" "sc${n}nod1" "$tries"; then
+    rec "sc$n" 1 "节点未上线（transport=$trans 经 :$enc_port）"; cli_stop "$wd/cli"; srv_stop "$wd"; return
+  fi
+  setup_tunnel "$jwt" "sc${n}nod1" >/dev/null; sleep 2
+  local echo; echo=$(tunnel_echo)
+  local encf lstn bad=""
+  [ "$echo" = OK ] || bad="回声=$echo; "
+  encf=$(enc_flag_count "$wd/server.log" true)
+  [ "$encf" -ge 1 ] || bad="${bad}enc=true日志=$encf; "
+  # 额外传输监听按 transport=<name> 打日志（控制台带 ANSI 色码，先剥再匹配）
+  lstn=$(sed 's/\x1b\[[0-9;]*m//g' "$wd/server.log" 2>/dev/null | grep -c "Control server listening.*transport=$trans")
+  [ "$lstn" -ge 1 ] || bad="${bad}transport=$trans监听日志=$lstn; "
+  local detail="回声=$echo enc=true($encf) transport=$trans监听($lstn)"
+  if [ -z "$bad" ]; then rec "sc$n" 0 "$desc: $detail"; else rec "sc$n" 1 "$desc: $bad($detail)"; fi
+  cli_stop "$wd/cli"; srv_stop "$wd"
+}
+
+sc25() { run_enc_transport 25 "WS 传输通道加密全链路（ws_port=:9988 + -transport ws）" ws 9988 15927 24; }
+sc26() { run_enc_transport 26 "KCP 传输通道加密全链路（kcp_port=:9982 + -transport kcp，首包慢放宽轮询）" kcp 9982 15928 60; }
+
 # ---- 主流程 ----
 if [ ! -f "$BASE/echo.pid" ] || ! kill -0 "$(cat "$BASE/echo.pid" 2>/dev/null)" 2>/dev/null; then
   nohup python3 "$BASE/echo_server.py" >"$BASE/echo.log" 2>&1 & echo $! >"$BASE/echo.pid"
@@ -417,6 +586,15 @@ while [ "$n" -le "$TO" ]; do
     5) run1to6 5 "旧服务端 + 新客户端（应拒绝，记录）" "$BIN/serv-old" "$BIN/cli-new" 0;;
     6) run1to6 6 "旧服务端 + 旧客户端（基线）" "$BIN/serv-old" "$CLI_OLD" 0;;
     7) sc7;; 8) sc8;; 9) sc9;; 10) sc10;; 11) sc11;; 12) sc12;; 13) sc13;; 14) sc14;; 15) sc15;; 16) sc16;; 17) sc17;;
+    18) run_enc_full 18 "加密全链路（enabled=true + 新客户端默认 enc=on）" "$BIN/cli-new" true 0 "" MA_CHANNEL_ENC_ENABLED=true;;
+    19) run_enc_full 19 "回落路径（enabled=false 回滚态 + 新客户端）" "$BIN/cli-new" false 1 "";;
+    20) run_enc_full 20 "旧客户端明文放行（enabled=true + cli-old）" "$CLI_OLD" false "" ge1 MA_CHANNEL_ENC_ENABLED=true;;
+    21) sc21;;
+    22) sc22;;
+    23) sc23;;
+    24) run_enc_full 24 "收口态双端就绪（require=true + 新客户端）" "$BIN/cli-new" true 0 "" MA_CHANNEL_ENC_ENABLED=true MA_CHANNEL_ENC_REQUIRE=true;;
+    25) sc25;;
+    26) sc26;;
   esac
   n=$((n+1))
 done

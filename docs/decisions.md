@@ -161,3 +161,47 @@
 **admin package-lock.json 修复（CI 首跑失败的根因，两层）**：① package.json 升级 vitest4/jsdom29 后 lock 从未重生成（esbuild@0.28.2 整棵子树缺失，npm ci 必报 Missing）；② npm 11 重新生成时，vitest→esbuild@0.28.2 提升到顶层的 26 个 `@esbuild/*` 平台条目丢失 `optional:true` 标记，任意平台 `npm ci` 均 EBADPLATFORM。修法：官方源全量重生成 + 脚本补齐 optional 标记；已验证 npm10/npm11 双版本 `npm ci` 通过、tsc+vite 构建通过。教训：lock 的"可选平台依赖缺 optional 标记"是 npm11 已知类缺陷，lock 重生成后必须跑**真实** `npm ci`（`--dry-run` 在 npm11 下不校验完整性，会假绿）。
 
 **首发实录（2026-10-02）**：`srv/v0.7.2` + `cli/v0.8.1` 打在 e78f65a，双端 workflow run 全绿，GitHub Release 各自发布（moles 6 平台 / molec 7 平台含 armv7，均含 latest.json，与 manifest 单源）。过程中修掉两处 workflow 缺陷：① artifact 名含 tag 前缀斜杠必败（upload-artifact 不允许 `/`，转连字符）；② 幂等补传分支（release 已存在 → upload --clobber）已在真实重跑中验证。注意：tag 曾从 980846b 强移至 e78f65a（workflow 修复 commit），两位置间无 Go 代码差异，二进制内容等价、版本串相同。存量 Gitea origin 未推（待负责人决定）。
+
+## 2026-09-30 传输加密方案 B「PSK 协议内升级」实施（自适应回落版）
+
+**背景**：方案文档（旧仓 moleAgent_Serv/docs/plans/2026-09-29-transport-encryption-two-paths.md）按负责人 2026-09-29 定稿的自适应回落版实施。实施前按新 monorepo 代码复审方案 B，修正 11 项锚点/结构问题（B.9 记录）后移植入库（`docs/plans/` 同名文件，master 7e03b00）。
+
+**实施裁决与理由**（详见方案文档 B.10 实施记录）：
+1. **认证行契约收敛为 `proto.NodeAuthLine` 单源 struct**（偏离文档复审版的"三处落点"）：实施中发现客户端 map 序列化值只能为字符串，与服务端 int 字段类型错配会直接破坏认证行解析；单源同时消除双端形态漂移面。proof-only 输出与旧形态逐字节一致（测试锁定）。
+2. **noiseconn 单源 `shared/noisechan`**（monorepo 收益，替代双仓库时代的双份实现）：shared 引入首个第三方依赖 flynn/noise v1.1.0（go.mod+go.sum 锁版本，无 vendor）。XXpsk2 经库 `PresharedKeyPlacement=2` 原生支持。
+3. **残余风险知情采纳**（既有决策重申）：过渡期（require=false）MITM 剥除认证行 enc 字段可致静默明文（E2E sc22 实证演示）；收口 `require=true` 后消除。收口判据：服务端日志全量 `enc=true` 且无 `Plaintext control connection allowed` WARN。
+4. **握手失败绝不回落**为硬安全边界（代码注释 + E2E sc23 断言注册成功=0、回落 WARN=0 双重锁定）。
+
+**分支与提交**：`feat/channel-encryption-psk`（worktree mole-wt-psk）4 提交：3aa38ce noisechan 地基 → 33dadd9 proto 契约 → 9521dba 双端协商 → bd49314 E2E sc18-24。文档 B.10 记录在 master。
+
+**验证**：双端 vet/build/test -race/GOWORK=off 全绿（client nodeid 2 例 Windows 既有基线失败不变）；GUI 两模块绿；client -tags p2p 绿；E2E WSL 24 场景 PASS=27 FAIL=0（sc1-17 无回归）。未覆盖如实记录：ws/kcp 传输升级链路、tcpdump 级密文验证（以日志/行为断言代替）。
+
+**部署边界**：上线顺序自由、回滚零接触（服务端关 enabled 即全舰队自动回落）；`MA_CHANNEL_ENC_ENABLED/REQUIRE` env 可免改配置文件切换。
+
+## 2026-10-01 通道加密实施审查复审 + 5 项修复
+
+**背景**：方案 B 实施后深度审查（3 路子代理）+ 主会话逐条复验（临时红测试实证后即删），确认 4 项实缺陷 + Low 若干；修复清单经负责人批准逐项执行（b7100c9/e44bce4/6e83b51/79dae84/144c3b7）。
+
+| # | 缺陷（复验方式） | 修复 |
+|---|---|---|
+| M1 | require 拒绝谓词按客户端意愿（enc:1 短路）判定，require+enabled=false（SetChannelEncryption 直调可绕配置校验）或 psk≠32（**经非 32 字节 TokenHash 记录可达——修正首轮审查"不可达"误判**，node_access_auth 对畸形 hash 返回 psk=nil 不阻断认证）时 enc:1 客户端获静默明文 ok（红测试实证 cmd=ok） | 谓词改按供给能力：`canEncrypt := wantEnc && enabled && len(psk)==32` 先行；wantEnc=true 的拒绝文案带供给不闭环提示，关键词保持稳定；+2 负向测试（nilPSK 认证桩变体） |
+| M2 | useTLS 判定与 WS dialer 不同口径：wss:// 前缀 + tls=false（Validate 只拦反向组合，可达）→ 已加密连接发 enc 位 + 误导性 plaintext fallback WARN（污染收口对账判据） | `Config.effectiveTransportTLS()`（UseTLS ∥ ws+wss:// 前缀，与 dialer 同口径），装配点改用；6 组合单测 |
+| M3 | noisechan `timeout<=0` 静默无 deadline（护栏测试实证阻塞挂住） | 非正超时直接 fail()；防挂死护栏测试入库 |
+| H1 | desktop go.sum 缺 flynn/noise：GOWORK=off 构建实测 exit=1（workspace 模式掩盖；manager go.sum 同缺但导入链不触达侥幸能编）——五模块 GOWORK=off 门（4c1413b）回归 | 双 GUI 模块 tidy；验证矩阵自此含 GUI GOWORK=off 腿（本次五模块全绿） |
+| Low | 握手最小帧注释 32B 失实（官方向量 48B）、fail() 内层 %v 丢哨兵（现无消费方，加固）、on/off 字面量双处、B.10 测试计数（8/6 实为 7→9/5） | 随手修（79dae84 + B.10 修正段） |
+
+**复验对首轮审查的两处修正**：psk≠32 组合判「可达」而非「不可达」（数据异常路径真实存在）；%v 丢哨兵判「latent 加固」而非缺陷（全仓无 errors.Is 消费方，注释明说靠文案前缀）。
+
+**验证**：双端 vet/build/test 全绿（client 仅 nodeid 2 例 Windows 既有基线）、-race 绿、-tags p2p 绿、**五模块 GOWORK=off 全绿（含修复的 GUI 两模块）**、WSL E2E 1-24 重跑 **PASS=27 FAIL=0**（修复后二进制，sc21/sc24 双方向实证 M1 无回归）。
+
+## 2026-10-02 合并前三件事完成记录（通道加密分支 feat/channel-encryption-psk）
+
+**① 对抗性密码学审查（B.5 阶段 0 硬前置）——通过**：双镜头独立子代理审查（协议态机/nonce/转录/分帧/供应链 + require 穷举/降级边界/泄漏面/连接语义），7+7 镜头无 Critical/High/Medium，双总评放行。三重验证：源码审查、flynn/noise 官方向量实跑（XXpsk2 PASS）、行为探测（跨连接拼接必败/msg2 篡改必败）。发现处置见方案文档 B.11：**修 3**（F1 legacy-psk 偏离 B.2、F3 未知 enc 版本硬失败、F6 握手失败 WARN 限频；22424a2，全红→绿 TDD；F1 同修无 authenticator 兜底路径）、**延后 2**（Prologue 可选加固、半开握手限频）、**记档 2**（TLS 卸载 require 陷阱、wss 存量死路）。
+
+**② ws/kcp E2E（B.6 ⑦）**：sc25（ws）/sc26（kcp）入 harness（run_enc_transport 助手 + cli_start 参数透传 + config.yaml 起 ws_port/kcp_port），**WSL 1-26 全量 PASS=29 FAIL=0**（原 27 保绿）。
+
+**③ tcpdump 级密文验证（B.6 ①）**：`scripts/e2e/capture_verify.sh`（明文/加密对照会话 + lo 抓包 + 字节标记断言）PASS——密文捕获中 `"cmd":"register"`/`"cmd":"ping"`/节点 ID 全不可见，明文对照全部可检出；`"enc":{"v":1}`/`"proof":` 为握手前协议明文锚点非泄漏。
+
+**回归**：server 18 包 / client 10 包 / shared 4 包（含 noisechan）全绿；`-tags p2p` 构建/vet 绿；desktop/manager GOWORK=off 绿；transport/tunnel/service 定向 -race 绿。**已知红**：client `internal/nodeid` 2 例 = master B-4 修复（830f526）不在本分支分叉点（7e03b00）之后，合并即消解，非本分支缺陷。
+
+**合并就绪**：三件前置全绿，分支 HEAD 87bb713（12+2+1+1=16 commits ahead of 7e03b00 fork 点），与 master 今日 11 commits 双向分叉——合并需真实 merge（预期冲突面：client/client.go、server/internal/tunnel/control.go、docs/decisions.md、AGENTS.md）。合并后动作：nodeid 2 例自然转绿、GUI 模块 go.sum 或需再 tidy（分支新增 flynn/noise 依赖 × master 依赖变动）。

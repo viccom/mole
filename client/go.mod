@@ -25,6 +25,7 @@ replace mole/shared => ../shared
 
 require (
 	github.com/creack/goselect v0.1.2 // indirect
+	github.com/flynn/noise v1.1.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/klauspost/reedsolomon v1.12.0 // indirect

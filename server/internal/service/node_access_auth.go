@@ -29,8 +29,13 @@ func NewAccessTokenAuthService(tokenRepo core.AccessTokenRepo, legacyToken strin
 	}
 }
 
-// AuthenticateNodeToken 校验接入 token，返回认证结果
-func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawToken string) (*core.NodeAccessGrant, error) {
+// AuthenticateNodeToken 校验接入 token（legacy 明文格式：客户端在认证行发送
+// token 明文），返回认证结果。psk 恒为 nil（B.2/F1）：本路径 token 明文上线，
+// 窃听者可自行推导 sha256(token)，服务端供给 psk 只会产出「加密形同虚设」的
+// 会话与 enc=true 审计假信号——通道加密 psk 仅在 proof 认证路径
+// （AuthenticateNodeProof，HMAC over challenge，token 不上线）产出，enc 协商
+// 在本路径不发生。psk 绝不进 grant 结构体、绝不进日志（grant 会被整体打日志）
+func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawToken string) (*core.NodeAccessGrant, []byte, error) {
 	// 1. 先尝试用户级 token
 	if rawToken != "" {
 		hash := storage.GenerateTokenHash(rawToken)
@@ -38,7 +43,7 @@ func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawT
 		if err == nil && token != nil {
 			if token.Status != core.AccessTokenActive {
 				slog.Warn("Access token disabled", "tokenId", token.ID, "userId", token.UserID)
-				return nil, fmt.Errorf("access token disabled")
+				return nil, nil, fmt.Errorf("access token disabled")
 			}
 			// 更新 last_used_at：必须走 TouchLastUsed（重读最新记录只改该字段）。
 			// 用旧快照整记录回写会与并发禁用/轮换交错，把已吊销 token 无声复活
@@ -50,7 +55,7 @@ func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawT
 				UserID:        token.UserID,
 				AccessTokenID: token.ID,
 				LegacyGlobal:  false,
-			}, nil
+			}, nil, nil
 		}
 	}
 
@@ -61,10 +66,10 @@ func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawT
 			UserID:        "system",
 			AccessTokenID: "",
 			LegacyGlobal:  true,
-		}, nil
+		}, nil, nil
 	}
 
-	return nil, fmt.Errorf("invalid token")
+	return nil, nil, fmt.Errorf("invalid token")
 }
 
 // AuthenticateNodeProof 校验 challenge-response proof（SEC-01 新格式）：
@@ -72,11 +77,13 @@ func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawT
 // 不发送任何标识符；服务端遍历全部 active access token 逐候选复算比对，
 // legacy 全局 token 作为追加候选（key = sha256(legacy 明文) 原始字节）。
 // 候选数量小，O(n) HMAC 可接受；全部比对走常量时间比较；
-// 错误不区分「候选不存在」与「proof 不符」（同旧路径文案，避免探测面）
-func (s *accessTokenAuthService) AuthenticateNodeProof(ctx context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, error) {
+// 错误不区分「候选不存在」与「proof 不符」（同旧路径文案，避免探测面）。
+// 匹配成功时第二返回值 psk = 该候选 32 字节 key（= sha256(token 明文)，
+// 方案 B 通道加密的预共享密钥）；失败为 nil。psk 绝不进 grant、绝不进日志
+func (s *accessTokenAuthService) AuthenticateNodeProof(ctx context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, []byte, error) {
 	proof, err := hex.DecodeString(proofHex)
 	if err != nil || len(proof) != sha256.Size {
-		return nil, fmt.Errorf("invalid token")
+		return nil, nil, fmt.Errorf("invalid token")
 	}
 
 	// 1. 遍历全部 active access token：key = TokenHash 解码出的 32 字节原始值
@@ -84,7 +91,7 @@ func (s *accessTokenAuthService) AuthenticateNodeProof(ctx context.Context, proo
 	tokens, err := s.tokenRepo.ListAll()
 	if err != nil {
 		slog.Warn("Failed to list access tokens for proof auth", "error", err)
-		return nil, fmt.Errorf("invalid token")
+		return nil, nil, fmt.Errorf("invalid token")
 	}
 	for _, token := range tokens {
 		if token.Status != core.AccessTokenActive {
@@ -106,7 +113,7 @@ func (s *accessTokenAuthService) AuthenticateNodeProof(ctx context.Context, proo
 				UserID:        token.UserID,
 				AccessTokenID: token.ID,
 				LegacyGlobal:  false,
-			}, nil
+			}, key, nil
 		}
 	}
 
@@ -121,11 +128,11 @@ func (s *accessTokenAuthService) AuthenticateNodeProof(ctx context.Context, proo
 				UserID:        "system",
 				AccessTokenID: "",
 				LegacyGlobal:  true,
-			}, nil
+			}, key[:], nil
 		}
 	}
 
-	return nil, fmt.Errorf("invalid token")
+	return nil, nil, fmt.Errorf("invalid token")
 }
 
 // GenerateAccessTokenRaw 生成 token 明文：mat_ 前缀 + 32 字节 hex
