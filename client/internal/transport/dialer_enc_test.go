@@ -343,3 +343,36 @@ func TestConnect_UseTLSOmitsEncBitNoWarn(t *testing.T) {
 		t.Fatalf("UseTLS 不 WARN（传输已加密）:\n%s", buf.String())
 	}
 }
+
+// 6. F3（B.7 #4）：服务端宣告本端不支持的 enc 版本（v=2，比客户端 v1 新）→
+// 硬失败返回错误（含专属可测串），绝不降格为「旧服务端」回落明文、不发
+// fallback WARN——已宣告能力的对端版本不识别属于协议层不可信状态
+func TestConnect_UnknownEncVersionHardFailsNoFallback(t *testing.T) {
+	buf := captureTransportLog(t)
+
+	addr := startEncTestServer(t, func(conn net.Conn, line []byte, br *bufio.Reader) {
+		// 宣告 v2：客户端只支持 v1，必须硬失败而非回落明文
+		if _, err := conn.Write(okRespLine("authenticated", &proto.EncCapability{V: 2})); err != nil {
+			return
+		}
+	})
+
+	sm := newEncSessionManager(EncModeOn, false)
+	defer sm.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := sm.Connect(ctx, addr, "tok")
+	if err == nil {
+		t.Fatalf("unknown enc version must hard-fail（不得降格为旧服务端回落明文连上）")
+	}
+	if !strings.Contains(err.Error(), "unsupported channel encryption version") {
+		t.Fatalf("错误文案必须含专属可测串 \"unsupported channel encryption version\", got %v", err)
+	}
+	if n := strings.Count(buf.String(), "plaintext fallback"); n != 0 {
+		t.Fatalf("硬失败路径不得发 fallback WARN, got %d:\n%s", n, buf.String())
+	}
+	if sm.Session() != nil {
+		t.Fatalf("不得发布会话（明文幽灵会话）")
+	}
+}

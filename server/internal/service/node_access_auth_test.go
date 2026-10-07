@@ -557,8 +557,10 @@ func TestAuthenticateNodeProof_FailureReturnsNilPSK(t *testing.T) {
 	}
 }
 
-// 明文 token 路径同样返回 sha256(matched token)（代码闭环；legacy 客户端本不发 enc）
-func TestAuthenticateNodeToken_ReturnsPSK(t *testing.T) {
+// 明文 token 认证路径（用户级 token 命中与 legacy 全局 token 兜底）psk 一律为
+// nil（B.2/F1：本路径 token 明文上线，窃听者可自行推导 sha256(token)，服务端
+// 供给 psk 只会产出假加密与 enc=true 审计假信号；psk 仅 proof 路径产出）
+func TestAuthenticateNodeToken_PlaintextPathsReturnNilPSK(t *testing.T) {
 	repo := newMockRepo()
 	raw := "mat_tokenpsk00000000000000000000"
 	repo.Create(makeActiveToken("tok-tpsk", "user-tpsk", raw))
@@ -571,21 +573,19 @@ func TestAuthenticateNodeToken_ReturnsPSK(t *testing.T) {
 	if grant == nil {
 		t.Fatal("grant must not be nil")
 	}
-	want := sha256.Sum256([]byte(raw))
-	if !bytes.Equal(psk, want[:]) {
-		t.Fatalf("token path psk mismatch: got %x, want %x", psk, want)
+	if psk != nil {
+		t.Fatalf("plaintext token path must return nil psk (B.2 F1: token goes on the wire), got %x", psk)
 	}
 
-	// legacy 明文命中：psk = sha256(legacy 明文)
+	// legacy 明文命中：同样 psk=nil
 	legacyRaw := "legacy-token-psk"
 	svc2 := NewAccessTokenAuthService(repo, legacyRaw).(*accessTokenAuthService)
 	_, psk2, err := svc2.AuthenticateNodeToken(context.Background(), legacyRaw)
 	if err != nil {
 		t.Fatalf("legacy token must authenticate, got %v", err)
 	}
-	want2 := sha256.Sum256([]byte(legacyRaw))
-	if !bytes.Equal(psk2, want2[:]) {
-		t.Fatalf("legacy token psk mismatch: got %x, want %x", psk2, want2)
+	if psk2 != nil {
+		t.Fatalf("legacy plaintext token path must return nil psk, got %x", psk2)
 	}
 
 	// 失败路径 psk 为 nil

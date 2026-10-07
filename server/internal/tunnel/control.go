@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -127,10 +126,13 @@ type ControlServer struct {
 	// 默认全 false（协商零变化）
 	channelEncEnabled bool
 	channelRequire    bool
-	// plainWarnMu/plainWarnLast 明文放行 WARN 的同 IP 限频表（每 IP 每 5 分钟
-	// 一条，B.2）；直接构造 ControlServer 时为 nil/空，warnPlaintextAllowed 锁内惰性初始化
-	plainWarnMu   sync.Mutex
-	plainWarnLast map[string]time.Time
+	// plainWarnMu 明文放行 / 握手失败两类 WARN 的同 IP 限频窗口（每 IP 每
+	// 5 分钟一条，B.2 / F6）；plainWarnLast 与 encHandshakeWarnLast 分别是
+	// 两类 WARN 的限频表，同锁保护。直接构造 ControlServer 时为 nil/空，
+	// warnRateAllow 锁内惰性初始化
+	plainWarnMu          sync.Mutex
+	plainWarnLast        map[string]time.Time
+	encHandshakeWarnLast map[string]time.Time
 }
 
 // P2PSignalTokenIssuer 签发 P2P 信令凭据（service 包实现；tunnel 包不依赖 service）
@@ -448,10 +450,10 @@ func (cs *ControlServer) handleConnection(ctx context.Context, conn net.Conn, tr
 
 	// 无 authenticator 时回退到旧全局 token 直接比对（兼容未注入场景）
 	if subtle.ConstantTimeCompare([]byte(authMsg.Token), []byte(cs.nodeToken)) == 1 {
-		// psk 代码闭环：明文全局 token 在手，sha256 即 Noise psk（与
-		// AuthenticateNodeToken 的 legacy 路径同公式）
-		key := sha256.Sum256([]byte(cs.nodeToken))
-		cs.completeAuthConnection(ctx, conn, reader, ip, remoteAddr, authMsg, key[:], &core.NodeAccessGrant{
+		// F1（B.2）：明文 token 认证路径 psk 一律 nil——token 已明文上线，窃听者
+		// 可自行推导 sha256(token)，供给 psk 只会产出假加密（与 AuthenticateNodeToken
+		// 同语义）；enc 协商仅 proof 路径发生
+		cs.completeAuthConnection(ctx, conn, reader, ip, remoteAddr, authMsg, nil, &core.NodeAccessGrant{
 			UserID:       "system",
 			LegacyGlobal: true,
 		}, transportName)
@@ -526,7 +528,7 @@ func (cs *ControlServer) completeAuthConnection(ctx context.Context, conn net.Co
 		// UpgradeResponder 失败即关 conn，此处不重复 Close
 		noiseConn, err := noisechan.UpgradeResponder(conn, reader, psk, channelEncHandshakeTimeout)
 		if err != nil {
-			slog.Warn("Channel encryption handshake failed", "remote", remoteAddr, "transport", transportName, "error", err)
+			cs.warnChannelEncHandshakeFailed(ip, remoteAddr, transportName, err)
 			return
 		}
 		sessionConn = noiseConn
@@ -549,30 +551,48 @@ func (cs *ControlServer) completeAuthConnection(ctx context.Context, conn net.Co
 }
 
 // warnPlaintextAllowed 明文放行 WARN（enabled 且客户端未请求加密升级）：
-// 按 IP 限频每 5 分钟一条（B.2，防重连循环刷屏）。直接构造的 ControlServer
-// 未走 NewControlServer 初始化，限频表在锁内惰性初始化；超阈值时清理已过期
-// 条目防无界增长（对齐 connAuthLimiter 的清理策略）
+// 按 IP 限频每 5 分钟一条（B.2，防重连循环刷屏）
 func (cs *ControlServer) warnPlaintextAllowed(ip, remoteAddr, transportName string) {
-	now := time.Now()
-	cs.plainWarnMu.Lock()
-	if cs.plainWarnLast == nil {
-		cs.plainWarnLast = make(map[string]time.Time)
-	}
-	if last, ok := cs.plainWarnLast[ip]; ok && now.Sub(last) < plaintextAuthWarnInterval {
-		cs.plainWarnMu.Unlock()
+	if !cs.warnRateAllow(&cs.plainWarnLast, ip) {
 		return
 	}
-	cs.plainWarnLast[ip] = now
-	if len(cs.plainWarnLast) > 1024 {
-		for k, ts := range cs.plainWarnLast {
+	slog.Warn("Plaintext control connection allowed (channel encryption enabled but client did not request upgrade)",
+		"remote", remoteAddr, "transport", transportName)
+}
+
+// warnChannelEncHandshakeFailed 通道加密握手失败 WARN（服务端已宣告能力后失败
+// = 攻击/损坏的关键观测点）：按 IP 限频每 5 分钟一条（F6）——重连循环下同一
+// 远端每轮失败各发一条会无限刷屏，窗口与语义对齐明文放行 WARN
+func (cs *ControlServer) warnChannelEncHandshakeFailed(ip, remoteAddr, transportName string, err error) {
+	if !cs.warnRateAllow(&cs.encHandshakeWarnLast, ip) {
+		return
+	}
+	slog.Warn("Channel encryption handshake failed", "remote", remoteAddr, "transport", transportName, "error", err)
+}
+
+// warnRateAllow per-IP WARN 限频的统一判定：每 IP 每 5 分钟至多放行一条
+// （窗口 plaintextAuthWarnInterval）。表锁内惰性初始化（直接构造的
+// ControlServer 未走 NewControlServer）；超阈值时清理已过期条目防无界增长
+// （对齐 connAuthLimiter 的清理策略）。返回 true = 本次应发出 WARN
+func (cs *ControlServer) warnRateAllow(table *map[string]time.Time, ip string) bool {
+	now := time.Now()
+	cs.plainWarnMu.Lock()
+	defer cs.plainWarnMu.Unlock()
+	if *table == nil {
+		*table = make(map[string]time.Time)
+	}
+	if last, ok := (*table)[ip]; ok && now.Sub(last) < plaintextAuthWarnInterval {
+		return false
+	}
+	(*table)[ip] = now
+	if len(*table) > 1024 {
+		for k, ts := range *table {
 			if now.Sub(ts) >= plaintextAuthWarnInterval {
-				delete(cs.plainWarnLast, k)
+				delete(*table, k)
 			}
 		}
 	}
-	cs.plainWarnMu.Unlock()
-	slog.Warn("Plaintext control connection allowed (channel encryption enabled but client did not request upgrade)",
-		"remote", remoteAddr, "transport", transportName)
+	return true
 }
 
 // authFail/authOK 认证结果计入 per-IP 限速器（SEC-13）：

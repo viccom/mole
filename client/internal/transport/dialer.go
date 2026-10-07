@@ -191,10 +191,23 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 		return fmt.Errorf("auth: %w", err)
 	}
 
-	// 通道加密分派（方案 B 决策矩阵）：应答带 enc（V==EncProtocolV1）且本端
-	// 请求了加密 → Noise 升级，sessionConn 换 noiseConn；其余路径明文。
+	// 通道加密分派（方案 B 决策矩阵，F3 修订为三分支）：本端请求加密且应答带
+	// enc（V==EncProtocolV1）→ Noise 升级，sessionConn 换 noiseConn；应答无
+	// enc 字段 → 旧服务端回落明文（+WARN once）；应答带本端不支持的版本 →
+	// 硬失败绝不回落（已宣告能力的对端版本不识别 = 协议层不可信状态，降格为
+	// 明文等于给注入/剥除攻击留静默通道，B.7 #4「已宣告即硬断」）
 	var sessionConn net.Conn
-	if requestEnc && encCap != nil && encCap.V == proto.EncProtocolV1 {
+	switch {
+	case encCap == nil:
+		// ok 缺 enc 字段 = 旧服务端 / 未启用：回落明文 + WARN 每服务端地址
+		// 每进程一次。requestEnc=false 时静默（enc=off 是显式调试选择、UseTLS
+		// 传输已加密，均不告警）
+		if requestEnc {
+			sm.warnPlaintextFallbackOnce(addr)
+		}
+		// Wrap conn so smux sees both bufio buffered data and raw conn reads
+		sessionConn = &bufferedConn{Conn: conn, reader: br}
+	case requestEnc && encCap.V == proto.EncProtocolV1:
 		// 安全边界：握手失败绝不回落——服务端已宣告能力后失败即攻击/损坏，
 		// 此处回落等于把明文交给破坏 msg2 的中间人。错误直接上抛走重连循环
 		//（专属错误串由 noisechan.ErrHandshake 的文案前缀承担）。
@@ -205,14 +218,15 @@ func (sm *SessionManager) Connect(ctx context.Context, addr, token string) error
 			return fmt.Errorf("channel encryption upgrade: %w", err)
 		}
 		sessionConn = noiseConn
-	} else {
-		// ok 缺 enc 字段（或版本不识别）= 旧服务端 / 未启用：回落明文 +
-		// WARN 每服务端地址每进程一次。requestEnc=false 时静默（enc=off 是
-		// 显式调试选择、UseTLS 传输已加密，均不告警）
-		if requestEnc {
-			sm.warnPlaintextFallbackOnce(addr)
-		}
-		// Wrap conn so smux sees both bufio buffered data and raw conn reads
+	case requestEnc:
+		// F3（B.7 #4）：服务端宣告了本端不支持的加密协议版本（如 v=2 比客户端
+		// v1 新）→ 硬失败断开，绝不降格为「旧服务端」回落明文、不发 fallback
+		// WARN。专属错误串 "unsupported channel encryption version" 是测试断言锚点
+		conn.Close()
+		return fmt.Errorf("server announced unsupported channel encryption version %d (client supports v%d); refusing plaintext fallback", encCap.V, proto.EncProtocolV1)
+	default:
+		// requestEnc=false（enc=off / UseTLS）：本端未请求加密，任何 enc 宣告
+		// 一律忽略（含不识别版本），静默明文——与既有 enc=off 语义一致
 		sessionConn = &bufferedConn{Conn: conn, reader: br}
 	}
 

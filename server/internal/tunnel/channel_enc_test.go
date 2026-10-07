@@ -49,9 +49,12 @@ func clientProof(token string, challenge []byte) string {
 }
 
 // pskAuthenticator 固定 token 的认证桩：proof 路径按客户端公式验算，命中
-// 返回 grant + psk=sha256(token)；明文 token 路径直接比对（复刻 service 层语义）。
-// nilPSK=true 时认证成功但 psk 返回 nil——复刻 service 层对非 32 字节 TokenHash
-// 记录的行为（node_access_auth.go「哈希记录异常时按无 psk 处理，不阻断认证」）
+// 返回 grant + psk=sha256(token)；明文 token 路径直接比对，psk 恒为 nil
+// （F1/B.2：token 明文上线，psk 仅 proof 路径产出——对齐 service 层
+// AuthenticateNodeToken 语义）。
+// nilPSK=true 时 proof 路径认证成功但 psk 返回 nil——复刻 service 层对非
+// 32 字节 TokenHash 记录的行为（node_access_auth.go「哈希记录异常时按无 psk
+// 处理，不阻断认证」）
 type pskAuthenticator struct {
 	token  string
 	nilPSK bool
@@ -61,11 +64,8 @@ func (a *pskAuthenticator) AuthenticateNodeToken(_ context.Context, rawToken str
 	if rawToken != a.token {
 		return nil, nil, errors.New("invalid token")
 	}
-	var psk []byte
-	if !a.nilPSK {
-		psk = tokenPSK(rawToken)
-	}
-	return &core.NodeAccessGrant{UserID: "user-enc"}, psk, nil
+	// 明文 token 路径 psk 一律 nil（F1/B.2）：token 已上线，enc 协商不发生
+	return &core.NodeAccessGrant{UserID: "user-enc"}, nil, nil
 }
 
 func (a *pskAuthenticator) AuthenticateNodeProof(_ context.Context, proofHex string, challenge []byte) (*core.NodeAccessGrant, []byte, error) {
@@ -514,6 +514,69 @@ func TestChannelEncryption_HandshakeCorruptionHardFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// F6：同一远端连发多次握手失败 → "Channel encryption handshake failed" WARN
+// 按 IP 5min 限频恰一条（对齐明文放行 WARN 的限频模式，防重连循环刷屏）
+// ---------------------------------------------------------------------------
+
+func TestChannelEncryption_HandshakeFailWarnRateLimited(t *testing.T) {
+	logs := captureLogs(t)
+	_, addr := startEncTestServer(t, true, false)
+
+	// 同一远端（127.0.0.1）连发 3 次握手失败：认证通过 + 服务端宣告 enc 后
+	// 随即发坏 msg1（长度前缀声明 5 字节密文体，低于 16 字节最小合法帧）
+	for i := 0; i < 3; i++ {
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err != nil {
+			t.Fatalf("dial #%d: %v", i+1, err)
+		}
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		challenge := make([]byte, 32)
+		if _, err := io.ReadFull(conn, challenge); err != nil {
+			t.Fatalf("read challenge #%d: %v", i+1, err)
+		}
+		authMsg, err := json.Marshal(proto.NodeAuthLine{Proof: clientProof(encTestToken, challenge), Enc: proto.EncProtocolV1})
+		if err != nil {
+			t.Fatalf("marshal #%d: %v", i+1, err)
+		}
+		if _, err := conn.Write(append(authMsg, '\n')); err != nil {
+			t.Fatalf("write auth line #%d: %v", i+1, err)
+		}
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			t.Fatalf("read ok response #%d: %v", i+1, err)
+		}
+		if !strings.Contains(line, `"enc":{"v":1}`) {
+			t.Fatalf("connection #%d: server must announce enc capability, got %q", i+1, line)
+		}
+		if _, err := conn.Write([]byte{0x00, 0x05, 1, 2, 3, 4, 5}); err != nil {
+			t.Fatalf("write garbage frame #%d: %v", i+1, err)
+		}
+		// 服务端断开：读到 EOF（UpgradeResponder 失败即关 conn）
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := conn.Read(make([]byte, 16)); err != io.EOF {
+			t.Fatalf("connection #%d: server must disconnect on corrupted handshake, got %v", i+1, err)
+		}
+		conn.Close()
+	}
+
+	// 等第一条 WARN 落盘，再给迟到的 WARN 一个沉降窗口（服务端 goroutine
+	// 异步写日志，EOF 不保证日志已写出）
+	pollLogContains(t, logs, "Channel encryption handshake failed", 3*time.Second)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if strings.Count(logs.String(), "Channel encryption handshake failed") >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	count := strings.Count(logs.String(), "Channel encryption handshake failed")
+	if count != 1 {
+		t.Fatalf("same-IP handshake-failure WARN must be rate-limited to 1 per 5min (F6), got %d, logs:\n%s", count, logs.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // psk 错配端到端：客户端 proof 用正确 token（认证通过）但升级用错 psk → 双端失败
 // ---------------------------------------------------------------------------
 
@@ -601,4 +664,90 @@ func TestChannelEncryption_RequireRejectsWhenPSKUnavailable(t *testing.T) {
 			t.Fatalf("require=false + psk unavailable: want plain ok without enc, got cmd=%q Enc=%v", resp.Cmd, resp.Enc)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// F1（B.2）：legacy 明文 token 认证行（{"token":...,"enc":1}）绝不触发 enc
+// 协商——token 明文上线，窃听者可自行推导 sha256(token)，服务端供给 psk 只会
+// 产出「加密形同虚设 + enc=true 审计假信号」。psk 仅 proof 认证路径产出
+// ---------------------------------------------------------------------------
+
+func TestChannelEncryption_LegacyTokenAuthLineNeverNegotiatesEnc(t *testing.T) {
+	logs := captureLogs(t)
+	_, addr := startEncTestServer(t, true, false)
+
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// legacy 格式认证行：明文 token + enc 请求位（旧客户端半升级形态）
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	challenge := make([]byte, 32)
+	if _, err := io.ReadFull(conn, challenge); err != nil {
+		t.Fatalf("read challenge: %v", err)
+	}
+	authMsg, err := json.Marshal(proto.NodeAuthLine{Token: encTestToken, Enc: proto.EncProtocolV1})
+	if err != nil {
+		t.Fatalf("marshal auth line: %v", err)
+	}
+	if _, err := conn.Write(append(authMsg, '\n')); err != nil {
+		t.Fatalf("write auth line: %v", err)
+	}
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read auth response: %v", err)
+	}
+	conn.SetReadDeadline(time.Time{})
+
+	resp := parseAuthResp(t, line)
+	if resp.Cmd != proto.RespOK {
+		t.Fatalf("valid legacy token must authenticate, got %+v (line %q)", resp, line)
+	}
+	if resp.Enc != nil || strings.Contains(line, "enc") {
+		t.Fatalf("legacy plaintext-token auth must never negotiate enc (B.2 F1), got line %q", line)
+	}
+
+	// 后续明文 smux 正常：bufferedConn 穿针防 bufio 预吞，ping→pong 证明会话可用
+	sess, err := smux.Client(&bufferedConn{Conn: conn, reader: reader}, &smux.Config{
+		Version:           2,
+		KeepAliveDisabled: false,
+		KeepAliveInterval: 30 * time.Second,
+		KeepAliveTimeout:  90 * time.Second,
+		MaxFrameSize:      32768,
+		MaxReceiveBuffer:  32 * 1024 * 1024,
+		MaxStreamBuffer:   4 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("plaintext smux client: %v", err)
+	}
+	defer sess.Close()
+	stream, err := sess.OpenStream()
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer stream.Close()
+	stream.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := stream.Write([]byte(`{"cmd":"ping","ts":7}` + "\n")); err != nil {
+		t.Fatalf("send ping: %v", err)
+	}
+	pongLine, err := bufio.NewReader(stream).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read pong: %v", err)
+	}
+	var pong ControlResponse
+	if err := json.Unmarshal([]byte(strings.TrimRight(pongLine, "\n")), &pong); err != nil {
+		t.Fatalf("parse pong %q: %v", pongLine, err)
+	}
+	if pong.Cmd != proto.RespPong || pong.Ts != 7 {
+		t.Fatalf("expected pong ts=7, got %+v", pong)
+	}
+
+	// 审计信号：legacy 路径的认证日志必须 enc=false（假加密信号消除）
+	pollLogContains(t, logs, "Node authenticated", 3*time.Second)
+	if strings.Contains(logs.String(), "enc=true") {
+		t.Fatalf("legacy token auth must log enc=false, logs:\n%s", logs.String())
+	}
 }

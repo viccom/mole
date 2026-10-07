@@ -29,10 +29,12 @@ func NewAccessTokenAuthService(tokenRepo core.AccessTokenRepo, legacyToken strin
 	}
 }
 
-// AuthenticateNodeToken 校验接入 token，返回认证结果与 psk。
-// psk = sha256(匹配成功的 token 明文) 32 字节（方案 B 通道加密用）；
-// legacy 客户端本不发 enc 位，该 psk 实际不可达，仅代码闭环。
-// psk 绝不进 grant 结构体、绝不进日志（grant 会被整体打日志）
+// AuthenticateNodeToken 校验接入 token（legacy 明文格式：客户端在认证行发送
+// token 明文），返回认证结果。psk 恒为 nil（B.2/F1）：本路径 token 明文上线，
+// 窃听者可自行推导 sha256(token)，服务端供给 psk 只会产出「加密形同虚设」的
+// 会话与 enc=true 审计假信号——通道加密 psk 仅在 proof 认证路径
+// （AuthenticateNodeProof，HMAC over challenge，token 不上线）产出，enc 协商
+// 在本路径不发生。psk 绝不进 grant 结构体、绝不进日志（grant 会被整体打日志）
 func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawToken string) (*core.NodeAccessGrant, []byte, error) {
 	// 1. 先尝试用户级 token
 	if rawToken != "" {
@@ -48,29 +50,23 @@ func (s *accessTokenAuthService) AuthenticateNodeToken(ctx context.Context, rawT
 			if updateErr := s.tokenRepo.TouchLastUsed(token.ID, time.Now().UTC()); updateErr != nil {
 				slog.Warn("Failed to update token last_used_at", "tokenId", token.ID, "error", updateErr)
 			}
-			// psk：命中记录的 TokenHash 即 sha256(明文) 的 hex，解码得 32 字节原始值
-			psk, pskErr := hex.DecodeString(hash)
-			if pskErr != nil || len(psk) != sha256.Size {
-				psk = nil // 哈希记录异常（非 32 字节）时按无 psk 处理，不阻断认证
-			}
 			slog.Info("Node authenticated via access token", "tokenId", token.ID, "userId", token.UserID)
 			return &core.NodeAccessGrant{
 				UserID:        token.UserID,
 				AccessTokenID: token.ID,
 				LegacyGlobal:  false,
-			}, psk, nil
+			}, nil, nil
 		}
 	}
 
 	// 2. 兼容旧全局 token（使用 constant-time 比较）
 	if s.legacyToken != "" && subtle.ConstantTimeCompare([]byte(rawToken), []byte(s.legacyToken)) == 1 {
-		key := sha256.Sum256([]byte(s.legacyToken))
 		slog.Info("Node authenticated via legacy global token")
 		return &core.NodeAccessGrant{
 			UserID:        "system",
 			AccessTokenID: "",
 			LegacyGlobal:  true,
-		}, key[:], nil
+		}, nil, nil
 	}
 
 	return nil, nil, fmt.Errorf("invalid token")
