@@ -253,3 +253,19 @@ B. ok 缺 enc 字段（旧服务端 / enabled=false）:
 **审查复审修复轮（2026-10-01，深度审查 + 逐条复验后 5 项修复）**：M1 require 拒绝谓词改按「服务端供给能力」判定（`canEncrypt = wantEnc && enabled && len(psk)==32` 先行；原谓词被客户端 enc:1 短路，require+enabled=false 或 psk≠32 时放出静默明文会话——后者经非 32 字节 TokenHash 记录可达，修正了首轮审查"不可达"的误判）；M2 客户端 useTLS 判定与 WS dialer 同口径（`Config.effectiveTransportTLS()`：wss:// 前缀并入，消除已加密连接上的误导性明文回落 WARN）；M3 noisechan 非正握手超时直接拒绝（原 timeout<=0 静默无 deadline，护栏测试实证阻塞）；H1 双 GUI 模块 go.sum 补 flynn/noise 条目（desktop GOWORK=off 构建断裂复现 exit=1，验证矩阵补 GUI GOWORK=off 腿）；Low：握手最小帧注释 48 字节纠错（官方向量实证）、fail() 双 %w（内层哨兵可 errors.Is）、EncMode 取值引 transport 常量、本节测试计数纠错。
 
 **部署提醒（B.5 路线的既有约束）**：上线顺序自由（谁先谁后都不断链）；收口 `require=true` 前须确认全量 `enc=true` 且无明文 WARN；回滚 = 服务端 `MA_CHANNEL_ENC_ENABLED=false` 或 yaml 关闭，新客户端下次重连自动回落，零接触。
+
+## B.11 对抗性密码学审查（2026-10-02，阶段 0 硬前置）——通过放行
+
+双镜头独立审查（协议态机/供应链 + 集成/降级边界），结论均放行：**7+7 镜头无 Critical/High/Medium**。核心面经源码审查 + flynn/noise 官方向量实跑 + 行为探测三重验证：XXpsk2 选型成立（服务端认证=PSK 持有证明，客户端认证由前置 proof 承担，ee/es/se 前向保密）；PSK 双端逐字节同源（客户端 `sha256(token)`＝服务端 `hex.DecodeString(TokenHash)`）；nonce 全程尊重库实现（无 SetNonce/Rekey 绕过，MaxNonce 硬失败）；跨连接拼接握手实测必败；剥除/篡改 msg2 必失败且双端绝不回落（B.7 #6）；分帧无长度驱动内存放大；失败 oracle 弱（时序可区分性不含 PSK 信息）；flynn/noise v1.1.0 无已知 CVE，govulncheck 0 affecting。
+
+**发现处置**（全部 Low/Info）：
+- **F1 已修**（22424a2）：legacy 明文 token 认证路径返回真实 psk，偏离 B.2「legacy→psk=nil」——明文上线的 token 使 sha256(token) 对窃听者可推导，加密形同虚设且 enc=true 产生审计假信号。修：`AuthenticateNodeToken` 两路径与 control.go 无 authenticator 兜底路径（同类同修）均返回 psk=nil，enc 协商仅 proof 路径发生。红→绿 TDD。
+- **F3-version 已修**（22424a2）：客户端把未知 enc 版本（v≠1）当旧服务端回落明文 → 改为硬失败（B.7 #4「已宣告即硬断」）；encCap 缺失回落、requestEnc=false 忽略宣告两语义不变。
+- **F6 已修**（22424a2）：服务端握手失败 WARN 无限频 → per-IP/5min 限频（与明文 WARN 同构，提取共用 warnRateAllow）。
+- **Prologue 未绑定**：不修（方案"可选加固"定性成立）。现状不可利用（psk 与 proof 同栈同连接，跨会话拼接实测必败）；风险是未来性的——引入 psk 缓存或第二条认证路径时，prologue=sha256(challenge‖authLine‖okLine) 是唯一护栏，届时必做。
+- **F3-insider 延后**：持有效 token 者可慢速握手占用 worker（msg1 合法性无需 PSK，每连接 ≈20s，worker=2×NumCPU、队列 1000 有界）；与认证期既有暴露同构非新增量级。后续可加同 IP 并发半开握手计数。
+- **TLS 卸载陷阱（记档）**：require 合规判定按服务端本地传输名 `{"tls","wss"}`——若生产存在 stunnel/nginx 终结 TLS 后明文转发到 ws/tcp 的部署，require=true 会整体误拒（fail-closed）。收口前须对账生产部署形态。
+- **wss 服务端死路（存量）**：ws_transport.go ServeTLS 未配证书 → 监听协程退出（fail-dead）。非本分支引入，非绕过面（"wss" 合规判定实际不可达）；修复属传输层独立事项。
+- **[info] 无 rekey**：MaxNonce 2^64-2 硬失败语义正确；长连接理论 nonce 耗尽 → 断开重连（smux keepalive 兜底），运维无需动作。
+
+**B.6 覆盖收口（本节同时刷新 B.10 尾"未覆盖"清单）**：⑦ ws/kcp 升级链路已补（sc25/sc26，config.yaml 起 ws_port/kcp_port + `-transport` 透传，**1-26 PASS=29 FAIL=0**）；抓包级密文验证已补（`scripts/e2e/capture_verify.sh`：密文捕获中 register/ping/tunnel_push/节点 ID 全不可见，明文对照可检出，握手前明文锚点 `enc:{v:1}`/`proof` 属协议设计）。至此 B.6 ①-⑧ 全覆盖（「剥 enc × require」由 sc21 等价覆盖）。
