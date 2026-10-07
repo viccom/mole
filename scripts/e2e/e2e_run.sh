@@ -1,8 +1,8 @@
 #!/bin/bash
-# 安全修复 R1 端到端矩阵（12 项）+ 方案 B 通道加密矩阵（sc18-24）
+# 安全修复 R1 端到端矩阵（12 项）+ 方案 B 通道加密矩阵（sc18-24）+ ws/kcp E2E（sc25-26）
 # 用法: ./e2e_run.sh <起始场景号> <结束场景号>
 set -u
-FROM=${1:-1}; TO=${2:-24}
+FROM=${1:-1}; TO=${2:-26}
 BASE=~/e2e
 BIN=$BASE/bin
 CLI_OLD=${CLI_OLD:-$BIN/cli-old}
@@ -36,7 +36,7 @@ wait_online() { # jwt nodeid tries
   done; return 1; }
 
 proc_alive() { [ -d "/proc/$1" ]; }
-ports_busy() { ss -tln 2>/dev/null | grep -qE ':(9980|9981|9982|9983|1882|1883) '; }
+ports_busy() { ss -tln 2>/dev/null | grep -qE ':(9980|9981|9982|9983|9988|1882|1883) '; }
 wait_ports() { local i; for i in $(seq 1 30); do ports_busy || return 0; sleep 0.5; done; return 1; }
 kill_wait() { # pid —— TERM 后最长等 10s，仍活则 KILL
   local pid=$1 i
@@ -67,11 +67,16 @@ srv_run() { # bin wd timeout_s [ENV=V ...] —— 前台跑（用于拒启断言
   local bin=$1 wd=$2 tmo=$3; shift 3; mkdir -p "$wd"
   ( cd "$wd" && env "$@" timeout "$tmo" "$bin" >server.log 2>&1; echo $? >server.exit )
 }
-cli_start() { # bin id token port wd [server_addr] —— server_addr 缺省直连 9981（sc22/23 经 MITM 代理时传代理地址）
-  local bin=$1 id=$2 token=$3 port=$4 wd=$5 srv=${6:-127.0.0.1:9981}; mkdir -p "$wd"
+cli_start() { # bin id token port wd [server_addr] [透传参数...] —— server_addr 缺省直连 9981
+  # （sc22/23 经 MITM 代理时传代理地址；第 7 起参数原样拼进客户端命令行，
+  #   如 -transport ws / -transport kcp，既有 ≤6 参调用不受影响）
+  local bin=$1 id=$2 token=$3 port=$4 wd=$5
+  local srv; if [ $# -ge 6 ]; then srv=$6; else srv=127.0.0.1:9981; fi
+  if [ $# -ge 6 ]; then shift 6; else shift 5; fi
+  mkdir -p "$wd"
   ( cd "$wd" || exit 1
     HOME="$wd" nohup "$bin" -server "$srv" -token "$token" -id "$id" \
-      -name "e2e-$id" -http "127.0.0.1:$port" >client.log 2>&1 &
+      -name "e2e-$id" -http "127.0.0.1:$port" "$@" >client.log 2>&1 &
     echo $! >client.pid )
 }
 cli_stop() { [ -f "$1/client.pid" ] && kill_wait "$(cat "$1/client.pid")"; return 0; }
@@ -532,6 +537,39 @@ sc23() {
   cli_stop "$wd/cli"; proxy_stop "$wd"; srv_stop "$wd"
 }
 
+# run_enc_transport ws/kcp 传输层通道加密场景（sc25/26 共用骨架，仿 run_enc_full）：
+# 服务端 config.yaml 开额外监听口 + channel_encryption.enabled，客户端 -transport 指向该口
+run_enc_transport() { # n desc transport enc_port client_port wait_tries
+  local n=$1 desc=$2 trans=$3 enc_port=$4 cport=$5 tries=$6
+  local wd=$BASE/run/sc$n; rm -rf "$wd"; mkdir -p "$wd"
+  echo "  场景$n: $desc"
+  printf 'server:\n  %s_port: ":%s"\nchannel_encryption:\n  enabled: true\n' \
+    "$trans" "$enc_port" > "$wd/config.yaml"
+  if ! srv_start "$BIN/serv-r1" "$wd" "${STD_ENV[@]}"; then rec "sc$n" 1 "服务端未就绪"; return; fi
+  local jwt raw
+  jwt=$(login "$ADMIN_USER" "$ADMIN_PASS"); [ -z "$jwt" ] && { rec "sc$n" 1 "admin登录失败"; return; }
+  raw=$(mk_token "$jwt"); [ -z "$raw" ] && { rec "sc$n" 1 "创建access token失败"; return; }
+  cli_start "$BIN/cli-new" "sc${n}nod1" "$raw" "$cport" "$wd/cli" "127.0.0.1:$enc_port" -transport "$trans"
+  if ! wait_online "$jwt" "sc${n}nod1" "$tries"; then
+    rec "sc$n" 1 "节点未上线（transport=$trans 经 :$enc_port）"; cli_stop "$wd/cli"; srv_stop "$wd"; return
+  fi
+  setup_tunnel "$jwt" "sc${n}nod1" >/dev/null; sleep 2
+  local echo; echo=$(tunnel_echo)
+  local encf lstn bad=""
+  [ "$echo" = OK ] || bad="回声=$echo; "
+  encf=$(enc_flag_count "$wd/server.log" true)
+  [ "$encf" -ge 1 ] || bad="${bad}enc=true日志=$encf; "
+  # 额外传输监听按 transport=<name> 打日志（控制台带 ANSI 色码，先剥再匹配）
+  lstn=$(sed 's/\x1b\[[0-9;]*m//g' "$wd/server.log" 2>/dev/null | grep -c "Control server listening.*transport=$trans")
+  [ "$lstn" -ge 1 ] || bad="${bad}transport=$trans监听日志=$lstn; "
+  local detail="回声=$echo enc=true($encf) transport=$trans监听($lstn)"
+  if [ -z "$bad" ]; then rec "sc$n" 0 "$desc: $detail"; else rec "sc$n" 1 "$desc: $bad($detail)"; fi
+  cli_stop "$wd/cli"; srv_stop "$wd"
+}
+
+sc25() { run_enc_transport 25 "WS 传输通道加密全链路（ws_port=:9988 + -transport ws）" ws 9988 15927 24; }
+sc26() { run_enc_transport 26 "KCP 传输通道加密全链路（kcp_port=:9982 + -transport kcp，首包慢放宽轮询）" kcp 9982 15928 60; }
+
 # ---- 主流程 ----
 if [ ! -f "$BASE/echo.pid" ] || ! kill -0 "$(cat "$BASE/echo.pid" 2>/dev/null)" 2>/dev/null; then
   nohup python3 "$BASE/echo_server.py" >"$BASE/echo.log" 2>&1 & echo $! >"$BASE/echo.pid"
@@ -555,6 +593,8 @@ while [ "$n" -le "$TO" ]; do
     22) sc22;;
     23) sc23;;
     24) run_enc_full 24 "收口态双端就绪（require=true + 新客户端）" "$BIN/cli-new" true 0 "" MA_CHANNEL_ENC_ENABLED=true MA_CHANNEL_ENC_REQUIRE=true;;
+    25) sc25;;
+    26) sc26;;
   esac
   n=$((n+1))
 done
