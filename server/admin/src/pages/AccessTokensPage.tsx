@@ -75,8 +75,9 @@ export function AccessTokensPage() {
       setCreateName('')
       fetchTokens()
       toast('Token 创建成功', 'success')
-    } catch {
-      toast('创建失败', 'error')
+    } catch (err: unknown) {
+      // 透传后端原因（如名称重复），不能只报 generic 文案
+      toast((err as Error).message || '创建失败', 'error')
     } finally {
       setCreating(false)
     }
@@ -91,8 +92,8 @@ export function AccessTokensPage() {
       setRotateTarget(null)
       fetchTokens()
       toast('Token 已轮换', 'success')
-    } catch {
-      toast('轮换失败', 'error')
+    } catch (err: unknown) {
+      toast((err as Error).message || '轮换失败', 'error')
     } finally {
       setRotating(false)
     }
@@ -106,8 +107,8 @@ export function AccessTokensPage() {
       setDeleteTarget(null)
       fetchTokens()
       toast('Token 已删除', 'success')
-    } catch {
-      toast('删除失败', 'error')
+    } catch (err: unknown) {
+      toast((err as Error).message || '删除失败', 'error')
     } finally {
       setDeleting(false)
     }

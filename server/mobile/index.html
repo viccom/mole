@@ -3,13 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>moleAgent mobile</title>
   </head>
   <body>
     <div id="root"></div>
-    <script src="https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.44.js"></script>
-    <script src="https://g.alicdn.com/dingding/dingtalk-jsapi/3.0.25/dingtalk.open.js"></script>
+    <!-- defer：SDK 与文档解析并行下载、不再阻塞 HTML 解析（module 脚本本就在其后执行，
+         SSO 依赖 window.h5sdk/dd 的加载顺序不变） -->
+    <script defer src="https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.44.js"></script>
+    <script defer src="https://g.alicdn.com/dingding/dingtalk-jsapi/3.0.25/dingtalk.open.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

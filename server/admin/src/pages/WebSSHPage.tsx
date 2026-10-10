@@ -65,20 +65,26 @@ export function WebSSHPage() {
   const handleCopy = useCallback(() => {
     const term = termRef.current
     if (term && term.hasSelection()) {
-      navigator.clipboard.writeText(term.getSelection())
+      // 非安全上下文（http 部署）/权限拒绝时 writeText 会 reject，需兜住
+      navigator.clipboard.writeText(term.getSelection()).catch(() => {})
     }
   }, [])
 
   const handlePaste = useCallback(async () => {
-    const text = await navigator.clipboard.readText()
-    const ws = wsRef.current
-    if (text && ws?.readyState === WebSocket.OPEN) {
-      const encoder = new TextEncoder()
-      const payload = encoder.encode(text)
-      const msg = new Uint8Array(1 + payload.length)
-      msg[0] = MSG_DATA
-      msg.set(payload, 1)
-      ws.send(msg)
+    try {
+      const text = await navigator.clipboard.readText()
+      const ws = wsRef.current
+      if (text && ws?.readyState === WebSocket.OPEN) {
+        const encoder = new TextEncoder()
+        const payload = encoder.encode(text)
+        const msg = new Uint8Array(1 + payload.length)
+        msg[0] = MSG_DATA
+        msg.set(payload, 1)
+        ws.send(msg)
+      }
+    } catch {
+      // 浏览器可能因权限策略拒绝读取剪贴板，必须给出提示而非静默失败
+      termRef.current?.writeln('\r\n\x1b[33m剪贴板读取失败，请检查浏览器剪贴板权限\x1b[0m')
     }
   }, [])
 
@@ -130,6 +136,8 @@ export function WebSSHPage() {
     }
 
     ws.onmessage = (ev) => {
+      // 与 onclose 同款守卫：终端已随 cleanup 释放（卸载/断开/切换隧道）时不再写入
+      if (termRef.current !== term) return
       if (ev.data instanceof ArrayBuffer) {
         const buf = new Uint8Array(ev.data)
         if (buf.length === 0) return
@@ -152,11 +160,15 @@ export function WebSSHPage() {
     }
 
     ws.onerror = () => {
+      if (termRef.current !== term) return
       setStatus('error')
       setErrorMsg('WebSocket 连接错误')
     }
 
     ws.onclose = (ev) => {
+      // 终端已随 cleanup 释放（卸载/断开/切换隧道）时不再写入或改状态，
+      // 否则会对已 dispose 的终端实例写入而抛错
+      if (termRef.current !== term) return
       setStatus('disconnected')
       if (ev.code !== 1000) {
         term.writeln('\r\n\x1b[31m连接已断开\x1b[0m')
@@ -205,7 +217,7 @@ export function WebSSHPage() {
       if (e.ctrlKey && e.shiftKey && e.key === 'C') {
         e.preventDefault()
         if (term.hasSelection()) {
-          navigator.clipboard.writeText(term.getSelection())
+          navigator.clipboard.writeText(term.getSelection()).catch(() => {})
         }
       }
       if (e.ctrlKey && e.shiftKey && e.key === 'V') {
@@ -218,6 +230,11 @@ export function WebSSHPage() {
             msg[0] = MSG_DATA
             msg.set(payload, 1)
             ws.send(msg)
+          }
+        }).catch(() => {
+          // 与 handlePaste 同因：读剪贴板被浏览器拒绝时给出提示
+          if (termRef.current === term) {
+            term.writeln('\r\n\x1b[33m剪贴板读取失败，请检查浏览器剪贴板权限\x1b[0m')
           }
         })
       }

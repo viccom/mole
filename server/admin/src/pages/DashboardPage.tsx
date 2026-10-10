@@ -61,7 +61,7 @@ export function DashboardPage() {
             <div className="space-y-2">
               <div className="flex justify-between text-sm"><span className="text-gray-500">版本</span><span className="font-mono font-medium">{version ? `${version.version} (${version.git_hash})` : '-'}</span></div>
               <div className="flex justify-between text-sm"><span className="text-gray-500">编译日期</span><span className="font-mono font-medium">{version?.build_date || '-'}</span></div>
-              <div className="flex justify-between text-sm"><span className="text-gray-500">二进制路径</span><span className="font-mono font-medium text-xs truncate ml-4" title={version?.binary_path}>{version?.binary_path || '-'}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-gray-500">默认域名</span><span className="font-mono font-medium">{version?.default_domain || '-'}</span></div>
             </div>
           </div>
         </div>

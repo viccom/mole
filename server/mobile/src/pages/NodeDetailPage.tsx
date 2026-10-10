@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, type FormEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, type FormEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, type Node, type Tunnel } from '../api/client'
+import { api, ApiError, type Node, type Tunnel } from '../api/client'
 import { ArrowLeft, Circle, Pencil, Trash2, Copy, RefreshCw, Plus, X } from 'lucide-react'
 import { typeIcons } from '../lib/constants'
 
@@ -36,18 +36,35 @@ function tunnelAccessUrl(t: Tunnel, nodeId: string): string {
 export function NodeDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [node, setNode] = useState<Node | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(true) // 仅首次加载用全屏 loading
+  const [refreshing, setRefreshing] = useState(false) // 后台刷新用局部状态，避免整页闪动丢滚动位置
+  const [loadError, setLoadError] = useState<string | null>(null) // 请求失败（区别于节点真不存在）
   const [actionTarget, setActionTarget] = useState<Tunnel | null>(null)
   const [showForm, setShowForm] = useState(false)
   const navigate = useNavigate()
 
-  const refresh = () => {
+  const refresh = useCallback(async () => {
     if (!id) return
-    setLoading(true)
-    api.getNode(id).then(n => setNode(n)).catch(() => setNode(null)).finally(() => setLoading(false))
-  }
+    setRefreshing(true)
+    try {
+      const n = await api.getNode(id)
+      setNode(n)
+      setLoadError(null)
+    } catch (err) {
+      // 区分"节点真不存在(404)"与"网络/服务失败"：后者保留原数据并提示重试
+      if (err instanceof ApiError && err.status === 404) {
+        setNode(null)
+        setLoadError(null)
+      } else {
+        setLoadError(err instanceof Error ? err.message : '加载失败')
+      }
+    } finally {
+      setRefreshing(false)
+      setLoading(false)
+    }
+  }, [id])
 
-  useEffect(() => { fetchDefaultDomain(); refresh() }, [id])
+  useEffect(() => { fetchDefaultDomain(); refresh() }, [refresh])
 
   const handleToggle = async (t: Tunnel) => {
     if (!node) return
@@ -57,6 +74,7 @@ export function NodeDetailPage() {
         name: t.name, type: t.type, target: t.target,
         domain: t.domain || undefined, listen_port: t.listen_port || undefined,
         enabled: newEnabled, node_id: node.id, para: t.para,
+        rate_limit: t.rate_limit,
       })
       refresh()
     } catch (err) {
@@ -75,22 +93,38 @@ export function NodeDetailPage() {
     }
   }
 
-  const handleCopyUrl = (t: Tunnel) => {
+  const handleCopyUrl = async (t: Tunnel) => {
     const url = node ? tunnelAccessUrl(t, node.id) : ''
-    if (url && url !== '-') {
-      navigator.clipboard.writeText(url)
-      alert('已复制: ' + url)
-    } else {
-      alert('无访问 URL')
-    }
     setActionTarget(null)
+    if (!url || url === '-') {
+      alert('无访问 URL')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      alert('已复制: ' + url)
+    } catch {
+      // http 非安全上下文等场景 clipboard 必失败，不能假报成功
+      alert('复制失败，请手动复制: ' + url)
+    }
   }
 
   if (loading) return <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400">加载中...</div>
-  if (!node) return <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400">节点未找到</div>
+  if (!node) {
+    // 请求失败（网络/服务异常）与节点真不存在分开呈现，避免误导
+    if (loadError) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-3 p-6">
+          <p className="text-gray-500 text-sm text-center">{loadError}</p>
+          <button onClick={refresh} className="px-5 py-2 rounded-lg text-sm text-white" style={{ backgroundColor: '#2563eb' }}>重试</button>
+        </div>
+      )
+    }
+    return <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400">节点未找到</div>
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-8">
+    <div className="min-h-screen bg-gray-50 pb-24">
       <header className="sticky top-0 z-40 bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3">
         <button onClick={() => navigate('/nodes')}><ArrowLeft className="w-5 h-5 text-gray-600" /></button>
         <h1 className="text-lg font-semibold">{node.name}</h1>
@@ -104,6 +138,12 @@ export function NodeDetailPage() {
       </header>
 
       <div className="p-4 space-y-4">
+        {loadError && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center justify-between">
+            <span className="text-xs text-amber-700">{loadError}</span>
+            <button onClick={refresh} className="text-xs text-amber-700 font-medium ml-3 shrink-0">重试</button>
+          </div>
+        )}
         <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
           <h2 className="text-sm font-medium text-gray-500 mb-2">节点信息</h2>
           <div className="space-y-1.5 text-sm">
@@ -117,8 +157,8 @@ export function NodeDetailPage() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium text-gray-500">隧道 ({node.tunnels?.length || 0})</h2>
             <div className="flex items-center gap-1">
-              <button onClick={refresh} className="text-blue-600 p-1 -m-1" disabled={loading}>
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <button onClick={refresh} className="text-blue-600 p-1 -m-1" disabled={refreshing}>
+                <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
               </button>
               {node.status === 'online' && (
                 <button onClick={() => setShowForm(true)} className="text-blue-600 p-1 -m-1">
@@ -153,7 +193,7 @@ export function NodeDetailPage() {
               <div className="text-sm text-gray-400">{actionTarget.type} · {actionTarget.target}</div>
             </div>
             <div className="space-y-3">
-              <button onClick={() => { setActionTarget(null); navigate(`/tunnels?edit=${actionTarget.name}&node=${node.id}`) }}
+              <button onClick={() => { setActionTarget(null); navigate(`/tunnels?edit=${encodeURIComponent(actionTarget.name)}&node=${encodeURIComponent(node.id)}`) }}
                 className="w-full flex items-center justify-center gap-3 py-3.5 bg-blue-50 text-blue-600 rounded-xl text-base font-medium active:bg-blue-100">
                 <Pencil className="w-5 h-5" /> 编辑隧道
               </button>

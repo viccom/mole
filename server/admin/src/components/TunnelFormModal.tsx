@@ -339,11 +339,13 @@ export function TunnelFormModal({ tunnel, presetNodeId, defaultType, onClose, on
         toast('请输入用户名', 'error')
         return
       }
-      if (sshAuthType === 'password' && !sshPassword) {
+      // 编辑已有 webssh 隧道时原 para 已存凭证（enc: 密文或明文），留空即沿用原值
+      //（见 buildPara 回填），不应强制重填；仅当既未输入、原 para 也无凭证才报错
+      if (sshAuthType === 'password' && !sshPassword && !tunnel?.para?.password) {
         toast('请输入密码', 'error')
         return
       }
-      if (sshAuthType === 'key' && !sshPrivKey.trim()) {
+      if (sshAuthType === 'key' && !sshPrivKey.trim() && !tunnel?.para?.priv_key) {
         toast('请输入私钥', 'error')
         return
       }

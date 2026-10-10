@@ -255,15 +255,13 @@ export interface SystemMetrics {
   uptime_seconds: number
 }
 
+// /version 只回这四个字段（Go system_handler.go Version），类型必须与后端一致，
+// 多声明的字段（binary_path/cpu_num 等）前端拿到的永远是 undefined
 export interface VersionInfo {
   version: string
   git_hash: string
   build_date: string
-  binary_path: string
-  cpu_num: number
-  goroutines: number
-  mem_alloc_mb: number
-  mem_sys_mb: number
+  default_domain?: string
 }
 
 export interface ServerConfig {
@@ -292,4 +290,6 @@ export interface AuthUser {
   username: string
   token: string
   expires_at?: string
+  // /auth/me 返回的角色标识（JWT 内为角色名）；登录/SSO 绑定响应不含，需另行补齐
+  roles?: string[]
 }

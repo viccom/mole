@@ -13,6 +13,13 @@ export function getToken() {
   return token
 }
 
+// 公开认证接口（main.go RegisterPublic 的 /auth/* 集合）：登录失败/SSO 凭证错误
+// 本身就是 401，必须把服务端原因抛给调用方展示；若走全局跳转会把错误吞掉，
+// 用户输错密码被整页跳转却看不到任何提示
+function isPublicAuthPath(path: string): boolean {
+  return path === '/auth/login' || path.startsWith('/auth/feishu/') || path.startsWith('/auth/dingtalk/')
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   if (!headers.has('Content-Type') && options.body !== undefined) {
@@ -34,6 +41,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   if (res.status === 401) {
+    if (isPublicAuthPath(path)) {
+      throw new Error(parsed?.msg || parsed?.message || rawBody.trim() || 'Unauthorized')
+    }
     setToken(null)
     window.location.href = '/admin/login'
     throw new Error('Unauthorized')

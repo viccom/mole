@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Plus, Pencil, Trash2, Network, Zap, ZapOff, Activity, Globe, ArrowDown, ArrowUp, Users, Search, Columns3, Filter, Gauge, Terminal, Play, Pause, RotateCcw } from 'lucide-react'
 import { api } from '../api/client'
@@ -238,11 +238,17 @@ export function TunnelsPage() {
     }
   }
 
+  // 防重复提交：同一隧道的操作在请求完成前忽略再次点击（删除走 ConfirmDialog 的 pending 守卫）
+  const busyKeysRef = useRef<Set<string>>(new Set())
+
   const handleToggle = async (tunnel: Tunnel) => {
     if (!tunnel.node_id) {
       toast('缺少节点信息，无法切换状态', 'error')
       return
     }
+    const key = `${tunnel.node_id}:${tunnel.name}`
+    if (busyKeysRef.current.has(key)) return
+    busyKeysRef.current.add(key)
     try {
       await api.updateTunnel({
         name: tunnel.name,
@@ -253,11 +259,15 @@ export function TunnelsPage() {
         enabled: !tunnel.enabled,
         node_id: tunnel.node_id,
         para: tunnel.para,
+        // 更新是整对象替换，漏传 rate_limit 会导致切换状态时限速配置被清空
+        rate_limit: tunnel.rate_limit,
       })
       toast(`隧道已${tunnel.enabled ? '禁用' : '启用'}`, 'success')
       fetchData()
     } catch (err: unknown) {
       toast((err as Error).message || '切换状态失败', 'error')
+    } finally {
+      busyKeysRef.current.delete(key)
     }
   }
 

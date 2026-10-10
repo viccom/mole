@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { RefreshCw, ChevronDown, ChevronRight, Trash2, Plus, Database, ArrowRightLeft, RotateCcw, Cpu, HardDrive, Clock, Monitor, Activity, Tag } from 'lucide-react'
 import { api } from '../api/client'
 import type { Node, PersistedNode, Tunnel, SysInfo, ClientTunnelStatus } from '../types/api'
@@ -66,7 +66,13 @@ export function NodesPage() {
     }
   }
 
+  // 防重复提交：删除隧道请求完成前忽略再次点击
+  const deletingTunnelsRef = useRef<Set<string>>(new Set())
+
   const handleDeleteTunnel = async (nodeId: string, name: string) => {
+    const key = `${nodeId}:${name}`
+    if (deletingTunnelsRef.current.has(key)) return
+    deletingTunnelsRef.current.add(key)
     try {
       await api.deleteTunnel(nodeId, name)
       toast('隧道已删除', 'success')
@@ -74,6 +80,8 @@ export function NodesPage() {
       if (showPersisted) fetchPersisted()
     } catch (err: unknown) {
       toast((err as Error).message || '删除隧道失败', 'error')
+    } finally {
+      deletingTunnelsRef.current.delete(key)
     }
   }
 
@@ -101,6 +109,8 @@ export function NodesPage() {
         node_id: migrateNodeId,
         original_node_id: migrateTarget.fromNodeId,
         para: migrateTarget.tunnel.para,
+        // 更新是整对象替换，漏传 rate_limit 会导致迁移时限速配置被清空
+        rate_limit: migrateTarget.tunnel.rate_limit,
       })
       toast('隧道已迁移', 'success')
       setMigrateTarget(null)
@@ -129,6 +139,8 @@ export function NodesPage() {
           node_id: migrateAllNodeId,
           original_node_id: migrateAll.fromNodeId,
           para: t.para,
+          // 同 handleMigrateTunnel：整对象替换必须带上 rate_limit，否则限速丢失
+          rate_limit: t.rate_limit,
         })
         success++
       } catch {

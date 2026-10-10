@@ -21,12 +21,14 @@ export function FeishuBindPage() {
       </div>
     )
   }
+  // 守卫已保证非空：先收窄成 string，供下面的闭包使用（闭包里属性收窄会失效）
+  const feishuToken = state.feishuToken
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setLoading(true)
     try {
-      await feishuBind(state.feishuToken!, username, password)
+      await feishuBind(feishuToken, username, password)
       navigate('/nodes')
     } catch (err) {
       alert(err instanceof Error ? err.message : '绑定失败')

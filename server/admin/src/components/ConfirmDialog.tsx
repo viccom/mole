@@ -1,15 +1,29 @@
+import { useState } from 'react'
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react'
 
 interface ConfirmDialogProps {
   title: string
   message: string
   confirmText: string
-  onConfirm: () => void
+  // 支持异步操作：内部 pending 期间禁用确认按钮，防止双击重复提交
+  onConfirm: () => void | Promise<void>
   onCancel: () => void
   danger?: boolean
 }
 
 export function ConfirmDialog({ title, message, confirmText, onConfirm, onCancel, danger }: ConfirmDialogProps) {
+  const [pending, setPending] = useState(false)
+
+  const handleConfirm = async () => {
+    if (pending) return
+    setPending(true)
+    try {
+      await onConfirm()
+    } finally {
+      setPending(false)
+    }
+  }
+
   return (
     <Dialog open={true} onClose={onCancel} className="relative z-[1100]">
       <div className="fixed inset-0 bg-black/50" aria-hidden="true" />
@@ -20,8 +34,9 @@ export function ConfirmDialog({ title, message, confirmText, onConfirm, onCancel
           <div className="flex justify-end gap-2">
             <button onClick={onCancel} className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50">取消</button>
             <button
-              onClick={onConfirm}
-              className={`px-4 py-2 text-sm rounded-lg text-white ${danger ? 'bg-red-600 hover:bg-red-700' : 'bg-primary hover:bg-primary-dark'}`}
+              onClick={handleConfirm}
+              disabled={pending}
+              className={`px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50 ${danger ? 'bg-red-600 hover:bg-red-700' : 'bg-primary hover:bg-primary-dark'}`}
             >
               {confirmText}
             </button>

@@ -8,24 +8,33 @@ import { api } from '../api/client'
 export function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [ssoType, setSsoType] = useState<'feishu' | 'dingtalk' | null>(null)
+  const [ssoFailed, setSsoFailed] = useState(false)
   const { feishuLogin, dingtalkLogin } = useAuth()
   const navigate = useNavigate()
 
-  useEffect(() => {
-    const init = async () => {
-      const [feishuCfg, dingtalkCfg] = await Promise.all([
-        api.feishuConfig().catch(() => ({ app_id: '' })),
-        api.dingtalkConfig().catch(() => ({ corp_id: '', app_key: '' })),
-      ])
-      if (feishuCfg.app_id && isFeishuEnv()) {
-        handleFeishuSSO(feishuCfg.app_id)
-      }
-      if (dingtalkCfg.corp_id && isDingTalkEnv()) {
-        handleDingTalkSSO(dingtalkCfg.corp_id)
-      }
+  const init = async () => {
+    const [feishuCfg, dingtalkCfg] = await Promise.all([
+      api.feishuConfig().catch(() => ({ app_id: '' })),
+      api.dingtalkConfig().catch(() => ({ corp_id: '', app_key: '' })),
+    ])
+    // SSO 防重入：自动发起只在未尝试过时进行，避免 alert 弹窗循环。
+    // 命中守卫说明本次会话已尝试过：置 ssoFailed 让"重新登录"按钮可见，
+    // 否则刷新后 ssoFailed 随组件重建丢失 → 页面无任何可点入口（死界面）
+    if (sessionStorage.getItem('sso_attempted')) {
+      setSsoFailed(true)
+      return
     }
-    init()
-  }, [])
+    if (feishuCfg.app_id && isFeishuEnv()) {
+      sessionStorage.setItem('sso_attempted', '1')
+      handleFeishuSSO(feishuCfg.app_id)
+    }
+    if (dingtalkCfg.corp_id && isDingTalkEnv()) {
+      sessionStorage.setItem('sso_attempted', '1')
+      handleDingTalkSSO(dingtalkCfg.corp_id)
+    }
+  }
+
+  useEffect(() => { init() }, [])
 
   const handleFeishuSSO = async (appId: string) => {
     setSsoType('feishu')
@@ -33,12 +42,15 @@ export function LoginPage() {
     try {
       const code = await requestAuthCode(appId)
       const result = await feishuLogin(code)
+      sessionStorage.removeItem('sso_attempted')
       if (result.needBind) {
         navigate('/feishu-bind', { state: { feishuToken: result.feishuToken, feishuName: result.feishuName } })
       } else {
         navigate('/nodes')
       }
     } catch (err) {
+      // 失败置 ssoFailed：守卫拦自动重试，但用户可通过"重新登录"按钮主动再发起
+      setSsoFailed(true)
       alert(err instanceof Error ? err.message : '登录失败')
     } finally {
       setLoading(false)
@@ -51,16 +63,25 @@ export function LoginPage() {
     try {
       const code = await dingtalkRequestAuthCode(corpId)
       const result = await dingtalkLogin(code, 'h5')
+      sessionStorage.removeItem('sso_attempted')
       if (result.needBind) {
         navigate('/dingtalk-bind', { state: { dingtalkToken: result.dingtalkToken, dingtalkName: result.dingtalkName } })
       } else {
         navigate('/nodes')
       }
     } catch (err) {
+      setSsoFailed(true)
       alert(err instanceof Error ? err.message : '登录失败')
     } finally {
       setLoading(false)
     }
+  }
+
+  // 手动重试：清除守卫标记后重新发起（仅用户点击触发，不破坏防重入）
+  const handleRetry = () => {
+    sessionStorage.removeItem('sso_attempted')
+    setSsoFailed(false)
+    init()
   }
 
   const loginLabel = loading
@@ -77,6 +98,12 @@ export function LoginPage() {
         </div>
         <h1 className="text-2xl font-bold text-indigo-900">MoleAgent</h1>
         <p className="text-gray-400 mt-1 mb-6 text-sm">{loading ? loginLabel : '请从飞书或钉钉工作台打开'}</p>
+        {ssoFailed && !loading && (
+          <button onClick={handleRetry}
+            className="w-full py-3 bg-indigo-600 text-white rounded-xl text-base font-medium active:bg-indigo-700">
+            重新登录
+          </button>
+        )}
       </div>
     </div>
   )

@@ -4,19 +4,35 @@ import { useAuth } from '../hooks/useAuth'
 import { isFeishuEnv } from '../lib/feishu'
 import { isDingTalkEnv } from '../lib/dingtalk'
 
+// 导航入口所需权限（对照 cmd/moleagent-serv/main.go 路由注册表的 resource:action），
+// perms 内任一满足即显示；不带 perms 的是通用入口，任何登录用户可见。
+// 只做入口级门控（导航隐藏），页面内不做逐按钮控制
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: '仪表盘' },
   { to: '/nodes', icon: Server, label: '节点管理' },
   { to: '/tunnels', icon: Network, label: '隧道管理' },
-  { to: '/users', icon: Users, label: '用户管理' },
+  // 用户管理页含用户与角色两个 Tab，users:read / roles:read 有其一即可进入
+  { to: '/users', icon: Users, label: '用户管理', perms: ['users:read', 'roles:read'] },
+  // 接入 Token 是 /me/access-tokens 自助接口（RegisterAuth），任何登录用户均可管理自己的 token
   { to: '/access-tokens', icon: KeyRound, label: '接入Token' },
-  { to: '/mqtt', icon: Radio, label: 'MQTT' },
+  { to: '/mqtt', icon: Radio, label: 'MQTT', perms: ['mqtt:read'] },
+  // 系统设置页含"修改密码"（任意用户功能），入口不能整体按 system:admin 收窄——
+  // 门控下沉到页面内区块（Access Key/升级按 system:admin 隐藏）
   { to: '/settings', icon: Settings, label: '系统设置' },
 ]
 
 export function Layout() {
-  const { user, logout } = useAuth()
+  const { user, logout, hasPermission } = useAuth()
   const isNativeSSO = isFeishuEnv() || isDingTalkEnv()
+  // 权限未就绪（加载中）时 hasPermission 返回 false，管理入口暂隐，
+  // 权限到位后再显示；角色接口失败降级为只显示通用入口，不白屏
+  const visibleNavItems = navItems.filter(item => {
+    if (!item.perms) return true
+    return item.perms.some(p => {
+      const [resource, action] = p.split(':')
+      return hasPermission(resource, action)
+    })
+  })
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -32,7 +48,7 @@ export function Layout() {
         </div>
 
         <nav className="flex-1 py-3 overflow-y-auto">
-          {navItems.map(item => (
+          {visibleNavItems.map(item => (
             <NavLink
               key={item.to}
               to={item.to}

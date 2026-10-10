@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, type FormEvent } from 'react'
+import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api, type Node, type Tunnel } from '../api/client'
 import { Circle, Plus, RefreshCw, X, Pencil, Trash2, Copy } from 'lucide-react'
 import { typeIcons } from '../lib/constants'
@@ -48,6 +49,7 @@ export function TunnelsPage() {
   const [editTarget, setEditTarget] = useState<FlatTunnel | null>(null)
   const [busy, setBusy] = useState(false)
   const [actionTarget, setActionTarget] = useState<FlatTunnel | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const refresh = () => {
     setLoading(true)
@@ -56,11 +58,30 @@ export function TunnelsPage() {
 
   useEffect(() => { fetchDefaultDomain(); refresh() }, [])
 
-  const allTunnels: FlatTunnel[] = nodes.flatMap(node =>
+  // useMemo 稳定引用：否则每次渲染都是新数组，下面消费 ?edit= 参数的 effect
+  // 会随每次渲染重复执行（虽有 editName 短路，但依赖不该绑在新建对象上）
+  const allTunnels: FlatTunnel[] = useMemo(() => nodes.flatMap(node =>
     (node.tunnels || []).map(t => ({
       ...t, nodeId: node.id, nodeName: node.name, nodeStatus: node.status,
     }))
-  )
+  ), [nodes])
+
+  // NodeDetail 页"编辑隧道"入口带 ?edit=<name>&node=<id> 跳转过来：
+  // 列表加载完成后自动打开该隧道的编辑弹层
+  useEffect(() => {
+    if (loading) return
+    const editName = searchParams.get('edit')
+    if (!editName) return
+    // 参数一次性消费，避免刷新/后退时重复弹出编辑
+    setSearchParams({}, { replace: true })
+    const nodeParam = searchParams.get('node')
+    const target = allTunnels.find(t => t.name === editName && (!nodeParam || t.nodeId === nodeParam))
+    // 隧道已不存在时静默容错：只停留列表，不弹错
+    if (target) {
+      setEditTarget(target)
+      setShowForm(true)
+    }
+  }, [loading, searchParams, setSearchParams, allTunnels])
 
   const onlineNodes = nodes.filter(n => n.status === 'online')
 
@@ -71,6 +92,7 @@ export function TunnelsPage() {
         name: t.name, type: t.type, target: t.target,
         domain: t.domain || undefined, listen_port: t.listen_port || undefined,
         enabled: newEnabled, node_id: t.nodeId, para: t.para,
+        rate_limit: t.rate_limit,
       })
       refresh()
     } catch (err) {
@@ -78,14 +100,19 @@ export function TunnelsPage() {
     }
   }
 
-  const handleCopyUrl = (t: FlatTunnel) => {
+  const handleCopyUrl = async (t: FlatTunnel) => {
     const url = tunnelAccessUrl(t)
     setActionTarget(null)
-    if (url && url !== '-') {
-      navigator.clipboard.writeText(url)
-      alert('已复制: ' + url)
-    } else {
+    if (!url || url === '-') {
       alert('无访问 URL')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      alert('已复制: ' + url)
+    } catch {
+      // http 非安全上下文等场景 clipboard 必失败，不能假报成功
+      alert('复制失败，请手动复制: ' + url)
     }
   }
 
@@ -276,6 +303,8 @@ function TunnelForm({ mode, tunnel, nodes, onClose, onDone, busy, setBusy }: {
         node_id: nodeId,
         ...(mode === 'edit' && tunnel ? { original_node_id: tunnel.nodeId } : {}),
         para: tunnel?.para,
+        // 编辑提交必须透传限速配置，否则手工重建 payload 会把 rate_limit 抹掉
+        rate_limit: tunnel?.rate_limit,
       }
       if (mode === 'edit') {
         await api.updateTunnel(payload)

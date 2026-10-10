@@ -5,3 +5,8 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* 全面屏底部安全区：TabBar 用 safe-area-bottom 类名引用，避免被系统手势条遮挡 */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}

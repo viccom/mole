@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { api, setToken } from '../api/client'
+import { api } from '../api/client'
 import { isFeishuEnv } from '../lib/feishu'
 import { isDingTalkEnv } from '../lib/dingtalk'
 import { LogOut, Link2, Info } from 'lucide-react'
@@ -30,10 +30,10 @@ export function SettingsPage() {
   }, [])
 
   const reAuth = () => {
-    setToken(null)
-    sessionStorage.removeItem('dingtalk_sso_attempted')
-    sessionStorage.removeItem('feishu_sso_attempted')
-    navigate('/login', { replace: true })
+    // 必须清空 AuthContext 的 user（只清 token 守卫仍认为已登录不会重定向），
+    // 并回登录页实际挂载的 '/'：路由表没有 '/login'，跳过去会白屏卡死
+    logout()
+    navigate('/', { replace: true })
   }
 
   const handleUnbind = async () => {

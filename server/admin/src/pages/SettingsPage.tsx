@@ -8,6 +8,7 @@ import { FormField } from '../components/FormField'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { useRequest } from '../hooks/useRequest'
+import { useAuth } from '../hooks/useAuth'
 import { Shield, Lock, Eye, EyeOff, RefreshCw } from 'lucide-react'
 
 function PasswordInput({ value, onChange, show, onToggle, placeholder }: {
@@ -35,6 +36,17 @@ function PasswordInput({ value, onChange, show, onToggle, placeholder }: {
 
 export function SettingsPage() {
   const { toast } = useToast()
+  // 本页各区块权限相互独立（后端按 resource:action 注册）：
+  //   Access Key 区 → accesskey:read 查看状态 / accesskey:admin 增删改
+  //   版本更新区   → system:read 查看 / system:admin 执行升级
+  //   服务器配置   → system:admin
+  // 而"修改密码"是任意登录用户功能，故门控必须下沉到区块级、不可整页收窄
+  const { hasPermission } = useAuth()
+  const canReadAccessKey = hasPermission('accesskey', 'read') || hasPermission('accesskey', 'admin')
+  const canAdminAccessKey = hasPermission('accesskey', 'admin')
+  const canReadSystem = hasPermission('system', 'read')
+  const canAdminSystem = hasPermission('system', 'admin')
+  const canAdminConfig = hasPermission('system', 'admin')
 
   // Change password
   const [oldPassword, setOldPassword] = useState('')
@@ -55,19 +67,46 @@ export function SettingsPage() {
   const [updateMessage, setUpdateMessage] = useState('')
   const [latestVersion, setLatestVersion] = useState('')
   const progressRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mountedRef = useRef(true)
+
+  // 升级中切走页面时必须停掉轮询与延迟 reload，否则页面会被强制刷新
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (progressRef.current) clearInterval(progressRef.current)
+      progressRef.current = null
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      reloadTimerRef.current = null
+    }
+  }, [])
+
+  // 升级完成后刷新页面；仅组件仍挂载时才执行
+  function scheduleReload(delay: number) {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+    reloadTimerRef.current = setTimeout(() => {
+      reloadTimerRef.current = null
+      if (mountedRef.current) location.reload()
+    }, delay)
+  }
 
   const { data, loading } = useRequest(async () => {
-    const [configRes, keyRes] = await Promise.all([
-      api.getConfig().catch(() => null as ServerConfig | null),
-      api.getAccessKey().catch(() => null as { enabled: boolean } | null),
-    ])
-
-    if (keyRes) {
-      setAccessKeyEnabled(keyRes.enabled)
-    }
-
+    const configRes = await api.getConfig().catch(() => null as ServerConfig | null)
     return { config: configRes }
   })
+
+  // AccessKey 状态单独拉取并依赖权限就绪：useRequest 只在挂载时跑一次，
+  // 而权限（roles→permissions）是异步到达的，挂载瞬间 canReadAccessKey=false
+  // 会导致请求永不发起、状态恒显示"未启用"。故按权限状态重跑。
+  useEffect(() => {
+    if (!canReadAccessKey) return
+    let alive = true
+    api.getAccessKey()
+      .then(res => { if (alive) setAccessKeyEnabled(res.enabled) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [canReadAccessKey])
   const config = data?.config || null
 
   // Version update logic
@@ -93,7 +132,7 @@ export function SettingsPage() {
           setUpdateMessage('升级完成，等待重启...')
           clearInterval(progressRef.current!)
           progressRef.current = null
-          setTimeout(() => location.reload(), 4000)
+          scheduleReload(4000)
           return
         }
         const pct = p.percent || 0
@@ -106,7 +145,7 @@ export function SettingsPage() {
         progressRef.current = null
         setUpdateStatus('done')
         setUpdateMessage('重启中...')
-        setTimeout(() => location.reload(), 3000)
+        scheduleReload(3000)
       })
     }, 1000)
   }
@@ -128,6 +167,8 @@ export function SettingsPage() {
   }
 
   useEffect(() => {
+    // check-update / update-progress 需 system:read，无权限者跳过（避免无意义 403）
+    if (!canReadSystem) return
     const timer = setTimeout(() => {
       api.updateProgress().then(p => {
         if (p.active === true && p.phase !== 'done') {
@@ -156,7 +197,7 @@ export function SettingsPage() {
       })
     }, 1500)
     return () => clearTimeout(timer)
-  }, [])
+  }, [canReadSystem])
 
   const handleChangePassword = async () => {
     if (!oldPassword) {
@@ -173,8 +214,9 @@ export function SettingsPage() {
       toast('密码已修改', 'success')
       setOldPassword('')
       setNewPassword('')
-    } catch {
-      toast('密码修改失败，请检查当前密码是否正确', 'error')
+    } catch (err: unknown) {
+      // 透传后端原因（如旧密码错误），与其它页面的错误展示模式保持一致
+      toast((err as Error).message || '密码修改失败，请检查当前密码是否正确', 'error')
     } finally {
       setChangingPassword(false)
     }
@@ -191,8 +233,8 @@ export function SettingsPage() {
       setAccessKeyEnabled(true)
       setAccessKeyValue('')
       toast('Access Key 已设置', 'success')
-    } catch {
-      toast('设置失败', 'error')
+    } catch (err: unknown) {
+      toast((err as Error).message || '设置失败', 'error')
     } finally {
       setSavingKey(false)
     }
@@ -204,8 +246,8 @@ export function SettingsPage() {
       setAccessKeyEnabled(false)
       setShowDisableConfirm(false)
       toast('Access Key 已禁用', 'success')
-    } catch {
-      toast('禁用失败', 'error')
+    } catch (err: unknown) {
+      toast((err as Error).message || '禁用失败', 'error')
     }
   }
 
@@ -216,7 +258,8 @@ export function SettingsPage() {
       <PageHeader title="系统设置" />
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="grid grid-cols-2 gap-6">
-          {/* Server config (read-only) */}
+          {/* Server config (read-only)，后端 GET /config 需 system:admin */}
+          {canAdminConfig && (
           <div className="bg-white rounded-lg shadow-sm">
             <div className="px-5 py-4 border-b border-gray-200">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
@@ -298,6 +341,7 @@ export function SettingsPage() {
               </div>
             </div>
           </div>
+          )}
 
           {/* Change password */}
           <div className="bg-white rounded-lg shadow-sm">
@@ -339,9 +383,11 @@ export function SettingsPage() {
           </div>
         </div>
 
-        {/* Access Key + Version Update (side by side) */}
+        {/* Access Key（accesskey:read/admin）与版本更新（system:read/admin）区块，按各自权限分别显示 */}
+        {(canReadAccessKey || canReadSystem) && (
         <div className="grid grid-cols-2 gap-6">
           {/* Access Key */}
+          {canReadAccessKey && (
           <div className="bg-white rounded-lg shadow-sm">
             <div className="px-5 py-4 border-b border-gray-200">
               <h3 className="font-semibold text-gray-900">Access Key</h3>
@@ -353,6 +399,8 @@ export function SettingsPage() {
                 {accessKeyEnabled ? '已启用' : '未启用'}
               </Badge>
             </div>
+            {/* 增删改需 accesskey:admin；仅有 read 权限时只读展示状态 */}
+            {canAdminAccessKey && (
             <div className="flex items-center gap-3">
               <input
                 type="text"
@@ -377,10 +425,13 @@ export function SettingsPage() {
                 </button>
               )}
             </div>
+            )}
           </div>
           </div>
+          )}
 
           {/* Version Update */}
+          {canReadSystem && (
           <div className="bg-white rounded-lg shadow-sm">
             <div className="px-5 py-4 border-b border-gray-200">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
@@ -407,12 +458,15 @@ export function SettingsPage() {
                     <Badge variant="warning">有新版本</Badge>
                     <span className="font-mono text-sm text-primary font-medium">{latestVersion}</span>
                   </div>
+                  {/* 升级会替换二进制，需 system:admin（后端 RegisterStrict） */}
+                  {canAdminSystem && (
                   <button
                     onClick={handleUpdate}
                     className="px-4 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark"
                   >
                     升级
                   </button>
+                  )}
                 </div>
               )}
               {updateStatus === 'updating' && (
@@ -426,7 +480,9 @@ export function SettingsPage() {
               )}
             </div>
           </div>
+          )}
         </div>
+        )}
       </div>
 
       {/* Disable Access Key Confirm */}

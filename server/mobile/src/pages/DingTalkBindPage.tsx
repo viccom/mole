@@ -21,12 +21,14 @@ export function DingTalkBindPage() {
       </div>
     )
   }
+  // 守卫已保证非空：先收窄成 string，供下面的闭包使用（闭包里属性收窄会失效）
+  const dingtalkToken = state.dingtalkToken
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setLoading(true)
     try {
-      await dingtalkBind(state.dingtalkToken!, username, password)
+      await dingtalkBind(dingtalkToken, username, password)
       navigate('/nodes')
     } catch (err) {
       alert(err instanceof Error ? err.message : '绑定失败')

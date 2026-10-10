@@ -65,8 +65,9 @@ export function MQTTPage() {
       setPubTopic('')
       setPubPayload('')
       fetchData()
-    } catch {
-      toast('发布失败', 'error')
+    } catch (err: unknown) {
+      // 透传后端原因（如 topic 非法），不能只报 generic 文案
+      toast((err as Error).message || '发布失败', 'error')
     } finally {
       setPublishing(false)
     }
